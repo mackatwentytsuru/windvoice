@@ -1,8 +1,9 @@
-// AudioWorkletProcessor: downsamples Float32 audio to 24 kHz Int16 PCM
-// and emits ~50 ms chunks via port.postMessage.
+// AudioWorkletProcessor: downsamples Float32 audio to 24 kHz Int16 PCM and
+// emits ~50 ms chunks via port.postMessage. Each chunk message also carries
+// the chunk RMS level (linear, [0..1]) for the overlay meter.
 //
-// Loaded as a Blob URL by audio.ts (imported with ?raw).
-// Plain JS so it runs unchanged in the worklet global scope.
+// Loaded as a Blob URL by audio.ts (imported with ?raw). Plain JS so it runs
+// unchanged in the worklet global scope.
 
 class PcmDownsampler extends AudioWorkletProcessor {
   constructor(options) {
@@ -52,14 +53,19 @@ class PcmDownsampler extends AudioWorkletProcessor {
   flush() {
     const samples = this.accumLen;
     const pcm = new Int16Array(samples);
+    let sumSq = 0;
     for (let i = 0; i < samples; i++) {
       let s = this.accumulator[i];
       if (s > 1) s = 1;
       else if (s < -1) s = -1;
       pcm[i] = s < 0 ? Math.round(s * 0x8000) : Math.round(s * 0x7fff);
+      sumSq += s * s;
     }
+    // RMS in linear amplitude [0..1]; gentle perceptual curve
+    const rms = Math.sqrt(sumSq / Math.max(1, samples));
+    const level = Math.min(1, Math.pow(rms, 0.6) * 1.4);
     this.accumLen = 0;
-    this.port.postMessage({ pcm: pcm.buffer, samples }, [pcm.buffer]);
+    this.port.postMessage({ pcm: pcm.buffer, samples, level }, [pcm.buffer]);
   }
 }
 

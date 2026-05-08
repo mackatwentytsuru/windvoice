@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import type { Settings, DictionaryEntry } from '../../shared/types';
+import { useI18n } from '../useI18n';
 
 interface Props {
   settings: Settings;
@@ -7,6 +8,7 @@ interface Props {
 }
 
 export function DictionaryPage({ settings, update }: Props): JSX.Element {
+  const { t } = useI18n();
   const [from, setFrom] = useState('');
   const [to, setTo] = useState('');
 
@@ -28,30 +30,30 @@ export function DictionaryPage({ settings, update }: Props): JSX.Element {
 
   return (
     <>
-      <h2>Dictionary</h2>
+      <h2>{t('dictionary.title')}</h2>
       <p className="helper" style={{ marginBottom: 16 }}>
-        Replace what the model heard with the canonical spelling. Applied during the formatter step (Phase 2).
+        {t('dictionary.helper')}
       </p>
 
       <div className="row" style={{ marginBottom: 16 }}>
         <input
           type="text"
-          placeholder="heard"
+          placeholder={t('dictionary.from')}
           value={from}
           onChange={(e) => setFrom(e.target.value)}
         />
         <span style={{ color: 'var(--fg-dim)' }}>→</span>
         <input
           type="text"
-          placeholder="corrected"
+          placeholder={t('dictionary.to')}
           value={to}
           onChange={(e) => setTo(e.target.value)}
         />
-        <button className="primary" onClick={add} disabled={!from || !to}>Add</button>
+        <button className="primary" onClick={add} disabled={!from || !to}>{t('dictionary.add')}</button>
       </div>
 
       {settings.dictionary.length === 0 && (
-        <p className="helper">No entries yet.</p>
+        <p className="helper">{t('dictionary.empty')}</p>
       )}
       {settings.dictionary.map((d, i) => (
         <div key={i} className="row" style={{ padding: '6px 0', borderBottom: '1px solid var(--border)' }}>

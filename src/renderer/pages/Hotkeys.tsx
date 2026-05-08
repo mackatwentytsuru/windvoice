@@ -1,4 +1,5 @@
 import type { Settings, HotkeyBinding } from '../../shared/types';
+import { useI18n } from '../useI18n';
 
 interface Props {
   settings: Settings;
@@ -6,6 +7,8 @@ interface Props {
 }
 
 export function HotkeysPage({ settings, update }: Props): JSX.Element {
+  const { t } = useI18n();
+
   function patch(id: string, change: Partial<HotkeyBinding>): void {
     const next = settings.hotkeys.map((h) => (h.id === id ? { ...h, ...change } : h));
     void update({ hotkeys: next });
@@ -13,12 +16,12 @@ export function HotkeysPage({ settings, update }: Props): JSX.Element {
 
   return (
     <>
-      <h2>Hotkeys</h2>
+      <h2>{t('hotkeys.title')}</h2>
       {settings.hotkeys.map((h) => (
         <div key={h.id} className="field" style={{ borderBottom: '1px solid var(--border)', paddingBottom: 16 }}>
           <div className="row" style={{ marginBottom: 8 }}>
             <span className="field-label" style={{ marginBottom: 0, flex: 1 }}>
-              Binding · {h.id}
+              {t('hotkeys.binding')} · {h.id}
             </span>
             <span>
               {h.keys.map((k, i) => (
@@ -33,7 +36,7 @@ export function HotkeysPage({ settings, update }: Props): JSX.Element {
                 checked={h.mode === 'push-to-talk'}
                 onChange={() => patch(h.id, { mode: 'push-to-talk' })}
               />{' '}
-              Push to talk
+              {t('hotkeys.modePush')}
             </label>
             <label>
               <input
@@ -41,14 +44,12 @@ export function HotkeysPage({ settings, update }: Props): JSX.Element {
                 checked={h.mode === 'toggle'}
                 onChange={() => patch(h.id, { mode: 'toggle' })}
               />{' '}
-              Toggle
+              {t('hotkeys.modeToggle')}
             </label>
           </div>
         </div>
       ))}
-      <p className="helper">
-        Editable key remapping UI is Phase 2. The default <span className="kbd">RightAlt</span> is wired in code.
-      </p>
+      <p className="helper">{t('hotkeys.helper')}</p>
     </>
   );
 }

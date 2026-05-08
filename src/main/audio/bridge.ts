@@ -1,21 +1,13 @@
 import { BrowserWindow, ipcMain } from 'electron';
 import path from 'node:path';
 import { is } from './env';
-import { IPC, type AudioChunk } from '@shared/types';
+import { IPC, type AudioChunk, type BeepKind } from '@shared/types';
 
 const DEBUG = process.env['WINDVOICE_DEBUG_AUDIO'] === '1';
 
 /**
  * Owns a hidden BrowserWindow that performs WebAudio capture and forwards
- * 24 kHz mono PCM16 chunks back over IPC.
- *
- * Lifecycle:
- *   - init()     — create the hidden window, wait for it to load
- *   - prewarm()  — request mic permission and start the AudioWorklet so
- *                  subsequent dictations start instantly. Chunks arrive
- *                  but are dropped while not forwarding.
- *   - setForwarding(true)  — start delivering chunks to the listener
- *   - setForwarding(false) — stop delivering, but keep capture alive
+ * 24 kHz mono PCM16 chunks back over IPC. Also dispatches beep cues.
  */
 export class AudioBridge {
   private win: BrowserWindow | null = null;
@@ -25,14 +17,11 @@ export class AudioBridge {
   private chunkCount = 0;
   private readyResolvers: Array<() => void> = [];
   private chunkListener: ((chunk: AudioChunk) => void) | null = null;
+  private levelListener: ((level: number) => void) | null = null;
 
   async init(preloadPath: string): Promise<void> {
     if (this.win) return;
 
-    // Register IPC handlers BEFORE creating the window. The renderer's
-    // audio.ts sends `audio:ready` synchronously when its module loads,
-    // and that fires while loadURL is still pending — if we register
-    // afterwards we miss it and prewarm() hangs forever.
     ipcMain.on(IPC.AUDIO_READY, () => {
       if (DEBUG) process.stderr.write('[audio] renderer reported ready\n');
       this.ready = true;
@@ -42,12 +31,12 @@ export class AudioBridge {
     });
     ipcMain.on(IPC.AUDIO_CHUNK, (_e, chunk: AudioChunk) => {
       if (DEBUG && this.chunkCount < 5) {
-        process.stderr.write(`[audio] chunk #${this.chunkCount + 1} samples=${chunk.samples}\n`);
+        process.stderr.write(`[audio] chunk #${this.chunkCount + 1} samples=${chunk.samples} level=${chunk.level?.toFixed(3) ?? '?'}\n`);
       }
       this.chunkCount++;
-      if (this.forwarding) {
-        this.chunkListener?.(chunk);
-      }
+      // Always emit the level (used by the overlay meter while visible).
+      if (chunk.level !== undefined) this.levelListener?.(chunk.level);
+      if (this.forwarding) this.chunkListener?.(chunk);
     });
 
     const win = new BrowserWindow({
@@ -75,29 +64,34 @@ export class AudioBridge {
     this.chunkListener = cb;
   }
 
-  /**
-   * Start the underlying mic + AudioWorklet (idempotent).
-   * Call once at app startup (after API key is available) so the first
-   * hotkey press doesn't pay the getUserMedia + worklet load latency.
-   */
-  async prewarm(): Promise<void> {
-    if (this.capturing) return;
-    await this.waitReady();
-    this.win?.webContents.send('audio:start');
-    this.capturing = true;
-    if (DEBUG) process.stderr.write('[audio] prewarm requested\n');
+  setLevelListener(cb: ((level: number) => void) | null): void {
+    this.levelListener = cb;
   }
 
-  /** Begin delivering chunks to the chunk listener. Returns a counter snapshot. */
+  async prewarm(deviceId?: string): Promise<void> {
+    if (this.capturing) return;
+    await this.waitReady();
+    this.win?.webContents.send('audio:start', deviceId);
+    this.capturing = true;
+    if (DEBUG) process.stderr.write(`[audio] prewarm requested (device=${deviceId ?? 'default'})\n`);
+  }
+
+  changeDevice(deviceId: string): void {
+    this.win?.webContents.send('audio:deviceChange', deviceId);
+  }
+
   beginForwarding(): { startCount: number } {
     this.forwarding = true;
     return { startCount: this.chunkCount };
   }
 
-  /** Stop delivering chunks. Returns how many chunks were forwarded. */
   endForwarding(startCount: number): { delivered: number } {
     this.forwarding = false;
     return { delivered: this.chunkCount - startCount };
+  }
+
+  playBeep(kind: BeepKind): void {
+    this.win?.webContents.send(IPC.BEEP_PLAY, kind);
   }
 
   destroy(): void {

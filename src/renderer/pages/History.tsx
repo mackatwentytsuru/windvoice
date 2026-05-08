@@ -1,7 +1,9 @@
 import { useEffect, useState } from 'react';
 import type { HistoryEntry } from '../../shared/types';
+import { useI18n } from '../useI18n';
 
 export function HistoryPage(): JSX.Element {
+  const { t } = useI18n();
   const [entries, setEntries] = useState<HistoryEntry[]>([]);
   const [copiedId, setCopiedId] = useState<string | null>(null);
 
@@ -19,7 +21,7 @@ export function HistoryPage(): JSX.Element {
   }
 
   async function clearAll(): Promise<void> {
-    if (!confirm('Delete all history entries?')) return;
+    if (!confirm(t('history.confirmClearAll'))) return;
     const next = await window.windvoice.clearHistory();
     setEntries(next);
   }
@@ -33,7 +35,7 @@ export function HistoryPage(): JSX.Element {
   return (
     <>
       <div className="row" style={{ justifyContent: 'space-between', marginBottom: 16 }}>
-        <h2 style={{ margin: 0 }}>History</h2>
+        <h2 style={{ margin: 0 }}>{t('history.title')}</h2>
         {entries.length > 0 && (
           <button
             onClick={() => void clearAll()}
@@ -47,15 +49,13 @@ export function HistoryPage(): JSX.Element {
               fontSize: 12
             }}
           >
-            Clear all
+            {t('history.clearAll')}
           </button>
         )}
       </div>
 
       {entries.length === 0 && (
-        <p className="helper">
-          No transcriptions yet. Use the hotkey or the Test button on General to record one.
-        </p>
+        <p className="helper">{t('history.empty')}</p>
       )}
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
@@ -79,14 +79,14 @@ export function HistoryPage(): JSX.Element {
                 <button
                   onClick={() => copy(e)}
                   style={iconBtn}
-                  title="Copy"
+                  title={t('history.copy')}
                 >
-                  {copiedId === e.id ? 'Copied' : 'Copy'}
+                  {copiedId === e.id ? t('history.copied') : t('history.copy')}
                 </button>
                 <button
                   onClick={() => void remove(e.id)}
                   style={{ ...iconBtn, color: 'var(--error)' }}
-                  title="Delete"
+                  title="×"
                 >
                   ×
                 </button>

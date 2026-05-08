@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import type { DictationStatus, Settings } from '../shared/types';
+import { useI18n } from './useI18n';
 import { GeneralPage } from './pages/General';
 import { HotkeysPage } from './pages/Hotkeys';
 import { DictionaryPage } from './pages/Dictionary';
@@ -8,6 +9,7 @@ import { HistoryPage } from './pages/History';
 type Tab = 'general' | 'hotkeys' | 'dictionary' | 'history';
 
 export function App(): JSX.Element {
+  const { t } = useI18n();
   const [tab, setTab] = useState<Tab>('general');
   const [status, setStatus] = useState<DictationStatus>('idle');
   const [settings, setSettings] = useState<Settings | null>(null);
@@ -28,21 +30,21 @@ export function App(): JSX.Element {
       <aside className="sidebar">
         <h1>WindVoice</h1>
         <div style={{ marginLeft: 8, marginBottom: 16 }}>
-          <span className={`status-pill ${status}`}>{statusLabel(status)}</span>
+          <span className={`status-pill ${status}`}>{statusLabel(status, t)}</span>
         </div>
         <nav>
           {(
             [
-              ['general', 'General'],
-              ['hotkeys', 'Hotkeys'],
-              ['dictionary', 'Dictionary'],
-              ['history', 'History']
+              ['general', t('tab.general')],
+              ['hotkeys', t('tab.hotkeys')],
+              ['dictionary', t('tab.dictionary')],
+              ['history', t('tab.history')]
             ] as const
           ).map(([key, label]) => (
             <button
               key={key}
               className={tab === key ? 'active' : ''}
-              onClick={() => setTab(key)}
+              onClick={() => setTab(key as Tab)}
             >
               {label}
             </button>
@@ -65,11 +67,11 @@ export function App(): JSX.Element {
   );
 }
 
-function statusLabel(s: DictationStatus): string {
+function statusLabel(s: DictationStatus, t: (key: string) => string): string {
   switch (s) {
-    case 'listening': return 'Listening...';
-    case 'processing': return 'Processing...';
-    case 'error': return 'Error';
-    default: return 'Idle';
+    case 'listening': return t('status.listening');
+    case 'processing': return t('status.processing');
+    case 'error': return t('status.error');
+    default: return t('status.idle');
   }
 }

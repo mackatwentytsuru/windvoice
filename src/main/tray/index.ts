@@ -1,6 +1,8 @@
 import { Tray, Menu, nativeImage, app, BrowserWindow } from 'electron';
 import path from 'node:path';
 import type { DictationStatus } from '@shared/types';
+import { t } from '@shared/i18n';
+import { settingsStore } from '@main/store/settings';
 
 let tray: Tray | null = null;
 let bindings: TrayBindings | null = null;
@@ -12,18 +14,18 @@ const iconPath = (name: string): string => {
   return path.join(app.getAppPath(), 'resources', name);
 };
 
-const STATUS_LABEL: Record<DictationStatus, string> = {
-  idle: 'WindVoice — Ready',
-  listening: 'WindVoice — Listening...',
-  processing: 'WindVoice — Processing...',
-  error: 'WindVoice — Error'
-};
-
 const STATUS_ICON: Record<DictationStatus, string> = {
   idle: 'tray-idle.png',
   listening: 'tray-listening.png',
   processing: 'tray-processing.png',
   error: 'tray-error.png'
+};
+
+const STATUS_LABEL_KEY: Record<DictationStatus, 'tray.ready' | 'tray.listening' | 'tray.processing' | 'tray.error'> = {
+  idle: 'tray.ready',
+  listening: 'tray.listening',
+  processing: 'tray.processing',
+  error: 'tray.error'
 };
 
 let currentStatus: DictationStatus = 'idle';
@@ -37,7 +39,7 @@ export function createTray(b: TrayBindings): void {
   bindings = b;
   const image = loadIcon('tray-idle.png');
   tray = new Tray(image);
-  tray.setToolTip(STATUS_LABEL.idle);
+  tray.setToolTip(statusLabel('idle'));
   tray.on('click', () => bindings?.openSettings());
   tray.on('double-click', () => bindings?.openSettings());
   refreshMenu();
@@ -46,7 +48,7 @@ export function createTray(b: TrayBindings): void {
 export function setStatus(status: DictationStatus): void {
   currentStatus = status;
   if (tray) {
-    tray.setToolTip(STATUS_LABEL[status]);
+    tray.setToolTip(statusLabel(status));
     const img = loadIcon(STATUS_ICON[status]);
     if (!img.isEmpty()) tray.setImage(img);
     refreshMenu();
@@ -56,14 +58,26 @@ export function setStatus(status: DictationStatus): void {
   }
 }
 
+/** Rebuild the tray menu after a language change. */
+export function refreshTrayLanguage(): void {
+  if (tray) tray.setToolTip(statusLabel(currentStatus));
+  refreshMenu();
+}
+
+function statusLabel(status: DictationStatus): string {
+  const lang = settingsStore.get().ui.uiLanguage;
+  return t(STATUS_LABEL_KEY[status], lang);
+}
+
 function refreshMenu(): void {
   if (!tray || !bindings) return;
+  const lang = settingsStore.get().ui.uiLanguage;
   const menu = Menu.buildFromTemplate([
-    { label: STATUS_LABEL[currentStatus], enabled: false },
+    { label: statusLabel(currentStatus), enabled: false },
     { type: 'separator' },
-    { label: 'Settings...', click: () => bindings?.openSettings() },
+    { label: t('tray.settings', lang), click: () => bindings?.openSettings() },
     { type: 'separator' },
-    { label: 'Quit', click: () => bindings?.quit() }
+    { label: t('tray.quit', lang), click: () => bindings?.quit() }
   ]);
   tray.setContextMenu(menu);
 }
@@ -71,12 +85,9 @@ function refreshMenu(): void {
 function loadIcon(name: string): Electron.NativeImage {
   const fromFile = nativeImage.createFromPath(iconPath(name));
   if (!fromFile.isEmpty()) return fromFile;
-  // Fallback: build a 16x16 solid teal square at runtime so the tray is
-  // never empty even when resources are missing.
   return nativeImage.createFromBuffer(buildSolidPng(16, 16, 92, 200, 168));
 }
 
-// Tiny pure-JS PNG encoder (RGBA filled rectangle). Mirrors scripts/gen-icons.mjs.
 function buildSolidPng(w: number, h: number, r: number, g: number, b: number): Buffer {
   const sig = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
   const ihdr = Buffer.alloc(13);

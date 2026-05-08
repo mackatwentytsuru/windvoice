@@ -1,5 +1,6 @@
 // Hidden renderer: captures the microphone, downsamples to 24 kHz mono PCM16,
-// and forwards base64 chunks to the main process.
+// computes per-chunk RMS for the overlay meter, and forwards base64 chunks +
+// optional level to the main process.
 
 import workletSource from './audio-worklet.js?raw';
 
@@ -11,18 +12,23 @@ let mediaStream: MediaStream | null = null;
 let workletNode: AudioWorkletNode | null = null;
 let source: MediaStreamAudioSourceNode | null = null;
 let workletUrl: string | null = null;
+let currentDeviceId: string | null = null;
+let beepCtx: AudioContext | null = null;
 
-async function startCapture(): Promise<void> {
+async function startCapture(deviceId?: string): Promise<void> {
   if (audioCtx) return;
   try {
-    mediaStream = await navigator.mediaDevices.getUserMedia({
+    const constraints: MediaStreamConstraints = {
       audio: {
         channelCount: 1,
         echoCancellation: true,
         noiseSuppression: true,
-        autoGainControl: true
+        autoGainControl: true,
+        ...(deviceId && deviceId !== 'default' ? { deviceId: { exact: deviceId } } : {})
       }
-    });
+    };
+    mediaStream = await navigator.mediaDevices.getUserMedia(constraints);
+    currentDeviceId = deviceId ?? null;
     audioCtx = new AudioContext();
     if (!workletUrl) {
       const blob = new Blob([workletSource], { type: 'application/javascript' });
@@ -37,10 +43,12 @@ async function startCapture(): Promise<void> {
         chunkMs: CHUNK_MS
       }
     });
-    workletNode.port.onmessage = (e: MessageEvent<{ pcm: ArrayBuffer; samples: number }>) => {
+    workletNode.port.onmessage = (
+      e: MessageEvent<{ pcm: ArrayBuffer; samples: number; level: number }>
+    ) => {
       const bytes = new Uint8Array(e.data.pcm);
       const base64 = bytesToBase64(bytes);
-      window.audio.sendChunk(base64, e.data.samples);
+      window.audio.sendChunk(base64, e.data.samples, e.data.level);
     };
     source.connect(workletNode);
     workletNode.connect(audioCtx.destination);
@@ -84,6 +92,12 @@ async function stopCapture(): Promise<void> {
   }
 }
 
+async function restartWithDevice(deviceId: string): Promise<void> {
+  if (deviceId === currentDeviceId && audioCtx) return;
+  await stopCapture();
+  await startCapture(deviceId);
+}
+
 function bytesToBase64(bytes: Uint8Array): string {
   let binary = '';
   const chunk = 0x8000;
@@ -96,11 +110,52 @@ function bytesToBase64(bytes: Uint8Array): string {
   return btoa(binary);
 }
 
-window.audio.onStart(() => {
-  void startCapture();
+// ─── beep generator ────────────────────────────────────────────────────────
+
+function ensureBeepCtx(): AudioContext {
+  if (!beepCtx) beepCtx = new AudioContext();
+  return beepCtx;
+}
+
+function playBeep(kind: 'start' | 'stop'): void {
+  try {
+    const ctx = ensureBeepCtx();
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.connect(gain).connect(ctx.destination);
+    osc.type = 'sine';
+    const now = ctx.currentTime;
+    if (kind === 'start') {
+      osc.frequency.setValueAtTime(540, now);
+      osc.frequency.exponentialRampToValueAtTime(720, now + 0.07);
+    } else {
+      osc.frequency.setValueAtTime(820, now);
+      osc.frequency.exponentialRampToValueAtTime(560, now + 0.06);
+    }
+    const peak = 0.16;
+    gain.gain.setValueAtTime(0.0001, now);
+    gain.gain.exponentialRampToValueAtTime(peak, now + 0.012);
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + (kind === 'start' ? 0.09 : 0.07));
+    osc.start(now);
+    osc.stop(now + 0.12);
+  } catch {
+    /* ignore: best-effort cue */
+  }
+}
+
+// ─── wiring ────────────────────────────────────────────────────────────────
+
+window.audio.onStart((deviceId?: string) => {
+  void startCapture(deviceId);
 });
 window.audio.onStop(() => {
   void stopCapture();
+});
+window.audio.onDeviceChange((deviceId: string) => {
+  void restartWithDevice(deviceId);
+});
+window.audio.onBeep((kind: 'start' | 'stop') => {
+  playBeep(kind);
 });
 
 window.audio.ready();

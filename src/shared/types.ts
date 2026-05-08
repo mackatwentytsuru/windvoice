@@ -44,7 +44,12 @@ export const SettingsSchema = z.object({
   ui: z
     .object({
       startMinimized: z.boolean().default(true),
-      theme: z.enum(['light', 'dark', 'system']).default('system')
+      theme: z.enum(['light', 'dark', 'system']).default('system'),
+      uiLanguage: z.enum(['ja', 'en']).default('ja'),
+      overlayEnabled: z.boolean().default(true),
+      soundCuesEnabled: z.boolean().default(true),
+      duckOtherAudio: z.boolean().default(true),
+      duckLevel: z.number().min(0).max(1).default(0.3)
     })
     .default({})
 });
@@ -92,8 +97,25 @@ export const IPC = {
   // audio worker (hidden renderer → main)
   AUDIO_CHUNK: 'audio:chunk',
   AUDIO_READY: 'audio:ready',
-  AUDIO_ERROR: 'audio:error'
+  AUDIO_ERROR: 'audio:error',
+  // overlay / level / beep
+  AUDIO_LEVEL: 'audio:level',
+  BEEP_PLAY: 'beep:play',
+  OVERLAY_STATE: 'overlay:state',
+  // mic devices
+  MIC_LIST: 'mic:list'
 } as const;
+
+export interface AudioInputDevice {
+  deviceId: string;
+  label: string;
+}
+
+export interface OverlayState {
+  status: DictationStatus;
+  level: number;
+  partial?: string;
+}
 
 // ─── Audio chunk envelope ──────────────────────────────────────────────────
 
@@ -102,4 +124,8 @@ export interface AudioChunk {
   base64: string;
   /** sample count in this chunk */
   samples: number;
+  /** RMS level in [0..1] for the chunk; renderer-computed */
+  level?: number;
 }
+
+export type BeepKind = 'start' | 'stop';

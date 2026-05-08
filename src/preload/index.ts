@@ -1,5 +1,12 @@
 import { contextBridge, ipcRenderer } from 'electron';
-import { IPC, type Settings, type DictationStatus, type HistoryEntry } from '../shared/types';
+import {
+  IPC,
+  type Settings,
+  type DictationStatus,
+  type HistoryEntry,
+  type OverlayState,
+  type BeepKind
+} from '../shared/types';
 
 const api = {
   // settings
@@ -37,6 +44,13 @@ const api = {
   },
   getLastAudioError: (): Promise<string | null> => ipcRenderer.invoke('audio:lastError'),
 
+  // overlay state subscription (used by overlay window only)
+  onOverlayState: (cb: (s: OverlayState) => void): (() => void) => {
+    const handler = (_e: unknown, s: OverlayState): void => cb(s);
+    ipcRenderer.on(IPC.OVERLAY_STATE, handler);
+    return () => ipcRenderer.removeListener(IPC.OVERLAY_STATE, handler);
+  },
+
   // history
   listHistory: (): Promise<HistoryEntry[]> => ipcRenderer.invoke(IPC.HISTORY_LIST),
   removeHistory: (id: string): Promise<HistoryEntry[]> => ipcRenderer.invoke(IPC.HISTORY_REMOVE, id),
@@ -57,16 +71,16 @@ const audioBridge = {
     ipcRenderer.send(IPC.AUDIO_READY);
   },
   /** From hidden audio renderer → main: forward a base64-encoded PCM chunk. */
-  sendChunk: (base64: string, samples: number): void => {
-    ipcRenderer.send(IPC.AUDIO_CHUNK, { base64, samples });
+  sendChunk: (base64: string, samples: number, level?: number): void => {
+    ipcRenderer.send(IPC.AUDIO_CHUNK, { base64, samples, level });
   },
   /** From hidden audio renderer → main: report a capture error. */
   reportError: (message: string): void => {
     ipcRenderer.send(IPC.AUDIO_ERROR, message);
   },
-  /** Main → hidden audio renderer: start capture. */
-  onStart: (cb: () => void): (() => void) => {
-    const handler = (): void => cb();
+  /** Main → hidden audio renderer: start capture (optionally with deviceId). */
+  onStart: (cb: (deviceId?: string) => void): (() => void) => {
+    const handler = (_e: unknown, deviceId?: string): void => cb(deviceId);
     ipcRenderer.on('audio:start', handler);
     return () => ipcRenderer.removeListener('audio:start', handler);
   },
@@ -75,15 +89,20 @@ const audioBridge = {
     const handler = (): void => cb();
     ipcRenderer.on('audio:stop', handler);
     return () => ipcRenderer.removeListener('audio:stop', handler);
+  },
+  /** Main → hidden audio renderer: switch input device. */
+  onDeviceChange: (cb: (deviceId: string) => void): (() => void) => {
+    const handler = (_e: unknown, deviceId: string): void => cb(deviceId);
+    ipcRenderer.on('audio:deviceChange', handler);
+    return () => ipcRenderer.removeListener('audio:deviceChange', handler);
+  },
+  /** Main → hidden audio renderer: play a short tone cue. */
+  onBeep: (cb: (kind: BeepKind) => void): (() => void) => {
+    const handler = (_e: unknown, kind: BeepKind): void => cb(kind);
+    ipcRenderer.on(IPC.BEEP_PLAY, handler);
+    return () => ipcRenderer.removeListener(IPC.BEEP_PLAY, handler);
   }
 };
 
 contextBridge.exposeInMainWorld('windvoice', api);
 contextBridge.exposeInMainWorld('audio', audioBridge);
-
-declare global {
-  interface Window {
-    windvoice: typeof api;
-    audio: typeof audioBridge;
-  }
-}

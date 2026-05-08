@@ -9,13 +9,17 @@ interface ManualTriggers {
   stop: () => Promise<void> | void;
   getLastAudioError: () => string | null;
   onApiKeyChanged: () => void;
+  onSettingsChanged: (next: Settings, prev: Settings) => void;
 }
 
 export function registerIpc(triggers: ManualTriggers): void {
   ipcMain.handle(IPC.SETTINGS_GET, (): Settings => settingsStore.get());
   ipcMain.handle(IPC.SETTINGS_SET, (_e, partial: Partial<Settings>): Settings => {
     const parsed = SettingsSchema.partial().parse(partial);
-    return settingsStore.set(parsed);
+    const prev = settingsStore.get();
+    const next = settingsStore.set(parsed);
+    triggers.onSettingsChanged(next, prev);
+    return next;
   });
 
   ipcMain.handle(IPC.APIKEY_HAS, (): Promise<boolean> => secureStore.hasApiKey());

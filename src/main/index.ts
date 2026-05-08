@@ -5,15 +5,18 @@ import { settingsStore } from '@main/store/settings';
 import { secureStore } from '@main/store/secure';
 import { HotkeyManager } from '@main/hotkey/manager';
 import { AudioBridge } from '@main/audio/bridge';
+import { OverlayWindow } from '@main/overlay/window';
 import { DictationOrchestrator } from '@main/dictation/orchestrator';
-import { createTray, setStatus } from '@main/tray';
+import { createTray, setStatus, refreshTrayLanguage } from '@main/tray';
 import { registerIpc } from '@main/ipc/handlers';
 import { IPC } from '@shared/types';
+import { t } from '@shared/i18n';
 
 const PRELOAD_PATH = path.join(__dirname, '../preload/index.js');
 
 let settingsWindow: BrowserWindow | null = null;
 let audio: AudioBridge | null = null;
+let overlay: OverlayWindow | null = null;
 let hotkeys: HotkeyManager | null = null;
 let orchestrator: DictationOrchestrator | null = null;
 let lastAudioError: string | null = null;
@@ -26,8 +29,8 @@ async function createSettingsWindow(): Promise<BrowserWindow> {
     return settingsWindow;
   }
   const win = new BrowserWindow({
-    width: 720,
-    height: 600,
+    width: 760,
+    height: 660,
     show: false,
     backgroundColor: '#101216',
     title: 'WindVoice',
@@ -55,19 +58,18 @@ async function createSettingsWindow(): Promise<BrowserWindow> {
 
 async function ensureApiKey(): Promise<void> {
   if (await secureStore.hasApiKey()) return;
+  const lang = settingsStore.get().ui.uiLanguage;
   await dialog.showMessageBox({
     type: 'info',
-    title: 'WindVoice — first run',
-    message: 'No OpenAI API key configured.',
-    detail:
-      'Open the settings window, paste your OpenAI API key in the API Key field, and save.\n\nThe key is stored in the Windows Credential Manager (via keytar).',
-    buttons: ['Open Settings']
+    title: t('dialog.firstRun.title', lang),
+    message: t('dialog.firstRun.message', lang),
+    detail: t('dialog.firstRun.detail', lang),
+    buttons: [t('dialog.firstRun.button', lang)]
   });
   await createSettingsWindow();
 }
 
 app.whenReady().then(async () => {
-  // Auto-grant microphone permission for our own renderers.
   session.defaultSession.setPermissionRequestHandler((_wc, permission, callback) => {
     if (permission === 'media') return callback(true);
     callback(false);
@@ -92,7 +94,12 @@ app.whenReady().then(async () => {
   audio = new AudioBridge();
   await audio.init(PRELOAD_PATH);
 
-  orchestrator = new DictationOrchestrator(audio);
+  overlay = new OverlayWindow();
+  await overlay.init(PRELOAD_PATH);
+  // Audio level updates flow: audio renderer → main → overlay window
+  audio.setLevelListener((level) => overlay?.setLevel(level));
+
+  orchestrator = new DictationOrchestrator(audio, overlay);
 
   hotkeys = new HotkeyManager();
   hotkeys.setBindings(settingsStore.get().hotkeys);
@@ -108,19 +115,25 @@ app.whenReady().then(async () => {
     start: () => orchestrator?.start() ?? Promise.resolve(),
     stop: () => orchestrator?.stop() ?? Promise.resolve(),
     getLastAudioError: () => lastAudioError,
-    onApiKeyChanged: () => {
-      // Re-establish the WS with the new key on demand.
-      orchestrator?.prewarmConnection();
+    onApiKeyChanged: () => orchestrator?.prewarmConnection(),
+    onSettingsChanged: (next, prev) => {
+      if (next.audio.device !== prev.audio.device) {
+        audio?.changeDevice(next.audio.device);
+      }
+      if (next.hotkeys !== prev.hotkeys) {
+        hotkeys?.setBindings(next.hotkeys);
+      }
+      if (!next.ui.overlayEnabled) {
+        overlay?.setEnabled(false);
+      }
+      if (next.ui.uiLanguage !== prev.ui.uiLanguage) {
+        refreshTrayLanguage();
+      }
     }
   });
 
-  // Start the mic + AudioWorklet now so the first hotkey press is instant.
-  audio.prewarm().catch((err) => process.stderr.write(`[audio] prewarm: ${err}\n`));
+  await audio.prewarm(settingsStore.get().audio.device);
 
-  // Pre-connect to OpenAI if we already have an API key — eliminates the
-  // TLS-handshake latency on the first dictation, which is what causes the
-  // "WebSocket was closed before connection was established" race when the
-  // user hits and releases the hotkey faster than the connection can open.
   if (await secureStore.hasApiKey()) {
     void orchestrator.prewarmConnection();
   }
@@ -129,12 +142,13 @@ app.whenReady().then(async () => {
 });
 
 app.on('window-all-closed', () => {
-  // Stay alive in tray; do nothing.
+  /* stay alive in tray */
 });
 
 app.on('before-quit', () => {
   hotkeys?.stop();
   audio?.destroy();
+  overlay?.destroy();
 });
 
 process.on('unhandledRejection', (reason) => {

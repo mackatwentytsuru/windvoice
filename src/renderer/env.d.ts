@@ -1,6 +1,12 @@
 /// <reference types="vite/client" />
 
-import type { Settings, DictationStatus, HistoryEntry } from '../shared/types';
+import type {
+  Settings,
+  DictationStatus,
+  HistoryEntry,
+  OverlayState,
+  BeepKind
+} from '../shared/types';
 
 declare module '*?raw' {
   const content: string;
@@ -21,6 +27,7 @@ declare global {
       onTranscriptFinal(cb: (text: string) => void): () => void;
       onAudioError(cb: (msg: string) => void): () => void;
       getLastAudioError(): Promise<string | null>;
+      onOverlayState(cb: (s: OverlayState) => void): () => void;
       listHistory(): Promise<HistoryEntry[]>;
       removeHistory(id: string): Promise<HistoryEntry[]>;
       clearHistory(): Promise<HistoryEntry[]>;
@@ -29,10 +36,12 @@ declare global {
     };
     audio: {
       ready(): void;
-      sendChunk(base64: string, samples: number): void;
+      sendChunk(base64: string, samples: number, level?: number): void;
       reportError(message: string): void;
-      onStart(cb: () => void): () => void;
+      onStart(cb: (deviceId?: string) => void): () => void;
       onStop(cb: () => void): () => void;
+      onDeviceChange(cb: (deviceId: string) => void): () => void;
+      onBeep(cb: (kind: BeepKind) => void): () => void;
     };
   }
 }
