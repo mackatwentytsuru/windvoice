@@ -1,0 +1,23 @@
+appId: com.macka.windvoice
+productName: WindVoice
+directories:
+  output: release/${version}
+files:
+  - out/**
+  - resources/**
+  - package.json
+asarUnpack:
+  - "**/*.{node,dll}"
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+  icon: resources/icon.ico
+nsis:
+  oneClick: false
+  perMachine: false
+  allowElevation: true
+  allowToChangeInstallationDirectory: true
+  shortcutName: WindVoice
+publish: null
