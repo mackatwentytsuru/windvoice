@@ -58,7 +58,7 @@ export function ReplacementsPage({ settings, update }: Props): JSX.Element {
       </div>
 
       <div className="row" style={{ marginBottom: 16 }}>
-        <label style={{ display: 'flex', alignItems: 'center', gap: 6, color: 'var(--fg-dim)' }}>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 6, color: 'var(--fg-dim)', cursor: 'pointer' }}>
           <input
             type="checkbox"
             checked={wordBoundary}
@@ -78,9 +78,9 @@ export function ReplacementsPage({ settings, update }: Props): JSX.Element {
           style={{ padding: '6px 0', borderBottom: '1px solid var(--border)' }}
         >
           <span style={{ flex: 1 }}>
-            <span className="kbd">{r.trigger}</span>{' '}
+            <span className="chip">{r.trigger}</span>{' '}
             <span style={{ color: 'var(--fg-dim)' }}>→</span>{' '}
-            <span className="kbd">{r.expansion}</span>
+            <span className="chip">{r.expansion}</span>
             {r.wordBoundary && (
               <span style={{ color: 'var(--fg-dim)', marginLeft: 8, fontSize: 12 }}>
                 ({t('replacements.wordBoundary')})
@@ -88,13 +88,10 @@ export function ReplacementsPage({ settings, update }: Props): JSX.Element {
             )}
           </span>
           <button
+            className="button-icon"
             onClick={() => remove(i)}
-            style={{
-              background: 'transparent',
-              color: 'var(--fg-dim)',
-              border: 0,
-              cursor: 'pointer'
-            }}
+            aria-label={t('aria.delete')}
+            title={t('aria.delete')}
           >
             ×
           </button>

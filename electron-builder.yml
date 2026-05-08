@@ -1,3 +1,9 @@
+# NOTE on Gatekeeper: the macOS DMG produced by this config is UNSIGNED
+# (identity: null, see below). On first launch users must right-click the app
+# and choose "Open", or run `xattr -cr /Applications/WindVoice.app` to
+# strip the quarantine attribute. To ship a signed/notarized build, set
+# CSC_LINK + CSC_KEY_PASSWORD + APPLE_ID + APPLE_APP_SPECIFIC_PASSWORD +
+# APPLE_TEAM_ID env vars at build time and remove `identity: null`.
 appId: com.macka.windvoice
 productName: WindVoice
 directories:
@@ -50,6 +56,9 @@ mac:
   # at build time to enable. Without signing, users must right-click → Open
   # the first time on macOS.
   identity: null
+  extendInfo:
+    NSMicrophoneUsageDescription: "WindVoice uses your microphone to transcribe speech via the OpenAI Realtime API."
+    NSAppleEventsUsageDescription: "WindVoice uses Apple Events (osascript) to temporarily lower system output volume while you dictate. This is opt-in on macOS."
 dmg:
   artifactName: WindVoice-${version}-${arch}.${ext}
   contents:

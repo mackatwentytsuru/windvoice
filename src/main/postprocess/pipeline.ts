@@ -9,8 +9,6 @@ export interface PostProcessContext {
   settings: Settings;
   /** Active window title, if known (Phase 3 enhancement). */
   activeWindowTitle?: string;
-  /** OpenAI API key, only passed to processors that need it. */
-  apiKey?: string;
 }
 
 export interface PostProcessor {

@@ -5,6 +5,25 @@
 import { app } from 'electron';
 import { debug } from '@main/debug';
 
+export type AutoLaunchErrorCallback = (message: string) => void;
+
+const errorListeners = new Set<AutoLaunchErrorCallback>();
+
+export function onAutoLaunchError(cb: AutoLaunchErrorCallback): () => void {
+  errorListeners.add(cb);
+  return () => errorListeners.delete(cb);
+}
+
+function emitError(message: string): void {
+  for (const cb of errorListeners) {
+    try {
+      cb(message);
+    } catch {
+      /* swallow listener errors */
+    }
+  }
+}
+
 export function applyAutoLaunch(enabled: boolean): void {
   if (process.platform !== 'win32' && process.platform !== 'darwin') return;
   try {
@@ -19,6 +38,7 @@ export function applyAutoLaunch(enabled: boolean): void {
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     debug('DICTATION', `autoLaunch failed: ${msg}`);
+    emitError(msg);
   }
 }
 

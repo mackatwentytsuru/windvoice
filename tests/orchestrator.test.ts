@@ -129,9 +129,13 @@ class FakeAudioBridge {
   private chunkCount = 0;
   beeps: Array<'start' | 'stop'> = [];
   devices: string[] = [];
+  recentAudioError: string | null = null;
 
   setChunkListener(cb: ((c: { base64: string; samples: number }) => void) | null): void {
     this.chunkListener = cb;
+  }
+  getChunkListener(): ((c: { base64: string; samples: number }) => void) | null {
+    return this.chunkListener;
   }
   setLevelListener(cb: ((level: number) => void) | null): void {
     this.levelListener = cb;
@@ -150,6 +154,9 @@ class FakeAudioBridge {
   }
   getWebContentsId(): number | null {
     return null;
+  }
+  getRecentAudioError(_windowMs: number): string | null {
+    return this.recentAudioError;
   }
   async prewarm(): Promise<void> {
     /* no-op */
@@ -267,6 +274,101 @@ describe('DictationOrchestrator', () => {
     await stop;
 
     expect(hoisted.instances).toHaveLength(1);
+  });
+
+  it('isActive() returns false initially, true mid-cycle, false after stop', async () => {
+    expect(orch.isActive()).toBe(false);
+    await orch.start();
+    expect(orch.isActive()).toBe(true);
+    audio.feed(10);
+    const stop = orch.stop();
+    await new Promise((r) => setTimeout(r, 100));
+    hoisted.instances[0]!.emit('final', 'done');
+    await stop;
+    expect(orch.isActive()).toBe(false);
+  });
+
+  it('mid-session WS clean close after commit() resolves pendingFinal with current partial', async () => {
+    await orch.start();
+    audio.feed(10);
+    // Simulate a partial delta arriving so `partial` has content.
+    hoisted.instances[0]!.emit('delta', 'partial-text');
+
+    const stopP = orch.stop();
+    // After ~80ms commit() runs; we want to emit close BEFORE final.
+    await new Promise((r) => setTimeout(r, 100));
+    // No 'final' event — the WS closes cleanly after commit.
+    hoisted.instances[0]!.emit('close');
+
+    // stop() must resolve well before the FINAL_TIMEOUT_MS pendingFinal timer.
+    const start = Date.now();
+    await stopP;
+    const elapsed = Date.now() - start;
+    expect(elapsed).toBeLessThan(2_000);
+
+    // Orchestrator returns to idle.
+    expect(orch.isActive()).toBe(false);
+    // The partial was used as the resolved final and pasted.
+    expect(pasteText).toHaveBeenCalledWith('partial-text', true);
+  });
+
+  it('dispose() detaches all client listeners and chunk listener', async () => {
+    await orch.start();
+    audio.feed(5);
+
+    orch.dispose();
+
+    // After dispose, the chunk listener must be detached.
+    expect(audio.getChunkListener()).toBeNull();
+
+    // Emit events on the (now-detached) client; orchestrator state must not change.
+    const inst = hoisted.instances[0]!;
+    // Silence unhandled 'error' on the EventEmitter.
+    inst.on('error', () => {});
+    inst.emit('final', 'should-be-ignored');
+    inst.emit('delta', 'should-be-ignored');
+    inst.emit('error', new Error('should-be-ignored'));
+    inst.emit('close');
+    await new Promise((r) => setTimeout(r, 20));
+
+    // pasteText should NOT have been called from the post-dispose final.
+    expect(pasteText).not.toHaveBeenCalled();
+  });
+
+  it('start() aborts with [error] broadcast when getRecentAudioError returns non-null', async () => {
+    audio.recentAudioError = 'mic permission denied';
+    // No client should be created — start should bail before connect.
+    await orch.start();
+    expect(hoisted.instances).toHaveLength(0);
+    expect(orch.isActive()).toBe(false);
+    // No paste, no commit.
+    expect(pasteText).not.toHaveBeenCalled();
+  });
+
+  it('cycleId cancellation: cancel during duck/connect window does not produce a final paste', async () => {
+    // Slow the connect so we have time to cancel during the connect window.
+    hoisted.FakeRealtimeClient.prototype.connectDelay = 100 as never;
+    const inst = hoisted.FakeRealtimeClient;
+    // Patch the connect prototype to stash 100ms delay for this test.
+    const origConnect = inst.prototype.connect;
+    inst.prototype.connect = function (this: InstanceType<typeof inst>): Promise<void> {
+      this.connectDelay = 100;
+      return origConnect.call(this);
+    };
+    try {
+      const startP = orch.start();
+      // Cancel by calling stop() before connect resolves.
+      const stopP = orch.stop();
+      await Promise.all([startP, stopP]);
+
+      // No commit since the cycle was cancelled before the WS opened.
+      expect(hoisted.instances[0]?.committed).toBe(false);
+      // No final paste.
+      expect(pasteText).not.toHaveBeenCalled();
+      expect(orch.isActive()).toBe(false);
+    } finally {
+      inst.prototype.connect = origConnect;
+    }
   });
 
   it('recovers when the WS errors mid-flight without an awaiting stop()', async () => {

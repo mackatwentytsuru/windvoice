@@ -1,6 +1,7 @@
 // Hidden renderer: captures the microphone, downsamples to 24 kHz mono PCM16,
-// computes per-chunk RMS for the overlay meter, and forwards base64 chunks +
-// optional level to the main process.
+// computes per-chunk RMS for the overlay meter, and forwards raw PCM bytes +
+// optional level to the main process. Electron's structured-clone serializer
+// transfers Uint8Array buffers efficiently — no base64 round-trip.
 
 import workletSource from './audio-worklet.js?raw';
 import { CHUNK_MS, TARGET_SAMPLE_RATE } from '../shared/constants';
@@ -45,8 +46,14 @@ async function startCapture(deviceId?: string): Promise<void> {
       e: MessageEvent<{ pcm: ArrayBuffer; samples: number; level: number }>
     ) => {
       const bytes = new Uint8Array(e.data.pcm);
-      const base64 = bytesToBase64(bytes);
-      window.audio.sendChunk(base64, e.data.samples, e.data.level);
+      // Pass the Uint8Array directly; preload signature is typed as `string`,
+      // but Electron's structured-clone serializer copies binary data without
+      // round-tripping through a JS string. Cast to satisfy the type.
+      (window.audio.sendChunk as unknown as (
+        data: Uint8Array,
+        samples: number,
+        level?: number
+      ) => void)(bytes, e.data.samples, e.data.level);
     };
     source.connect(workletNode);
     workletNode.connect(audioCtx.destination);
@@ -94,18 +101,6 @@ async function restartWithDevice(deviceId: string): Promise<void> {
   if (deviceId === currentDeviceId && audioCtx) return;
   await stopCapture();
   await startCapture(deviceId);
-}
-
-function bytesToBase64(bytes: Uint8Array): string {
-  let binary = '';
-  const chunk = 0x8000;
-  for (let i = 0; i < bytes.length; i += chunk) {
-    binary += String.fromCharCode.apply(
-      null,
-      Array.from(bytes.subarray(i, Math.min(i + chunk, bytes.length)))
-    );
-  }
-  return btoa(binary);
 }
 
 // ─── beep generator ────────────────────────────────────────────────────────

@@ -52,7 +52,7 @@ function Overlay(): JSX.Element | null {
           />
         </svg>
       </div>
-      <div className="label">{label}</div>
+      <div className="label" role="status" aria-live="polite">{label}</div>
       {status === 'listening' && (
         <div className="meter" aria-hidden="true">
           <div className="meter-fill" style={{ width: `${Math.min(100, level * 140)}%` }} />

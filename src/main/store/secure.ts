@@ -1,22 +1,53 @@
 import keytar from 'keytar';
+import { debug } from '@main/debug';
 
 const SERVICE = 'WindVoice';
 const ACCOUNT = 'openai-api-key';
 
+export class SecureStoreUnavailableError extends Error {
+  code = 'SECURE_STORE_UNAVAILABLE' as const;
+  constructor(message: string) {
+    super(message);
+    this.name = 'SecureStoreUnavailableError';
+  }
+}
+
+let warnedGet = false;
+
 export class SecureStore {
   async getApiKey(): Promise<string | null> {
-    return keytar.getPassword(SERVICE, ACCOUNT);
+    try {
+      return await keytar.getPassword(SERVICE, ACCOUNT);
+    } catch (err) {
+      if (!warnedGet) {
+        warnedGet = true;
+        const msg = err instanceof Error ? err.message : String(err);
+        debug('DICTATION', `secureStore.getApiKey unavailable: ${msg}`);
+      }
+      return null;
+    }
   }
 
   async setApiKey(value: string): Promise<void> {
-    if (!value || value.length < 10) {
+    const trimmed = typeof value === 'string' ? value.trim() : '';
+    if (trimmed.length < 10 || trimmed.length > 512) {
       throw new Error('API key looks invalid');
     }
-    await keytar.setPassword(SERVICE, ACCOUNT, value);
+    try {
+      await keytar.setPassword(SERVICE, ACCOUNT, trimmed);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      throw new SecureStoreUnavailableError(`secure store unavailable: ${msg}`);
+    }
   }
 
   async clearApiKey(): Promise<void> {
-    await keytar.deletePassword(SERVICE, ACCOUNT);
+    try {
+      await keytar.deletePassword(SERVICE, ACCOUNT);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      throw new SecureStoreUnavailableError(`secure store unavailable: ${msg}`);
+    }
   }
 
   async hasApiKey(): Promise<boolean> {

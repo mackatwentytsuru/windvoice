@@ -16,6 +16,9 @@ import { IPC, type DictationStatus } from '@shared/types';
 import { CHUNK_MS, FINAL_TIMEOUT_MS, MIN_AUDIO_MS } from '@shared/constants';
 
 const MIN_CHUNKS = Math.ceil(MIN_AUDIO_MS / CHUNK_MS);
+const RECENT_AUDIO_ERROR_WINDOW_MS = 3_000;
+
+type ChunkLike = { base64?: string; data?: Buffer | Uint8Array | ArrayBuffer };
 
 /**
  * Owns the persistent OpenAI Realtime connection, runs one-at-a-time
@@ -29,15 +32,31 @@ export class DictationOrchestrator {
   private partial = '';
   private startCount = 0;
   private pendingFinal: ((text: string) => void) | null = null;
+  private pendingFinalTimer: NodeJS.Timeout | null = null;
   private cancelRequested = false;
   private duckedThisCycle = false;
+  private duckPromise: Promise<void> | null = null;
   private streamingActive = false;
   /** How many chars of `partial` have already been streaming-pasted. */
   private streamedPrefixLen = 0;
   private overlay: OverlayWindow | null = null;
+  private cycleId = 0;
+  // Listeners we attach to the active client; tracked so we can detach them on
+  // stop/error/dispose without leaking when the client is reused.
+  private clientChunkListener: ((chunk: ChunkLike) => void) | null = null;
+  private clientHandlers: {
+    delta?: (text: string) => void;
+    final?: (text: string) => void;
+    error?: (err: Error) => void;
+    close?: () => void;
+  } = {};
 
   constructor(private audio: AudioBridge, overlay?: OverlayWindow) {
     this.overlay = overlay ?? null;
+  }
+
+  isActive(): boolean {
+    return this.inFlight;
   }
 
   async prewarmConnection(): Promise<void> {
@@ -56,6 +75,19 @@ export class DictationOrchestrator {
     this.duckedThisCycle = false;
     this.streamingActive = false;
     this.streamedPrefixLen = 0;
+    const myCycle = ++this.cycleId;
+
+    // Surface a recent renderer-side audio error before we burn a connection.
+    const recentErr =
+      typeof this.audio.getRecentAudioError === 'function'
+        ? this.audio.getRecentAudioError(RECENT_AUDIO_ERROR_WINDOW_MS)
+        : null;
+    if (recentErr) {
+      this.updateStatus('error');
+      this.inFlight = false;
+      this.broadcast(IPC.TRANSCRIPT_FINAL, `[error] ${recentErr}`);
+      return;
+    }
 
     let client: RealtimeClient;
     try {
@@ -67,7 +99,7 @@ export class DictationOrchestrator {
       return;
     }
 
-    if (this.cancelRequested) {
+    if (myCycle !== this.cycleId || this.cancelRequested) {
       this.inFlight = false;
       this.updateStatus('idle');
       return;
@@ -78,12 +110,11 @@ export class DictationOrchestrator {
 
     if (settings.ui.duckOtherAudio) {
       this.duckedThisCycle = true;
-      try {
-        await audioDuck.duck(settings.ui.duckLevel);
-      } catch (err) {
+      // Kick off non-blocking; await in stop() so we still restore cleanly.
+      this.duckPromise = audioDuck.duck(settings.ui.duckLevel).catch((err) => {
         debug('DICTATION', `duck failed: ${errMsg(err)}`);
         this.duckedThisCycle = false;
-      }
+      });
     }
     if (settings.ui.soundCuesEnabled) {
       this.audio.playBeep('start');
@@ -108,6 +139,7 @@ export class DictationOrchestrator {
       return;
     }
 
+    const myCycle = this.cycleId;
     this.updateStatus('processing');
     const settings = settingsStore.get();
     const { delivered } = this.audio.endForwarding(this.startCount);
@@ -123,12 +155,14 @@ export class DictationOrchestrator {
     const client = this.client;
     if (delivered >= MIN_CHUNKS && client.isOpen()) {
       final = await new Promise<string>((resolve) => {
-        const timer = setTimeout(() => {
+        this.clearPendingFinalTimer();
+        this.pendingFinalTimer = setTimeout(() => {
           this.pendingFinal = null;
+          this.pendingFinalTimer = null;
           resolve(this.partial);
         }, FINAL_TIMEOUT_MS);
         this.pendingFinal = (text: string) => {
-          clearTimeout(timer);
+          this.clearPendingFinalTimer();
           this.pendingFinal = null;
           resolve(text);
         };
@@ -138,11 +172,22 @@ export class DictationOrchestrator {
       debug('DICTATION', `skip commit: delivered=${delivered} (<${MIN_CHUNKS})`);
     }
 
+    // If the cycle was superseded while we awaited the final, bail.
+    if (myCycle !== this.cycleId) {
+      return;
+    }
+
     this.inFlight = false;
     this.updateStatus('idle');
 
     if (this.duckedThisCycle) {
       this.duckedThisCycle = false;
+      try {
+        if (this.duckPromise) await this.duckPromise;
+      } catch {
+        /* ignore */
+      }
+      this.duckPromise = null;
       try {
         await audioDuck.restore();
       } catch (err) {
@@ -180,10 +225,9 @@ export class DictationOrchestrator {
 
     // Post-processing pipeline: formatter (if enabled) → replacements →
     // file tags. Each step is best-effort; failures fall through.
-    const apiKey = (await secureStore.getApiKey()) ?? undefined;
+    // The formatter resolves the API key lazily from secureStore.
     const processed = await postProcessorPipeline.run(final, {
       settings,
-      apiKey,
       activeWindowTitle: active?.title
     });
 
@@ -194,6 +238,45 @@ export class DictationOrchestrator {
       debug('DICTATION', `paste failed: ${errMsg(err)}`);
     }
     this.tryAddHistory(processed, delivered, active?.app);
+  }
+
+  /** Detach all listeners and tear down the realtime client. */
+  dispose(): void {
+    this.cancelRequested = true;
+    this.cycleId++;
+    this.clearPendingFinalTimer();
+    this.detachClientListeners();
+    if (this.client) {
+      try {
+        this.client.dispose();
+      } catch {
+        /* ignore */
+      }
+      this.client = null;
+    }
+    this.audio.setChunkListener(null);
+  }
+
+  private clearPendingFinalTimer(): void {
+    if (this.pendingFinalTimer) {
+      clearTimeout(this.pendingFinalTimer);
+      this.pendingFinalTimer = null;
+    }
+  }
+
+  private detachClientListeners(): void {
+    const client = this.client;
+    if (client) {
+      if (this.clientHandlers.delta) client.off('delta', this.clientHandlers.delta);
+      if (this.clientHandlers.final) client.off('final', this.clientHandlers.final);
+      if (this.clientHandlers.error) client.off('error', this.clientHandlers.error);
+      if (this.clientHandlers.close) client.off('close', this.clientHandlers.close);
+    }
+    this.clientHandlers = {};
+    if (this.clientChunkListener) {
+      this.audio.setChunkListener(null);
+      this.clientChunkListener = null;
+    }
   }
 
   private tryAddHistory(text: string, deliveredChunks: number, app?: string): void {
@@ -229,7 +312,12 @@ export class DictationOrchestrator {
     if (this.connectPromise) return this.connectPromise;
 
     const promise = (async (): Promise<RealtimeClient> => {
-      const apiKey = await secureStore.getApiKey();
+      let apiKey: string | null;
+      try {
+        apiKey = await secureStore.getApiKey();
+      } catch (err) {
+        throw new Error(`secure storage unavailable: ${errMsg(err)}`);
+      }
       if (!apiKey) throw new Error('OpenAI API key is not set');
 
       const settings = settingsStore.get();
@@ -240,7 +328,7 @@ export class DictationOrchestrator {
         vadEnabled: false
       });
 
-      client.on('delta', (text) => {
+      const onDelta = (text: string): void => {
         this.partial += text;
         this.broadcastDelta(this.partial);
         // Streaming insertion: flush the new tail to the streaming typer.
@@ -251,18 +339,21 @@ export class DictationOrchestrator {
             this.streamedPrefixLen = this.partial.length;
           }
         }
-      });
-      client.on('final', (text) => {
+      };
+      const onFinal = (text: string): void => {
         if (this.pendingFinal) this.pendingFinal(text);
-      });
-      client.on('error', (err) => {
+      };
+      const onError = (err: Error): void => {
         debug('REALTIME', err.message);
         this.broadcast(IPC.TRANSCRIPT_FINAL, `[error] ${err.message}`);
-        if (this.pendingFinal) this.pendingFinal('');
-        if (this.inFlight && !this.pendingFinal) {
+        if (this.pendingFinal) {
+          this.pendingFinal('');
+        }
+        if (this.inFlight) {
           this.inFlight = false;
           this.duckedThisCycle = false;
           this.audio.endForwarding(this.startCount);
+          this.audio.setChunkListener(null);
           void audioDuck.restore();
           if (this.streamingActive) {
             void streamingTyper.end();
@@ -270,13 +361,50 @@ export class DictationOrchestrator {
           }
           this.updateStatus('error');
         }
-      });
-      client.on('close', () => {
+      };
+      const onClose = (): void => {
+        // A clean close after `commit` should resolve pendingFinal, not
+        // reject — the server may have closed us right after the final.
+        if (this.pendingFinal) {
+          this.pendingFinal(this.partial);
+        }
         if (this.client === client) this.client = null;
-      });
+        // If the WS reconnects mid-flight, do not keep state — surface the
+        // error and reset.
+        if (this.inFlight && !this.pendingFinal) {
+          this.inFlight = false;
+          this.duckedThisCycle = false;
+          this.audio.endForwarding(this.startCount);
+          this.audio.setChunkListener(null);
+          void audioDuck.restore();
+          if (this.streamingActive) {
+            void streamingTyper.end();
+            this.streamingActive = false;
+          }
+          this.updateStatus('error');
+          this.broadcast(IPC.TRANSCRIPT_FINAL, '[error] connection closed');
+        }
+      };
+
+      this.clientHandlers = {
+        delta: onDelta,
+        final: onFinal,
+        error: onError,
+        close: onClose
+      };
+      client.on('delta', onDelta);
+      client.on('final', onFinal);
+      client.on('error', onError);
+      client.on('close', onClose);
 
       await client.connect();
-      this.audio.setChunkListener((chunk) => client.appendAudio(chunk.base64));
+      const chunkListener = (chunk: ChunkLike): void => {
+        // Prefer the binary path; fall back to base64 for legacy/test paths.
+        if (chunk.data) client.appendAudio(chunk.data as Buffer);
+        else if (chunk.base64) client.appendAudio(chunk.base64);
+      };
+      this.clientChunkListener = chunkListener;
+      this.audio.setChunkListener(chunkListener as never);
       this.client = client;
       return client;
     })();

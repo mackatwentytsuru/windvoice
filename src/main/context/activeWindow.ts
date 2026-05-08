@@ -11,8 +11,25 @@ import { activeWindow } from 'get-windows';
 import { debug } from '@main/debug';
 
 export interface ActiveWindowInfo {
+  /**
+   * Window title. SECURITY: never embed this verbatim into LLM prompts —
+   * titles often contain PII (filenames, email subjects, URLs). Use only
+   * for app-aware UX (e.g. matching against a user-defined rule).
+   */
   title: string;
   app: string;
+}
+
+/**
+ * Subset safe for LLM prompts: app name only, no title. Use this type
+ * (not `ActiveWindowInfo`) anywhere that flows into a prompt.
+ */
+export interface ActiveWindowPromptInfo {
+  readonly app: string;
+}
+
+export function toPromptInfo(info: ActiveWindowInfo | null): ActiveWindowPromptInfo | null {
+  return info ? { app: info.app } : null;
 }
 
 const CACHE_TTL_MS = 500;

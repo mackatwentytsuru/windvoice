@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { DictationStatus, Settings } from '../shared/types';
 import { useI18n } from './useI18n';
 import { GeneralPage } from './pages/General';
@@ -9,11 +9,14 @@ import { HistoryPage } from './pages/History';
 
 type Tab = 'general' | 'hotkeys' | 'dictionary' | 'replacements' | 'history';
 
+const TABS: readonly Tab[] = ['general', 'hotkeys', 'dictionary', 'replacements', 'history'] as const;
+
 export function App(): JSX.Element {
   const { t } = useI18n();
   const [tab, setTab] = useState<Tab>('general');
   const [status, setStatus] = useState<DictationStatus>('idle');
   const [settings, setSettings] = useState<Settings | null>(null);
+  const tabRefs = useRef<Map<Tab, HTMLButtonElement | null>>(new Map());
 
   useEffect(() => {
     void window.windvoice.getSettings().then(setSettings);
@@ -26,6 +29,44 @@ export function App(): JSX.Element {
     setSettings(next);
   }
 
+  function handleTabKey(e: React.KeyboardEvent<HTMLButtonElement>, current: Tab): void {
+    const idx = TABS.indexOf(current);
+    let nextIdx: number | null = null;
+    switch (e.key) {
+      case 'ArrowDown':
+      case 'ArrowRight':
+        nextIdx = (idx + 1) % TABS.length;
+        break;
+      case 'ArrowUp':
+      case 'ArrowLeft':
+        nextIdx = (idx - 1 + TABS.length) % TABS.length;
+        break;
+      case 'Home':
+        nextIdx = 0;
+        break;
+      case 'End':
+        nextIdx = TABS.length - 1;
+        break;
+      default:
+        return;
+    }
+    if (nextIdx == null) return;
+    const target = TABS[nextIdx];
+    if (target == null) return;
+    e.preventDefault();
+    setTab(target);
+    const btn = tabRefs.current.get(target);
+    btn?.focus();
+  }
+
+  const tabLabels: Record<Tab, string> = {
+    general: t('tab.general'),
+    hotkeys: t('tab.hotkeys'),
+    dictionary: t('tab.dictionary'),
+    replacements: t('tab.replacements'),
+    history: t('tab.history')
+  };
+
   return (
     <div className="layout">
       <aside className="sidebar">
@@ -33,27 +74,31 @@ export function App(): JSX.Element {
         <div style={{ marginLeft: 8, marginBottom: 16 }}>
           <span className={`status-pill ${status}`}>{statusLabel(status, t)}</span>
         </div>
-        <nav>
-          {(
-            [
-              ['general', t('tab.general')],
-              ['hotkeys', t('tab.hotkeys')],
-              ['dictionary', t('tab.dictionary')],
-              ['replacements', t('tab.replacements')],
-              ['history', t('tab.history')]
-            ] as const
-          ).map(([key, label]) => (
-            <button
-              key={key}
-              className={tab === key ? 'active' : ''}
-              onClick={() => setTab(key as Tab)}
-            >
-              {label}
-            </button>
-          ))}
+        <nav role="tablist" aria-label={t('aria.activeTab')}>
+          {TABS.map((key) => {
+            const active = tab === key;
+            return (
+              <button
+                key={key}
+                ref={(el) => {
+                  tabRefs.current.set(key, el);
+                }}
+                role="tab"
+                type="button"
+                aria-selected={active}
+                aria-current={active ? 'page' : undefined}
+                tabIndex={active ? 0 : -1}
+                className={active ? 'active' : ''}
+                onClick={() => setTab(key)}
+                onKeyDown={(e) => handleTabKey(e, key)}
+              >
+                {tabLabels[key]}
+              </button>
+            );
+          })}
         </nav>
       </aside>
-      <main className="main">
+      <main className="main" role="tabpanel" aria-label={tabLabels[tab]}>
         {settings && tab === 'general' && (
           <GeneralPage settings={settings} update={update} />
         )}

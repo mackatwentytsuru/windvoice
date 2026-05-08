@@ -15,11 +15,17 @@ const DEFAULT_MODEL = 'gpt-5-mini';
 const TEMPERATURE = 0.1;
 const MIN_OUTPUT_TOKENS = 256;
 
-/**
- * Build the system prompt that drives the formatter. Embeds dictionary,
- * custom instructions, and the language hint so the LLM has all required
- * context in a single message.
- */
+const clientCache = new Map<string, OpenAI>();
+
+function getClient(apiKey: string): OpenAI {
+  let client = clientCache.get(apiKey);
+  if (!client) {
+    client = new OpenAI({ apiKey });
+    clientCache.set(apiKey, client);
+  }
+  return client;
+}
+
 export function buildSystemPrompt(settings: Readonly<Settings>): string {
   const language = settings.language || 'ja';
   const isJa = language.toLowerCase().startsWith('ja');
@@ -75,7 +81,7 @@ interface FormatterCallParams {
 }
 
 async function callOpenAI(params: FormatterCallParams): Promise<string> {
-  const client = new OpenAI({ apiKey: params.apiKey });
+  const client = getClient(params.apiKey);
   const maxTokens = Math.max(MIN_OUTPUT_TOKENS, params.text.length * 2);
 
   const response = await client.chat.completions.create(
@@ -97,10 +103,6 @@ async function callOpenAI(params: FormatterCallParams): Promise<string> {
   return content;
 }
 
-/**
- * Run the OpenAI call with a hard 5-second timeout. The timer is always
- * cleared so we don't leak handles even on the success path.
- */
 async function withTimeout<T>(
   fn: (signal: AbortSignal) => Promise<T>,
   timeoutMs: number
@@ -126,8 +128,19 @@ export const gptFormatter: PostProcessor = {
 
   async process(text: string, ctx: PostProcessContext): Promise<string> {
     if (ctx.settings.formatter?.enabled === false) return text;
-    if (!ctx.apiKey || ctx.apiKey.length === 0) return text;
     if (!text || text.trim().length === 0) return text;
+
+    const ctxKey = (ctx as PostProcessContext & { apiKey?: string }).apiKey;
+    let apiKey: string | null = typeof ctxKey === 'string' && ctxKey.length > 0 ? ctxKey : null;
+    if (!apiKey) {
+      try {
+        const mod = await import('@main/store/secure');
+        apiKey = await mod.secureStore.getApiKey();
+      } catch {
+        apiKey = null;
+      }
+    }
+    if (!apiKey || apiKey.length === 0) return text;
 
     const systemPrompt = buildSystemPrompt(ctx.settings);
     const model = ctx.settings.formatter?.model || DEFAULT_MODEL;
@@ -136,7 +149,7 @@ export const gptFormatter: PostProcessor = {
       const result = await withTimeout(
         (signal) =>
           callOpenAI({
-            apiKey: ctx.apiKey as string,
+            apiKey: apiKey as string,
             model,
             systemPrompt,
             text,

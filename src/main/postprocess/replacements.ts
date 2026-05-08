@@ -10,6 +10,7 @@ import type { PostProcessContext, PostProcessor } from '@main/postprocess/pipeli
 import type { ReplacementEntry } from '@shared/types';
 
 const REGEX_SPECIAL_CHARS = /[.*+?^${}()|[\]\\]/g;
+const MAX_OUTPUT_LEN = 20 * 1024;
 
 /**
  * Treat ASCII alphanumerics, underscore, and CJK / kana code blocks as
@@ -62,6 +63,10 @@ export function applyReplacements(
   let current = text;
   for (const entry of entries) {
     current = applyEntry(current, entry);
+    if (current.length > MAX_OUTPUT_LEN) {
+      current = current.slice(0, MAX_OUTPUT_LEN);
+      break;
+    }
   }
   return current;
 }

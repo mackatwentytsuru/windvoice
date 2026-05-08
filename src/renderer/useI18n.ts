@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { t as translate, type I18nKey, type UiLang } from '../shared/i18n';
+import { t as translate, hasKey, type I18nKey, type UiLang } from '../shared/i18n';
 import type { Settings } from '../shared/types';
 
 let cachedLang: UiLang = 'ja';
@@ -21,8 +21,29 @@ function ensureInitialized(): void {
   window.windvoice.onSettingsChanged((s: Settings) => setCached(s.ui.uiLanguage));
 }
 
+/**
+ * Detect the host platform without depending on the preload-exposed
+ * `window.api.platform` (older preload builds may not expose it). Falls back
+ * to inspecting `navigator.userAgent` for a coarse classification.
+ */
+export function detectPlatform(): 'darwin' | 'win32' | 'linux' | string {
+  if (typeof window !== 'undefined') {
+    // Preferred: preload-exposed string ("darwin" | "win32" | "linux" | ...).
+    const fromApi = (window as unknown as { api?: { platform?: string } }).api?.platform;
+    if (typeof fromApi === 'string' && fromApi.length > 0) return fromApi;
+  }
+  if (typeof navigator !== 'undefined' && typeof navigator.userAgent === 'string') {
+    const ua = navigator.userAgent.toLowerCase();
+    if (ua.includes('mac os') || ua.includes('macintosh')) return 'darwin';
+    if (ua.includes('windows')) return 'win32';
+    if (ua.includes('linux')) return 'linux';
+  }
+  return 'unknown';
+}
+
 export function useI18n(): {
-  t: (key: I18nKey) => string;
+  t: (key: I18nKey | string) => string;
+  tPlatform: (prefix: string) => string;
   lang: UiLang;
   setLang: (lang: UiLang) => Promise<void>;
 } {
@@ -38,9 +59,17 @@ export function useI18n(): {
     };
   }, []);
 
+  const tPlatform = (prefix: string): string => {
+    const platform = detectPlatform();
+    const candidate = `${prefix}.${platform}`;
+    if (hasKey(candidate)) return translate(candidate, lang);
+    return translate(prefix, lang);
+  };
+
   return {
     lang,
-    t: (key: I18nKey) => translate(key, lang),
+    t: (key: I18nKey | string) => translate(key, lang),
+    tPlatform,
     setLang: async (next: UiLang) => {
       const settings = await window.windvoice.getSettings();
       const updated = await window.windvoice.setSettings({

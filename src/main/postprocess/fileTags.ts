@@ -8,15 +8,15 @@
 
 import type { PostProcessor } from './pipeline';
 
+const BASENAME = /[A-Za-z0-9_-]+(?:\.[A-Za-z0-9]+)?/;
+
 const PATTERNS: ReadonlyArray<{ pattern: RegExp; replace: (match: string, name: string) => string }> = [
-  // English: "file foo.ts" or "file foo dot ts"
   {
-    pattern: /\bfile\s+([A-Za-z0-9_./-]+)\b/gi,
+    pattern: new RegExp(`\\bfile\\s+(${BASENAME.source})\\b`, 'gi'),
     replace: (_m, name: string) => `@${name}`
   },
-  // Japanese: 「ファイル foo.ts」 / 「ファイルの foo.ts」 / 「ファイル foo」
   {
-    pattern: /ファイル(?:の)?\s*([A-Za-z0-9_./-]+)/g,
+    pattern: new RegExp(`ファイル(?:の)?\\s*(${BASENAME.source})`, 'g'),
     replace: (_m, name: string) => `@${name}`
   }
 ];

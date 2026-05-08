@@ -64,9 +64,9 @@ const api = {
     ipcRenderer.on(IPC.HISTORY_CHANGED, handler);
     return () => ipcRenderer.removeListener(IPC.HISTORY_CHANGED, handler);
   },
-  copyText: (text: string): void => {
-    void ipcRenderer.invoke(IPC.CLIPBOARD_WRITE, text);
-  },
+  copyText: (text: string): Promise<void> =>
+    ipcRenderer.invoke(IPC.CLIPBOARD_WRITE, text).then(() => undefined),
+  platform: process.platform as 'darwin' | 'win32' | 'linux' | string,
   onSettingsChanged: (cb: (settings: Settings) => void): (() => void) => {
     const handler = (_e: unknown, s: Settings): void => cb(s);
     ipcRenderer.on(IPC.SETTINGS_CHANGED, handler);
@@ -79,9 +79,13 @@ const audioBridge = {
   ready: (): void => {
     ipcRenderer.send(IPC.AUDIO_READY);
   },
-  /** From hidden audio renderer → main: forward a base64-encoded PCM chunk. */
-  sendChunk: (base64: string, samples: number, level?: number): void => {
-    ipcRenderer.send(IPC.AUDIO_CHUNK, { base64, samples, level });
+  /** From hidden audio renderer → main: forward a PCM chunk (ArrayBuffer, Uint8Array, or base64). */
+  sendChunk: (data: ArrayBuffer | Uint8Array | string, samples: number, level?: number): void => {
+    if (typeof data === 'string') {
+      ipcRenderer.send(IPC.AUDIO_CHUNK, { base64: data, data, samples, level });
+    } else {
+      ipcRenderer.send(IPC.AUDIO_CHUNK, { data, samples, level });
+    }
   },
   /** From hidden audio renderer → main: report a capture error. */
   reportError: (message: string): void => {

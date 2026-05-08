@@ -16,12 +16,14 @@ export class OverlayWindow {
   private status: DictationStatus = 'idle';
   private level = 0;
   private hideTimer: NodeJS.Timeout | null = null;
+  private displayListener: (() => void) | null = null;
 
   async init(preloadPath: string): Promise<void> {
     if (this.win) return;
     const display = screen.getPrimaryDisplay();
-    const x = Math.round(display.bounds.x + (display.bounds.width - WIDTH) / 2);
-    const y = display.bounds.y + display.bounds.height - HEIGHT - BOTTOM_OFFSET;
+    const area = display.workArea;
+    const x = Math.round(area.x + (area.width - WIDTH) / 2);
+    const y = area.y + area.height - HEIGHT - BOTTOM_OFFSET;
 
     const win = new BrowserWindow({
       width: WIDTH,
@@ -52,6 +54,11 @@ export class OverlayWindow {
     win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
 
     this.win = win;
+
+    const onDisplayChange = (): void => this.repositionToActiveDisplay();
+    screen.on('display-removed', onDisplayChange);
+    screen.on('display-metrics-changed', onDisplayChange);
+    this.displayListener = onDisplayChange;
 
     if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
       await win.loadURL(`${process.env['ELECTRON_RENDERER_URL']}/overlay.html`);
@@ -112,11 +119,12 @@ export class OverlayWindow {
   }
 
   private repositionToActiveDisplay(): void {
-    if (!this.win) return;
+    if (!this.win || this.win.isDestroyed()) return;
     const cursor = screen.getCursorScreenPoint();
     const display = screen.getDisplayNearestPoint(cursor);
-    const x = Math.round(display.bounds.x + (display.bounds.width - WIDTH) / 2);
-    const y = display.bounds.y + display.bounds.height - HEIGHT - BOTTOM_OFFSET;
+    const area = display.workArea;
+    const x = Math.round(area.x + (area.width - WIDTH) / 2);
+    const y = area.y + area.height - HEIGHT - BOTTOM_OFFSET;
     this.win.setBounds({ x, y, width: WIDTH, height: HEIGHT });
   }
 
@@ -128,6 +136,11 @@ export class OverlayWindow {
 
   destroy(): void {
     this.cancelHide();
+    if (this.displayListener) {
+      screen.removeListener('display-removed', this.displayListener);
+      screen.removeListener('display-metrics-changed', this.displayListener);
+      this.displayListener = null;
+    }
     this.win?.close();
     this.win = null;
   }

@@ -1,0 +1,174 @@
+import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest';
+
+const hoisted = vi.hoisted(() => {
+  const fsState = {
+    files: new Map<string, string>()
+  };
+  return {
+    fsState,
+    clipboardText: '',
+    writeText: vi.fn((text: string) => {
+      hoisted.clipboardText = text;
+    }),
+    readText: vi.fn(() => hoisted.clipboardText),
+    clearClip: vi.fn(() => {
+      hoisted.clipboardText = '';
+    }),
+    keyTap: vi.fn(),
+    getPath: vi.fn(() => '/tmp/test-userdata'),
+    writeFileSync: vi.fn((p: string, data: string) => {
+      fsState.files.set(p, data);
+    }),
+    readFileSync: vi.fn((p: string) => {
+      const v = fsState.files.get(p);
+      if (v === undefined) throw new Error('ENOENT');
+      return v;
+    }),
+    existsSync: vi.fn((p: string) => fsState.files.has(p)),
+    unlinkSync: vi.fn((p: string) => {
+      fsState.files.delete(p);
+    })
+  };
+});
+
+vi.mock('electron', () => ({
+  app: {
+    getPath: hoisted.getPath
+  },
+  clipboard: {
+    writeText: hoisted.writeText,
+    readText: hoisted.readText,
+    clear: hoisted.clearClip
+  }
+}));
+
+vi.mock('uiohook-napi', () => ({
+  uIOhook: {
+    keyTap: hoisted.keyTap
+  },
+  UiohookKey: {
+    V: 1,
+    Ctrl: 2,
+    Meta: 3
+  }
+}));
+
+vi.mock('node:fs', () => {
+  const fns = {
+    writeFileSync: hoisted.writeFileSync,
+    readFileSync: hoisted.readFileSync,
+    existsSync: hoisted.existsSync,
+    unlinkSync: hoisted.unlinkSync
+  };
+  return { default: fns, ...fns };
+});
+
+import { pasteText, recoverClipboardIfPending } from '../src/main/inject/typer';
+
+const RESTORE_PATH = '/tmp/test-userdata/.clipboard-restore.json';
+
+describe('pasteText', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    hoisted.clipboardText = 'PREVIOUS';
+    hoisted.fsState.files.clear();
+    hoisted.writeText.mockClear();
+    hoisted.readText.mockClear();
+    hoisted.clearClip.mockClear();
+    hoisted.keyTap.mockClear();
+    hoisted.writeFileSync.mockClear();
+    hoisted.readFileSync.mockClear();
+    hoisted.existsSync.mockClear();
+    hoisted.unlinkSync.mockClear();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('writes to clipboard, simulates paste, restores original', async () => {
+    const p = pasteText('hello', true);
+    await vi.advanceTimersByTimeAsync(50); // SETTLE_MS = 30
+    await vi.advanceTimersByTimeAsync(200); // RESTORE_DELAY_MS = 120
+    await p;
+
+    // First write was the new text.
+    const firstWrite = hoisted.writeText.mock.calls[0]?.[0];
+    expect(firstWrite).toBe('hello');
+    // Last write restored the previous clipboard.
+    expect(hoisted.writeText).toHaveBeenLastCalledWith('PREVIOUS');
+    expect(hoisted.keyTap).toHaveBeenCalled();
+    expect(hoisted.clipboardText).toBe('PREVIOUS');
+  });
+
+  it('persists previous clipboard to .clipboard-restore.json before paste', async () => {
+    const p = pasteText('hello', true);
+    // Even before timers advance, the persist call has already happened
+    // synchronously before the first await sleep().
+    expect(hoisted.writeFileSync).toHaveBeenCalled();
+    const [path, data] = hoisted.writeFileSync.mock.calls[0]!;
+    expect(path).toBe(RESTORE_PATH);
+    const parsed = JSON.parse(data as string);
+    expect(parsed.text).toBe('PREVIOUS');
+
+    await vi.advanceTimersByTimeAsync(50 + 200);
+    await p;
+  });
+
+  it('deletes the restore file after a successful paste + restore', async () => {
+    const p = pasteText('hello', true);
+    await vi.advanceTimersByTimeAsync(50 + 200);
+    await p;
+
+    expect(hoisted.unlinkSync).toHaveBeenCalledWith(RESTORE_PATH);
+    expect(hoisted.fsState.files.has(RESTORE_PATH)).toBe(false);
+  });
+
+  it('does NOT crash if uIOhook.keyTap throws; original clipboard is still restored', async () => {
+    hoisted.keyTap.mockImplementationOnce(() => {
+      throw new Error('uiohook-napi: keyTap not available');
+    });
+
+    const p = pasteText('hello', true);
+    // Don't need RESTORE_DELAY_MS in the failure path — it short-circuits.
+    await vi.advanceTimersByTimeAsync(50);
+    await expect(p).resolves.toBeUndefined();
+
+    // Last write restores the original clipboard.
+    expect(hoisted.writeText).toHaveBeenLastCalledWith('PREVIOUS');
+    expect(hoisted.clipboardText).toBe('PREVIOUS');
+    // Restore file is cleaned up.
+    expect(hoisted.unlinkSync).toHaveBeenCalledWith(RESTORE_PATH);
+  });
+});
+
+describe('recoverClipboardIfPending', () => {
+  beforeEach(() => {
+    hoisted.clipboardText = '';
+    hoisted.fsState.files.clear();
+    hoisted.writeText.mockClear();
+    hoisted.readText.mockClear();
+    hoisted.existsSync.mockClear();
+    hoisted.readFileSync.mockClear();
+    hoisted.unlinkSync.mockClear();
+  });
+
+  it('reads the restore file if present, restores clipboard, deletes file', () => {
+    hoisted.fsState.files.set(
+      RESTORE_PATH,
+      JSON.stringify({ text: 'RESTORED', savedAt: Date.now() })
+    );
+    recoverClipboardIfPending();
+    expect(hoisted.readFileSync).toHaveBeenCalledWith(RESTORE_PATH, 'utf8');
+    expect(hoisted.writeText).toHaveBeenCalledWith('RESTORED');
+    expect(hoisted.unlinkSync).toHaveBeenCalledWith(RESTORE_PATH);
+    expect(hoisted.fsState.files.has(RESTORE_PATH)).toBe(false);
+  });
+
+  it('is a no-op when no restore file is present', () => {
+    recoverClipboardIfPending();
+    expect(hoisted.readFileSync).not.toHaveBeenCalled();
+    expect(hoisted.writeText).not.toHaveBeenCalled();
+    expect(hoisted.unlinkSync).not.toHaveBeenCalled();
+  });
+});

@@ -45,6 +45,14 @@ export function createTray(b: TrayBindings): void {
   refreshMenu();
 }
 
+type StatusListener = (status: DictationStatus) => void;
+const statusListeners = new Set<StatusListener>();
+
+export function onStatusChanged(cb: StatusListener): () => void {
+  statusListeners.add(cb);
+  return () => statusListeners.delete(cb);
+}
+
 export function setStatus(status: DictationStatus): void {
   currentStatus = status;
   if (tray) {
@@ -55,6 +63,13 @@ export function setStatus(status: DictationStatus): void {
   }
   for (const win of BrowserWindow.getAllWindows()) {
     win.webContents.send(IPC.STATUS_CHANGED, status);
+  }
+  for (const l of statusListeners) {
+    try {
+      l(status);
+    } catch (err) {
+      process.stderr.write(`[tray] status listener: ${err}\n`);
+    }
   }
 }
 

@@ -61,7 +61,14 @@ export function DictionaryPage({ settings, update }: Props): JSX.Element {
             <span className="kbd">{d.from}</span>{' '}<span style={{ color: 'var(--fg-dim)' }}>→</span>{' '}
             <span className="kbd">{d.to}</span>
           </span>
-          <button onClick={() => remove(i)} style={{ background: 'transparent', color: 'var(--fg-dim)', border: 0, cursor: 'pointer' }}>×</button>
+          <button
+            className="button-icon"
+            onClick={() => remove(i)}
+            aria-label={t('aria.delete')}
+            title={t('aria.delete')}
+          >
+            ×
+          </button>
         </div>
       ))}
     </>

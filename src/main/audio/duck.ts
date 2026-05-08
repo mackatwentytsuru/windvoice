@@ -7,6 +7,34 @@
 import loudness from 'loudness';
 import { debug } from '@main/debug';
 
+export type DuckErrorPhase = 'duck' | 'restore';
+export type DuckErrorCallback = (phase: DuckErrorPhase, message: string) => void;
+
+const errorListeners = new Set<DuckErrorCallback>();
+
+export function onDuckError(cb: DuckErrorCallback): () => void {
+  errorListeners.add(cb);
+  return () => errorListeners.delete(cb);
+}
+
+function emitError(phase: DuckErrorPhase, message: string): void {
+  for (const cb of errorListeners) {
+    try {
+      cb(phase, message);
+    } catch {
+      /* swallow listener errors */
+    }
+  }
+}
+
+// macOS `loudness` shells out to osascript and changes the GLOBAL system
+// output volume — surprising. Skip on darwin unless the user explicitly opts
+// in via env var.
+function isDuckingAllowed(): boolean {
+  if (process.platform !== 'darwin') return true;
+  return process.env['WINDVOICE_DUCK_MAC'] === '1';
+}
+
 export class AudioDuck {
   private originalVolume: number | null = null;
   private active = false;
@@ -18,6 +46,10 @@ export class AudioDuck {
   async duck(multiplier: number): Promise<void> {
     if (this.active) return;
     if (multiplier >= 1) return;
+    if (!isDuckingAllowed()) {
+      debug('DUCK', 'skipped (mac default; set WINDVOICE_DUCK_MAC=1 to enable)');
+      return;
+    }
     try {
       const v = await loudness.getVolume();
       this.originalVolume = v;
@@ -28,6 +60,7 @@ export class AudioDuck {
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       debug('DUCK', `failed to duck: ${msg}`);
+      emitError('duck', msg);
     }
   }
 
@@ -42,6 +75,7 @@ export class AudioDuck {
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       debug('DUCK', `failed to restore: ${msg}`);
+      emitError('restore', msg);
     }
   }
 }

@@ -43,7 +43,10 @@ const ja: Dict = {
   'general.save': '保存',
   'general.saving': '保存中…',
   'general.saved': '保存しました',
-  'general.apiKeyHelper': 'Windows 資格情報マネージャーに保存され、ディスクには書かれません。',
+  'general.apiKeyHelper': 'API キーは資格情報ストアに保存され、ディスクには書かれません。',
+  'general.apiKeyHelper.darwin': 'API キーは macOS Keychain に保存されます。',
+  'general.apiKeyHelper.win32': 'API キーは Windows 資格情報マネージャに保存されます。',
+  'general.apiKeyHelper.linux': 'API キーはシステムのキーリングに保存されます。',
   'general.language': '転写言語',
   'general.languageAuto': '自動検出',
   'general.languageJa': '日本語 (ja)',
@@ -52,8 +55,10 @@ const ja: Dict = {
   'general.languageKo': '한국어 (ko)',
   'general.uiLanguage': '表示言語',
   'general.insertion': '挿入方式',
-  'general.insertionPaste': 'クリップボード貼り付け (Ctrl+V)',
-  'general.insertionType': '1文字ずつ入力 (Phase 3)',
+  'general.insertionPaste': 'クリップボード貼り付け',
+  'general.insertionPaste.darwin': 'Cmd+V (貼り付け)',
+  'general.insertionPaste.win32': 'Ctrl+V (貼り付け)',
+  'general.insertionType': '1文字ずつ入力',
   'general.formatter': '整形',
   'general.formatterEnable': 'GPT 後処理を有効化 (Phase 2)',
   'general.formatterHelper': '句読点補正・辞書適用・自然言語フォーマット指示を解釈します。',
@@ -95,6 +100,8 @@ const ja: Dict = {
   'hotkeys.addBinding': 'バインドを追加',
   'hotkeys.cannotRemoveLast': '最後のバインドは削除できません',
   'hotkeys.helper': 'バインドを記録するには「新しいショートカットを記録」を押してから希望のキーを押してください。',
+  'hotkeys.duplicate': '別の binding と同じキーが指定されています。',
+  'hotkeys.recordHint': '実行したいキー組み合わせを押してください (修飾キーだけでは確定しません)',
 
   // dictionary page
   'dictionary.title': '辞書',
@@ -127,20 +134,36 @@ const ja: Dict = {
   'dialog.firstRun.message': 'OpenAI API キーが未設定です。',
   'dialog.firstRun.detail':
     '設定画面を開き、API キー欄に OpenAI API キーを貼り付けて保存してください。\n\nキーは Windows 資格情報マネージャー (keytar) に保存されます。',
-  'dialog.firstRun.button': '設定を開く'
+  'dialog.firstRun.button': '設定を開く',
+  'firstRun.apiKey.darwin': 'macOS Keychain に保存',
+  'firstRun.apiKey.win32': 'Windows 資格情報マネージャに保存',
+
+  // errors
+  'error.apiKeyInvalid': 'API キーの形式が正しくありません。',
+  'error.secureStoreUnavailable': '資格情報ストアが利用できません。',
+
+  // aria / accessibility
+  'aria.delete': '削除',
+  'aria.copy': 'コピー',
+  'aria.copied': 'コピーしました',
+  'aria.activeTab': '選択中のタブ'
 };
 
 const en: Dict = {
+  // tabs
   'tab.general': 'General',
   'tab.hotkeys': 'Hotkeys',
   'tab.dictionary': 'Dictionary',
   'tab.history': 'History',
+  'tab.replacements': 'Replacements',
 
+  // status pill
   'status.idle': 'Idle',
   'status.listening': 'Listening...',
   'status.processing': 'Processing...',
   'status.error': 'Error',
 
+  // tray
   'tray.ready': 'WindVoice — Ready',
   'tray.listening': 'WindVoice — Listening...',
   'tray.processing': 'WindVoice — Processing...',
@@ -148,9 +171,11 @@ const en: Dict = {
   'tray.settings': 'Settings...',
   'tray.quit': 'Quit',
 
+  // overlay
   'overlay.listening': 'Listening',
   'overlay.processing': 'Processing...',
 
+  // general page
   'general.title': 'General',
   'general.apiKey': 'OpenAI API Key',
   'general.apiKeyPlaceholderHas': '•••••• (saved in Credential Manager)',
@@ -158,7 +183,10 @@ const en: Dict = {
   'general.save': 'Save',
   'general.saving': 'Saving...',
   'general.saved': 'Saved.',
-  'general.apiKeyHelper': 'Stored via Windows Credential Manager. Not written to disk.',
+  'general.apiKeyHelper': 'Your API key is stored in the system credential store. Not written to disk.',
+  'general.apiKeyHelper.darwin': 'Your API key is stored in macOS Keychain.',
+  'general.apiKeyHelper.win32': 'Your API key is stored in Windows Credential Manager.',
+  'general.apiKeyHelper.linux': 'Your API key is stored in the system keyring.',
   'general.language': 'Transcription Language',
   'general.languageAuto': 'Auto-detect',
   'general.languageJa': 'Japanese (ja)',
@@ -167,8 +195,10 @@ const en: Dict = {
   'general.languageKo': 'Korean (ko)',
   'general.uiLanguage': 'UI Language',
   'general.insertion': 'Insertion method',
-  'general.insertionPaste': 'Clipboard paste (Ctrl+V)',
-  'general.insertionType': 'Type per character (Phase 3)',
+  'general.insertionPaste': 'Clipboard paste',
+  'general.insertionPaste.darwin': 'Cmd+V (paste)',
+  'general.insertionPaste.win32': 'Ctrl+V (paste)',
+  'general.insertionType': 'Type per character',
   'general.formatter': 'Formatter',
   'general.formatterEnable': 'Enable GPT post-processing (Phase 2)',
   'general.formatterHelper':
@@ -201,6 +231,7 @@ const en: Dict = {
     'Record 3 seconds without using a hotkey, then paste the transcript at your cursor.',
   'general.lastTranscript': 'Last transcript:',
 
+  // hotkeys page
   'hotkeys.title': 'Hotkeys',
   'hotkeys.binding': 'Binding',
   'hotkeys.modePush': 'Push to talk',
@@ -212,7 +243,10 @@ const en: Dict = {
   'hotkeys.cannotRemoveLast': 'Cannot remove the last binding',
   'hotkeys.helper':
     'Click "Record new shortcut" then press the desired key combination.',
+  'hotkeys.duplicate': 'This key combo is already assigned to another binding.',
+  'hotkeys.recordHint': "Press the desired key combo (modifiers alone won't commit)",
 
+  // dictionary page
   'dictionary.title': 'Dictionary',
   'dictionary.helper':
     'Replace what the model heard with the canonical spelling. Applied during the formatter step.',
@@ -221,7 +255,7 @@ const en: Dict = {
   'dictionary.add': 'Add',
   'dictionary.empty': 'No entries yet.',
 
-  'tab.replacements': 'Replacements',
+  // replacements page
   'replacements.title': 'Text macros',
   'replacements.helper':
     'Expand exact-match phrases in the transcript into longer text. E.g. "my email" → "macka@example.com".',
@@ -231,6 +265,7 @@ const en: Dict = {
   'replacements.empty': 'No entries yet.',
   'replacements.wordBoundary': 'Match on word boundaries',
 
+  // history page
   'history.title': 'History',
   'history.clearAll': 'Clear all',
   'history.empty':
@@ -239,18 +274,40 @@ const en: Dict = {
   'history.copied': 'Copied',
   'history.confirmClearAll': 'Delete all history entries?',
 
+  // first-run dialog
   'dialog.firstRun.title': 'WindVoice — first run',
   'dialog.firstRun.message': 'No OpenAI API key configured.',
   'dialog.firstRun.detail':
     'Open the settings window, paste your OpenAI API key in the API Key field, and save.\n\nThe key is stored in the Windows Credential Manager (via keytar).',
-  'dialog.firstRun.button': 'Open Settings'
+  'dialog.firstRun.button': 'Open Settings',
+  'firstRun.apiKey.darwin': 'Saved to macOS Keychain',
+  'firstRun.apiKey.win32': 'Saved to Windows Credential Manager',
+
+  // errors
+  'error.apiKeyInvalid': 'API key format is invalid.',
+  'error.secureStoreUnavailable': 'Credential store unavailable.',
+
+  // aria / accessibility
+  'aria.delete': 'Delete',
+  'aria.copy': 'Copy',
+  'aria.copied': 'Copied',
+  'aria.activeTab': 'Currently selected tab'
 };
 
 const TABLES: Record<UiLang, Dict> = { ja, en };
 
 export type I18nKey = keyof typeof ja;
 
-export function t(key: I18nKey, lang: UiLang): string {
+export function t(key: I18nKey | string, lang: UiLang): string {
   const table = TABLES[lang];
-  return table[key] ?? ja[key] ?? String(key);
+  return table[key as string] ?? ja[key as string] ?? String(key);
+}
+
+/**
+ * Returns true when the given key exists in the Japanese (canonical) table.
+ * Useful for callers that need to fall back when a platform-suffixed variant
+ * is not defined.
+ */
+export function hasKey(key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(ja, key);
 }

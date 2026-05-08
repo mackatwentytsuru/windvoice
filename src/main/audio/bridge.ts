@@ -1,8 +1,15 @@
-import { BrowserWindow, ipcMain } from 'electron';
+import { BrowserWindow, ipcMain, type IpcMainEvent } from 'electron';
 import path from 'node:path';
 import { is } from './env';
 import { debug, isDebug } from '@main/debug';
 import { IPC, type AudioChunk, type BeepKind } from '@shared/types';
+
+interface ChunkPayload {
+  /** Either base64-encoded PCM or raw bytes (Buffer/Uint8Array/ArrayBuffer). */
+  data: Buffer;
+  samples: number;
+  level?: number;
+}
 
 /**
  * Owns a hidden BrowserWindow that performs WebAudio capture and forwards
@@ -15,28 +22,62 @@ export class AudioBridge {
   private forwarding = false;
   private chunkCount = 0;
   private readyResolvers: Array<() => void> = [];
-  private chunkListener: ((chunk: AudioChunk) => void) | null = null;
+  private chunkListener: ((chunk: ChunkPayload | AudioChunk) => void) | null = null;
   private levelListener: ((level: number) => void) | null = null;
+  private lastAudioErrorAt = 0;
+  private lastAudioErrorMsg = '';
+
+  // Named handler refs so destroy() can detach them.
+  private onReadyHandler: ((event: IpcMainEvent) => void) | null = null;
+  private onChunkHandler: ((event: IpcMainEvent, payload: unknown) => void) | null = null;
+  private onErrorHandler: ((event: IpcMainEvent, message: unknown) => void) | null = null;
 
   async init(preloadPath: string): Promise<void> {
     if (this.win) return;
 
-    ipcMain.on(IPC.AUDIO_READY, () => {
+    this.onReadyHandler = (event): void => {
+      if (!this.isFromOwnedWindow(event)) {
+        debug('AUDIO', 'SECURITY: rejected AUDIO_READY from foreign sender');
+        return;
+      }
       debug('AUDIO', 'renderer reported ready');
       this.ready = true;
       const resolvers = this.readyResolvers;
       this.readyResolvers = [];
       resolvers.forEach((r) => r());
-    });
-    ipcMain.on(IPC.AUDIO_CHUNK, (_e, chunk: AudioChunk) => {
+    };
+
+    this.onChunkHandler = (event, payload): void => {
+      if (!this.isFromOwnedWindow(event)) {
+        debug('AUDIO', 'SECURITY: rejected AUDIO_CHUNK from foreign sender');
+        return;
+      }
+      const normalized = normalizeChunk(payload);
+      if (!normalized) return;
       if (isDebug('AUDIO') && this.chunkCount < 5) {
-        debug('AUDIO', `chunk #${this.chunkCount + 1} samples=${chunk.samples} level=${chunk.level?.toFixed(3) ?? '?'}`);
+        debug(
+          'AUDIO',
+          `chunk #${this.chunkCount + 1} samples=${normalized.samples} level=${normalized.level?.toFixed(3) ?? '?'}`
+        );
       }
       this.chunkCount++;
-      // Always emit the level (used by the overlay meter while visible).
-      if (chunk.level !== undefined) this.levelListener?.(chunk.level);
-      if (this.forwarding) this.chunkListener?.(chunk);
-    });
+      if (normalized.level !== undefined) this.levelListener?.(normalized.level);
+      if (this.forwarding) this.chunkListener?.(normalized);
+    };
+
+    this.onErrorHandler = (event, message): void => {
+      if (!this.isFromOwnedWindow(event)) {
+        debug('AUDIO', 'SECURITY: rejected AUDIO_ERROR from foreign sender');
+        return;
+      }
+      const msg = typeof message === 'string' ? message : String(message);
+      this.lastAudioErrorAt = Date.now();
+      this.lastAudioErrorMsg = msg;
+    };
+
+    ipcMain.on(IPC.AUDIO_READY, this.onReadyHandler);
+    ipcMain.on(IPC.AUDIO_CHUNK, this.onChunkHandler);
+    ipcMain.on(IPC.AUDIO_ERROR, this.onErrorHandler);
 
     const win = new BrowserWindow({
       show: false,
@@ -64,7 +105,7 @@ export class AudioBridge {
     debug('AUDIO', 'hidden window loaded');
   }
 
-  setChunkListener(cb: ((chunk: AudioChunk) => void) | null): void {
+  setChunkListener(cb: ((chunk: ChunkPayload | AudioChunk) => void) | null): void {
     this.chunkListener = cb;
   }
 
@@ -75,6 +116,13 @@ export class AudioBridge {
   /** Used by main to scope `setPermissionRequestHandler` to this window only. */
   getWebContentsId(): number | null {
     return this.win?.webContents.id ?? null;
+  }
+
+  /** Returns the most recent audio error message if one occurred within `maxAgeMs`. */
+  getRecentAudioError(maxAgeMs: number): string | null {
+    if (!this.lastAudioErrorAt) return null;
+    if (Date.now() - this.lastAudioErrorAt > maxAgeMs) return null;
+    return this.lastAudioErrorMsg || null;
   }
 
   async prewarm(deviceId?: string): Promise<void> {
@@ -107,8 +155,19 @@ export class AudioBridge {
     this.win?.webContents.send(IPC.AUDIO_STOP_CMD);
     this.capturing = false;
     this.forwarding = false;
+    if (this.onReadyHandler) ipcMain.removeListener(IPC.AUDIO_READY, this.onReadyHandler);
+    if (this.onChunkHandler) ipcMain.removeListener(IPC.AUDIO_CHUNK, this.onChunkHandler);
+    if (this.onErrorHandler) ipcMain.removeListener(IPC.AUDIO_ERROR, this.onErrorHandler);
+    this.onReadyHandler = null;
+    this.onChunkHandler = null;
+    this.onErrorHandler = null;
     this.win?.close();
     this.win = null;
+  }
+
+  private isFromOwnedWindow(event: IpcMainEvent): boolean {
+    if (!this.win) return false;
+    return event.sender.id === this.win.webContents.id;
   }
 
   private waitReady(timeoutMs = 8_000): Promise<void> {
@@ -126,4 +185,25 @@ export class AudioBridge {
       this.readyResolvers.push(wrapped);
     });
   }
+}
+
+function normalizeChunk(payload: unknown): ChunkPayload | null {
+  if (!payload || typeof payload !== 'object') return null;
+  const p = payload as { base64?: unknown; data?: unknown; samples?: unknown; level?: unknown };
+  const samples = typeof p.samples === 'number' ? p.samples : 0;
+  const level = typeof p.level === 'number' ? p.level : undefined;
+  // Preferred binary path: { data: Buffer|Uint8Array|ArrayBuffer, samples, level }.
+  const raw = (p.data ?? p.base64) as unknown;
+  let data: Buffer | null = null;
+  if (Buffer.isBuffer(raw)) {
+    data = raw;
+  } else if (raw instanceof Uint8Array) {
+    data = Buffer.from(raw.buffer, raw.byteOffset, raw.byteLength);
+  } else if (raw instanceof ArrayBuffer) {
+    data = Buffer.from(raw);
+  } else if (typeof raw === 'string') {
+    data = Buffer.from(raw, 'base64');
+  }
+  if (!data) return null;
+  return { data, samples, level };
 }

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Settings, HotkeyBinding } from '../../shared/types';
 import { useI18n } from '../useI18n';
 
@@ -54,22 +54,12 @@ function codeToTriggerToken(code: string): string | null {
 }
 
 /**
- * Build the array of key tokens to persist into `HotkeyBinding.keys` from a
- * KeyboardEvent. Returns null if the combo isn't representable.
+ * Build the array of key tokens for a chord (modifier + non-modifier).
+ * Returns null if the trigger code isn't representable.
  */
-function eventToKeys(e: KeyboardEvent): string[] | null {
-  // Bare-modifier press: `event.code` itself is a modifier. Save just that
-  // single token even though the corresponding modifier flag is also true.
-  const bareModifier = MODIFIER_CODE_TO_TOKEN[e.code];
-  if (bareModifier !== undefined) {
-    return [bareModifier];
-  }
-
+function chordToKeys(e: KeyboardEvent): string[] | null {
   const trigger = codeToTriggerToken(e.code);
-  if (trigger == null) {
-    return null;
-  }
-
+  if (trigger == null) return null;
   const tokens: string[] = [];
   if (e.ctrlKey) {
     tokens.push(e.location === 2 ? 'RightCtrl' : 'LeftCtrl');
@@ -87,26 +77,57 @@ function eventToKeys(e: KeyboardEvent): string[] | null {
   return tokens;
 }
 
+/**
+ * Compute a stable equality key for a bindings.keys array (order-insensitive).
+ */
+function bindingKeysSignature(keys: string[]): string {
+  return [...keys].map((k) => k.toLowerCase()).sort().join('+');
+}
+
 interface RowProps {
   binding: HotkeyBinding;
+  index: number;
   canRemove: boolean;
-  onPatch: (id: string, change: Partial<HotkeyBinding>) => void;
+  duplicate: boolean;
+  /** Returns false when the change was refused (e.g. duplicate keys). */
+  onPatch: (id: string, change: Partial<HotkeyBinding>) => boolean;
   onRemove: (id: string) => void;
 }
 
-function HotkeyRow({ binding, canRemove, onPatch, onRemove }: RowProps): JSX.Element {
+function HotkeyRow({ binding, index, canRemove, duplicate, onPatch, onRemove }: RowProps): JSX.Element {
   const { t } = useI18n();
   const [recording, setRecording] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
+  // Track the bare modifier the user pressed first (if any). We commit when
+  // either a non-modifier trigger arrives, or all keys are released and the
+  // recording was a single bare modifier.
+  const pendingModifierRef = useRef<ModifierToken | null>(null);
+  const pressedCodesRef = useRef<Set<string>>(new Set());
 
   const stopRecording = useCallback((): void => {
     setRecording(false);
+    pendingModifierRef.current = null;
+    pressedCodesRef.current = new Set();
   }, []);
+
+  const tryCommit = useCallback(
+    (keys: string[]): void => {
+      const ok = onPatch(binding.id, { keys });
+      if (ok) {
+        setError(null);
+        stopRecording();
+      } else {
+        setError(t('hotkeys.duplicate'));
+        stopRecording();
+      }
+    },
+    [binding.id, onPatch, stopRecording, t]
+  );
 
   useEffect(() => {
     if (!recording) return;
 
-    const handler = (e: KeyboardEvent): void => {
+    const handleKeyDown = (e: KeyboardEvent): void => {
       e.preventDefault();
       e.stopPropagation();
 
@@ -115,27 +136,61 @@ function HotkeyRow({ binding, canRemove, onPatch, onRemove }: RowProps): JSX.Ele
         return;
       }
 
-      const keys = eventToKeys(e);
+      pressedCodesRef.current.add(e.code);
+
+      // Bare modifier: don't commit yet — wait for either a non-modifier
+      // trigger (=> chord) or a keyup of all modifiers (=> bare modifier).
+      const bare = MODIFIER_CODE_TO_TOKEN[e.code];
+      if (bare !== undefined) {
+        pendingModifierRef.current = bare;
+        return;
+      }
+
+      // Trigger key with optional modifiers — commit immediately.
+      const keys = chordToKeys(e);
       if (keys == null) {
         setError(t('hotkeys.invalidCombo'));
         return;
       }
-      setError(null);
-      onPatch(binding.id, { keys });
-      stopRecording();
+      tryCommit(keys);
     };
 
-    window.addEventListener('keydown', handler, true);
-    return () => {
-      window.removeEventListener('keydown', handler, true);
+    const handleKeyUp = (e: KeyboardEvent): void => {
+      pressedCodesRef.current.delete(e.code);
+
+      // If we previously saw a bare modifier and the user released ALL keys
+      // without ever pressing a non-modifier key, commit the bare modifier.
+      if (pendingModifierRef.current != null && pressedCodesRef.current.size === 0) {
+        // Only commit the bare modifier when the only pressed code matched
+        // a modifier (the typical use-case, e.g. RightAlt push-to-talk).
+        const released = MODIFIER_CODE_TO_TOKEN[e.code];
+        if (released !== undefined) {
+          tryCommit([pendingModifierRef.current]);
+          return;
+        }
+      }
     };
-  }, [recording, binding.id, onPatch, stopRecording, t]);
+
+    window.addEventListener('keydown', handleKeyDown, true);
+    window.addEventListener('keyup', handleKeyUp, true);
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown, true);
+      window.removeEventListener('keyup', handleKeyUp, true);
+    };
+  }, [recording, stopRecording, tryCommit, t]);
+
+  const startRecording = (): void => {
+    setError(null);
+    pendingModifierRef.current = null;
+    pressedCodesRef.current = new Set();
+    setRecording(true);
+  };
 
   return (
     <div className="field" style={{ borderBottom: '1px solid var(--border)', paddingBottom: 16 }}>
       <div className="row" style={{ marginBottom: 8 }}>
         <span className="field-label" style={{ marginBottom: 0, flex: 1 }}>
-          {t('hotkeys.binding')} · {binding.id}
+          {t('hotkeys.binding')} #{index + 1}
         </span>
         <span>
           {binding.keys.map((k, i) => (
@@ -151,23 +206,35 @@ function HotkeyRow({ binding, canRemove, onPatch, onRemove }: RowProps): JSX.Ele
             {t('hotkeys.recordingPrompt')}
           </span>
         ) : (
-          <button type="button" onClick={() => { setError(null); setRecording(true); }}>
+          <button type="button" className="button-secondary" onClick={startRecording}>
             {t('hotkeys.record')}
           </button>
         )}
         <button
           type="button"
+          className="button-icon"
+          aria-label={t('aria.delete')}
           onClick={() => onRemove(binding.id)}
           disabled={!canRemove}
-          title={!canRemove ? t('hotkeys.cannotRemoveLast') : undefined}
+          title={!canRemove ? t('hotkeys.cannotRemoveLast') : t('aria.delete')}
           style={{ marginLeft: 'auto' }}
         >
           ×
         </button>
       </div>
+      {recording && (
+        <div className="helper" style={{ marginBottom: 8 }}>
+          {t('hotkeys.recordHint')}
+        </div>
+      )}
       {error != null && (
-        <div className="row" style={{ color: 'var(--danger, #c33)', marginBottom: 8 }}>
+        <div className="row" style={{ color: 'var(--error)', marginBottom: 8 }}>
           {error}
+        </div>
+      )}
+      {duplicate && (
+        <div className="row" style={{ color: 'var(--error)', marginBottom: 8 }}>
+          {t('hotkeys.duplicate')}
         </div>
       )}
       <div className="row">
@@ -195,10 +262,37 @@ function HotkeyRow({ binding, canRemove, onPatch, onRemove }: RowProps): JSX.Ele
 export function HotkeysPage({ settings, update }: Props): JSX.Element {
   const { t } = useI18n();
 
+  // Compute which binding ids collide with another binding's keys.
+  const duplicateIds = useMemo<Set<string>>(() => {
+    const seen = new Map<string, string>();
+    const dupes = new Set<string>();
+    for (const h of settings.hotkeys) {
+      const sig = bindingKeysSignature(h.keys);
+      if (seen.has(sig)) {
+        dupes.add(h.id);
+        const previous = seen.get(sig);
+        if (previous) dupes.add(previous);
+      } else {
+        seen.set(sig, h.id);
+      }
+    }
+    return dupes;
+  }, [settings.hotkeys]);
+
   const patch = useCallback(
-    (id: string, change: Partial<HotkeyBinding>): void => {
+    (id: string, change: Partial<HotkeyBinding>): boolean => {
+      // Uniqueness check: if the new keys collide with another binding,
+      // refuse to save and signal the caller so it can show an inline error.
+      if (change.keys != null) {
+        const newSig = bindingKeysSignature(change.keys);
+        const collision = settings.hotkeys.some(
+          (h) => h.id !== id && bindingKeysSignature(h.keys) === newSig
+        );
+        if (collision) return false;
+      }
       const next = settings.hotkeys.map((h) => (h.id === id ? { ...h, ...change } : h));
       void update({ hotkeys: next });
+      return true;
     },
     [settings.hotkeys, update]
   );
@@ -227,17 +321,19 @@ export function HotkeysPage({ settings, update }: Props): JSX.Element {
   return (
     <>
       <h2>{t('hotkeys.title')}</h2>
-      {settings.hotkeys.map((h) => (
+      {settings.hotkeys.map((h, i) => (
         <HotkeyRow
           key={h.id}
           binding={h}
+          index={i}
           canRemove={canRemove}
+          duplicate={duplicateIds.has(h.id)}
           onPatch={patch}
           onRemove={remove}
         />
       ))}
       <div className="row" style={{ marginTop: 16 }}>
-        <button type="button" onClick={add}>
+        <button type="button" className="button-secondary" onClick={add}>
           {t('hotkeys.addBinding')}
         </button>
       </div>
@@ -245,3 +341,4 @@ export function HotkeysPage({ settings, update }: Props): JSX.Element {
     </>
   );
 }
+

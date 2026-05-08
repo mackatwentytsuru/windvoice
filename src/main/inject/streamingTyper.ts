@@ -4,6 +4,9 @@ import { debug } from '@main/debug';
 
 const PASTE_INTERVAL_MS = 60;
 const SETTLE_MS = 12;
+const DEBOUNCE_MS = 80;
+const COALESCE_MAX_CHARS = 200;
+const END_MAX_WAIT_MS = 2_000;
 
 /** macOS uses Cmd, every other platform uses Ctrl, for the paste shortcut. */
 function pasteModifier(): number {
@@ -26,11 +29,18 @@ export class StreamingTyper {
   private buffer = '';
   private flushing = false;
   private active = false;
+  private debounceTimer: NodeJS.Timeout | null = null;
+  private flushSeq = 0;
 
   /** Begin a streaming session; saves the user's current clipboard. */
   begin(restoreClipboard: boolean): void {
+    if (this.active) {
+      debug('DICTATION', 'streamingTyper.begin re-entry; ignoring');
+      return;
+    }
     this.active = true;
     this.buffer = '';
+    this.flushSeq = 0;
     this.originalClipboard = restoreClipboard ? clipboard.readText() : null;
   }
 
@@ -38,32 +48,75 @@ export class StreamingTyper {
   append(text: string): void {
     if (!this.active || !text) return;
     this.buffer += text;
-    if (!this.flushing) void this.flush();
+    if (this.buffer.length >= COALESCE_MAX_CHARS) {
+      this.clearDebounce();
+      if (!this.flushing) void this.flush();
+      return;
+    }
+    this.scheduleDebounced();
   }
 
   /** Wait for the queue to drain, restore the clipboard, end the session. */
   async end(): Promise<void> {
     if (!this.active) return;
+    this.clearDebounce();
+    if (this.buffer.length > 0 && !this.flushing) {
+      void this.flush();
+    }
+    const start = Date.now();
     while (this.flushing || this.buffer.length > 0) {
+      if (Date.now() - start > END_MAX_WAIT_MS) {
+        debug('DICTATION', 'streamingTyper.end timed out — forcing inactive');
+        break;
+      }
       await sleep(PASTE_INTERVAL_MS);
     }
     if (this.originalClipboard !== null) {
-      clipboard.writeText(this.originalClipboard);
+      try {
+        clipboard.writeText(this.originalClipboard);
+      } catch {
+        /* ignore */
+      }
       this.originalClipboard = null;
-    } else if (this.originalClipboard === null) {
-      // We never saved; nothing to do.
     }
     this.active = false;
+    this.buffer = '';
+  }
+
+  private scheduleDebounced(): void {
+    this.clearDebounce();
+    this.debounceTimer = setTimeout(() => {
+      this.debounceTimer = null;
+      if (!this.flushing) void this.flush();
+    }, DEBOUNCE_MS);
+    if (typeof this.debounceTimer.unref === 'function') this.debounceTimer.unref();
+  }
+
+  private clearDebounce(): void {
+    if (this.debounceTimer) {
+      clearTimeout(this.debounceTimer);
+      this.debounceTimer = null;
+    }
   }
 
   private async flush(): Promise<void> {
     this.flushing = true;
     try {
       while (this.buffer.length > 0) {
+        const seq = ++this.flushSeq;
         const chunk = this.buffer;
         this.buffer = '';
-        clipboard.writeText(chunk);
+        try {
+          clipboard.writeText(chunk);
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          debug('DICTATION', `streaming clipboard.writeText failed: ${msg}`);
+          continue;
+        }
         await sleep(SETTLE_MS);
+        // Bail if a later seq has already started; prevents stale callbacks
+        // from mutating state of the next paste.
+        if (seq !== this.flushSeq) continue;
         try {
           uIOhook.keyTap(UiohookKey.V, [pasteModifier()]);
         } catch (err) {

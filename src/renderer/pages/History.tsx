@@ -3,7 +3,7 @@ import type { HistoryEntry } from '../../shared/types';
 import { useI18n } from '../useI18n';
 
 export function HistoryPage(): JSX.Element {
-  const { t } = useI18n();
+  const { t, lang } = useI18n();
   const [entries, setEntries] = useState<HistoryEntry[]>([]);
   const [copiedId, setCopiedId] = useState<string | null>(null);
 
@@ -37,22 +37,16 @@ export function HistoryPage(): JSX.Element {
       <div className="row" style={{ justifyContent: 'space-between', marginBottom: 16 }}>
         <h2 style={{ margin: 0 }}>{t('history.title')}</h2>
         {entries.length > 0 && (
-          <button
-            onClick={() => void clearAll()}
-            style={{
-              background: 'transparent',
-              border: '1px solid var(--border)',
-              color: 'var(--fg-dim)',
-              padding: '4px 12px',
-              borderRadius: 6,
-              cursor: 'pointer',
-              fontSize: 12
-            }}
-          >
+          <button className="button-secondary" onClick={() => void clearAll()}>
             {t('history.clearAll')}
           </button>
         )}
       </div>
+
+      {/* Single live region announces copy state changes for screen readers. */}
+      <span className="visually-hidden" aria-live="polite">
+        {copiedId ? t('aria.copied') : ''}
+      </span>
 
       {entries.length === 0 && (
         <p className="helper">{t('history.empty')}</p>
@@ -72,21 +66,24 @@ export function HistoryPage(): JSX.Element {
           >
             <div className="row" style={{ justifyContent: 'space-between', marginBottom: 6 }}>
               <span style={{ fontSize: 11, color: 'var(--fg-dim)', textTransform: 'uppercase', letterSpacing: 0.04 }}>
-                {formatTimestamp(e.timestamp)}
+                {formatTimestamp(e.timestamp, lang)}
                 {e.durationMs !== undefined && ` · ${(e.durationMs / 1000).toFixed(1)}s`}
               </span>
               <div className="row" style={{ gap: 6 }}>
                 <button
+                  className="button-secondary"
                   onClick={() => copy(e)}
-                  style={iconBtn}
+                  aria-label={copiedId === e.id ? t('aria.copied') : t('aria.copy')}
                   title={t('history.copy')}
                 >
                   {copiedId === e.id ? t('history.copied') : t('history.copy')}
                 </button>
                 <button
+                  className="button-icon"
                   onClick={() => void remove(e.id)}
-                  style={{ ...iconBtn, color: 'var(--error)' }}
-                  title="×"
+                  aria-label={t('aria.delete')}
+                  title={t('aria.delete')}
+                  style={{ color: 'var(--error)' }}
                 >
                   ×
                 </button>
@@ -102,26 +99,15 @@ export function HistoryPage(): JSX.Element {
   );
 }
 
-const iconBtn: React.CSSProperties = {
-  background: 'transparent',
-  border: '1px solid var(--border)',
-  color: 'var(--fg-dim)',
-  padding: '2px 10px',
-  borderRadius: 4,
-  cursor: 'pointer',
-  fontSize: 12,
-  lineHeight: 1.4
-};
-
-function formatTimestamp(ms: number): string {
+function formatTimestamp(ms: number, lang: string): string {
   const d = new Date(ms);
-  const pad = (n: number): string => String(n).padStart(2, '0');
-  const today = new Date();
-  const sameDay =
-    d.getFullYear() === today.getFullYear() &&
-    d.getMonth() === today.getMonth() &&
-    d.getDate() === today.getDate();
-  const time = `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
-  if (sameDay) return time;
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${time}`;
+  try {
+    return new Intl.DateTimeFormat(lang, {
+      dateStyle: 'medium',
+      timeStyle: 'short'
+    }).format(d);
+  } catch {
+    // Fallback for unusual lang tags.
+    return d.toLocaleString();
+  }
 }

@@ -9,15 +9,17 @@ interface Props {
 }
 
 export function GeneralPage({ settings, update }: Props): JSX.Element {
-  const { t, setLang } = useI18n();
+  const { t, tPlatform, setLang } = useI18n();
   const [hasKey, setHasKey] = useState<boolean | null>(null);
   const [keyInput, setKeyInput] = useState('');
   const [saving, setSaving] = useState(false);
   const [savedAt, setSavedAt] = useState<number | null>(null);
+  const [apiKeyError, setApiKeyError] = useState<string | null>(null);
   const [testing, setTesting] = useState(false);
   const [lastTranscript, setLastTranscript] = useState('');
   const [testError, setTestError] = useState<string | null>(null);
   const [devices, setDevices] = useState<AudioInputDevice[]>([]);
+  const [deviceError, setDeviceError] = useState<string | null>(null);
 
   useEffect(() => {
     void window.windvoice.hasApiKey().then(setHasKey);
@@ -40,17 +42,32 @@ export function GeneralPage({ settings, update }: Props): JSX.Element {
   }, []);
 
   useEffect(() => {
-    void enumerateMicrophones().then(setDevices);
+    void enumerateMicrophones()
+      .then((devs) => {
+        setDevices(devs);
+        setDeviceError(null);
+      })
+      .catch((err) => setDeviceError(err instanceof Error ? err.message : String(err)));
   }, []);
 
   async function saveKey(): Promise<void> {
     if (!keyInput.trim()) return;
     setSaving(true);
+    setApiKeyError(null);
     try {
       await window.windvoice.setApiKey(keyInput.trim());
       setHasKey(true);
       setKeyInput('');
       setSavedAt(Date.now());
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (/invalid/i.test(message)) {
+        setApiKeyError(t('error.apiKeyInvalid'));
+      } else if (/keytar|keychain|credential|keyring|secure[- ]?store/i.test(message)) {
+        setApiKeyError(t('error.secureStoreUnavailable'));
+      } else {
+        setApiKeyError(message);
+      }
     } finally {
       setSaving(false);
     }
@@ -72,14 +89,19 @@ export function GeneralPage({ settings, update }: Props): JSX.Element {
   }
 
   async function refreshDevices(): Promise<void> {
-    setDevices(await enumerateMicrophones());
+    setDeviceError(null);
+    try {
+      setDevices(await enumerateMicrophones());
+    } catch (err) {
+      setDeviceError(err instanceof Error ? err.message : String(err));
+    }
   }
 
   return (
     <>
       <h2>{t('general.title')}</h2>
 
-      <label className="field">
+      <div className="field">
         <span className="field-label">{t('general.apiKey')}</span>
         <div className="row">
           <input
@@ -98,10 +120,15 @@ export function GeneralPage({ settings, update }: Props): JSX.Element {
           </button>
         </div>
         <div className="helper">
-          {t('general.apiKeyHelper')}
+          {tPlatform('general.apiKeyHelper')}
           {savedAt && <span style={{ marginLeft: 8, color: 'var(--accent)' }}>{t('general.saved')}</span>}
         </div>
-      </label>
+        {apiKeyError && (
+          <div className="helper" style={{ color: 'var(--error)', marginTop: 4 }} role="alert">
+            {apiKeyError}
+          </div>
+        )}
+      </div>
 
       <label className="field">
         <span className="field-label">{t('general.uiLanguage')}</span>
@@ -133,20 +160,17 @@ export function GeneralPage({ settings, update }: Props): JSX.Element {
             ))}
           </select>
           <button
+            className="button-secondary"
             onClick={() => void refreshDevices()}
-            style={{
-              background: 'transparent',
-              border: '1px solid var(--border)',
-              color: 'var(--fg-dim)',
-              padding: '6px 12px',
-              borderRadius: 6,
-              cursor: 'pointer',
-              fontSize: 12
-            }}
           >
             {t('general.microphoneRefresh')}
           </button>
         </div>
+        {deviceError && (
+          <div className="helper" style={{ color: 'var(--error)' }} role="alert">
+            {deviceError}
+          </div>
+        )}
       </label>
 
       <label className="field">
@@ -176,14 +200,14 @@ export function GeneralPage({ settings, update }: Props): JSX.Element {
             })
           }
         >
-          <option value="paste">{t('general.insertionPaste')}</option>
-          <option value="type" disabled>{t('general.insertionType')}</option>
+          <option value="paste">{tPlatform('general.insertionPaste')}</option>
+          <option value="type">{t('general.insertionType')}</option>
         </select>
       </label>
 
-      <label className="field">
+      <div className="field">
         <span className="field-label">{t('general.formatter')}</span>
-        <div className="row">
+        <label className="row" style={{ cursor: 'pointer' }}>
           <input
             type="checkbox"
             checked={settings.formatter.enabled}
@@ -194,13 +218,13 @@ export function GeneralPage({ settings, update }: Props): JSX.Element {
             }
           />
           <span>{t('general.formatterEnable')}</span>
-        </div>
+        </label>
         <div className="helper">{t('general.formatterHelper')}</div>
-      </label>
+      </div>
 
       <div className="field" style={{ paddingTop: 12, borderTop: '1px solid var(--border)' }}>
         <span className="field-label">{t('general.feedback')}</span>
-        <div className="row">
+        <label className="row" style={{ cursor: 'pointer' }}>
           <input
             type="checkbox"
             checked={settings.ui.overlayEnabled}
@@ -209,10 +233,10 @@ export function GeneralPage({ settings, update }: Props): JSX.Element {
             }
           />
           <span>{t('general.showOverlay')}</span>
-        </div>
+        </label>
         <div className="helper" style={{ marginBottom: 8 }}>{t('general.showOverlayHelper')}</div>
 
-        <div className="row">
+        <label className="row" style={{ cursor: 'pointer' }}>
           <input
             type="checkbox"
             checked={settings.ui.soundCuesEnabled}
@@ -221,10 +245,10 @@ export function GeneralPage({ settings, update }: Props): JSX.Element {
             }
           />
           <span>{t('general.soundCues')}</span>
-        </div>
+        </label>
         <div className="helper" style={{ marginBottom: 8 }}>{t('general.soundCuesHelper')}</div>
 
-        <div className="row">
+        <label className="row" style={{ cursor: 'pointer' }}>
           <input
             type="checkbox"
             checked={settings.ui.duckOtherAudio}
@@ -233,10 +257,10 @@ export function GeneralPage({ settings, update }: Props): JSX.Element {
             }
           />
           <span>{t('general.duckAudio')}</span>
-        </div>
+        </label>
         <div className="helper" style={{ marginBottom: 8 }}>{t('general.duckAudioHelper')}</div>
 
-        <div className="row">
+        <label className="row" style={{ cursor: 'pointer' }}>
           <input
             type="checkbox"
             checked={settings.insertion.streaming}
@@ -247,13 +271,13 @@ export function GeneralPage({ settings, update }: Props): JSX.Element {
             }
           />
           <span>{t('general.streaming')}</span>
-        </div>
+        </label>
         <div className="helper">{t('general.streamingHelper')}</div>
       </div>
 
       <div className="field" style={{ paddingTop: 12, borderTop: '1px solid var(--border)' }}>
         <span className="field-label">{t('general.system')}</span>
-        <div className="row">
+        <label className="row" style={{ cursor: 'pointer' }}>
           <input
             type="checkbox"
             checked={settings.ui.autoLaunch}
@@ -262,10 +286,10 @@ export function GeneralPage({ settings, update }: Props): JSX.Element {
             }
           />
           <span>{t('general.autoLaunch')}</span>
-        </div>
+        </label>
         <div className="helper" style={{ marginBottom: 8 }}>{t('general.autoLaunchHelper')}</div>
 
-        <div className="row">
+        <label className="row" style={{ cursor: 'pointer' }}>
           <input
             type="checkbox"
             checked={settings.ui.autoUpdate}
@@ -274,7 +298,7 @@ export function GeneralPage({ settings, update }: Props): JSX.Element {
             }
           />
           <span>{t('general.autoUpdate')}</span>
-        </div>
+        </label>
         <div className="helper">{t('general.autoUpdateHelper')}</div>
       </div>
 

@@ -12,9 +12,22 @@ function enabledFor(domain: Domain): boolean {
   return process.env[`WINDVOICE_DEBUG_${domain}`] === '1';
 }
 
+const SECRET_PATTERNS: ReadonlyArray<RegExp> = [
+  /sk-[A-Za-z0-9_-]{4,}/g,
+  /Bearer\s+[A-Za-z0-9._-]+/g
+];
+
+function scrub(message: string): string {
+  let out = message;
+  for (const re of SECRET_PATTERNS) {
+    out = out.replace(re, '***REDACTED***');
+  }
+  return out;
+}
+
 export function debug(domain: Domain, message: string): void {
   if (!enabledFor(domain)) return;
-  process.stderr.write(`[${domain.toLowerCase()}] ${message}\n`);
+  process.stderr.write(`[${domain.toLowerCase()}] ${scrub(message)}\n`);
 }
 
 export function isDebug(domain: Domain): boolean {

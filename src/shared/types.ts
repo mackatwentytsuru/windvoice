@@ -10,6 +10,16 @@ export const HotkeyBindingSchema = z.object({
 });
 export type HotkeyBinding = z.infer<typeof HotkeyBindingSchema>;
 
+// On macOS, RightAlt (Option) is reserved for diacritic input — must not be
+// swallowed. Fall back to RightCtrl, which is otherwise unused.
+export function defaultHotkey(): string {
+  return process.platform === 'darwin' ? 'RightCtrl' : 'RightAlt';
+}
+
+export function defaultHotkeyBindings(): HotkeyBinding[] {
+  return [{ id: 'primary', keys: [defaultHotkey()], mode: 'push-to-talk', format: true }];
+}
+
 export const DictionaryEntrySchema = z.object({
   from: z.string().min(1),
   to: z.string()
@@ -25,9 +35,7 @@ export const ReplacementEntrySchema = z.object({
 export type ReplacementEntry = z.infer<typeof ReplacementEntrySchema>;
 
 export const SettingsSchema = z.object({
-  hotkeys: z.array(HotkeyBindingSchema).default([
-    { id: 'primary', keys: ['RightAlt'], mode: 'push-to-talk', format: true }
-  ]),
+  hotkeys: z.array(HotkeyBindingSchema).default(() => defaultHotkeyBindings()),
   replacements: z.array(ReplacementEntrySchema).default([]),
   audio: z
     .object({

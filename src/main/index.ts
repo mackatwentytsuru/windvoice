@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, session } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, session, systemPreferences } from 'electron';
 import path from 'node:path';
 import { is } from '@main/audio/env';
 import { settingsStore } from '@main/store/settings';
@@ -7,14 +7,17 @@ import { HotkeyManager } from '@main/hotkey/manager';
 import { AudioBridge } from '@main/audio/bridge';
 import { OverlayWindow } from '@main/overlay/window';
 import { DictationOrchestrator } from '@main/dictation/orchestrator';
-import { createTray, setStatus, refreshTrayLanguage } from '@main/tray';
-import { registerIpc } from '@main/ipc/handlers';
+import { createTray, setStatus, refreshTrayLanguage, onStatusChanged } from '@main/tray';
+import { registerIpc, setTrustedSettingsSender } from '@main/ipc/handlers';
 import { postProcessorPipeline } from '@main/postprocess/pipeline';
 import { gptFormatter } from '@main/postprocess/formatter';
 import { replacementsProcessor } from '@main/postprocess/replacements';
 import { fileTagsProcessor } from '@main/postprocess/fileTags';
-import { initAutoUpdater } from '@main/updater';
-import { applyAutoLaunch } from '@main/autoLaunch';
+import { initAutoUpdater, onCheckDictationActive, notifyDictationIdle } from '@main/updater';
+import { applyAutoLaunch, onAutoLaunchError } from '@main/autoLaunch';
+import { onDuckError } from '@main/audio/duck';
+import { recoverClipboardIfPending } from '@main/inject/typer';
+import { flushHistory } from '@main/store/history';
 import { IPC } from '@shared/types';
 import { t } from '@shared/i18n';
 
@@ -57,11 +60,14 @@ async function createSettingsWindow(): Promise<BrowserWindow> {
   settingsWindow = win;
   // Settings page calls getUserMedia to enumerate microphones with labels.
   trustedMicIds.add(win.webContents.id);
+  // Restrict privileged IPCs (APIKEY_SET, CLIPBOARD_WRITE) to this sender.
+  setTrustedSettingsSender(win.webContents.id);
 
   win.on('ready-to-show', () => win.show());
   win.on('closed', () => {
     if (settingsWindow) trustedMicIds.delete(settingsWindow.webContents.id);
     settingsWindow = null;
+    setTrustedSettingsSender(null);
   });
 
   if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
@@ -91,12 +97,32 @@ app.whenReady().then(async () => {
     app.dock.hide();
   }
 
+  // macOS: trigger the OS Accessibility prompt the first time so global hotkeys
+  // and synthesized paste actually work. `prompt: true` displays the system
+  // dialog if not yet trusted; subsequent launches return immediately.
+  if (process.platform === 'darwin') {
+    try {
+      systemPreferences.isTrustedAccessibilityClient(true);
+    } catch {
+      /* dev/non-macOS Electron builds may not expose this */
+    }
+  }
+
+  // Restore clipboard if a prior session crashed mid-paste.
+  recoverClipboardIfPending();
+
   session.defaultSession.setPermissionRequestHandler((wc, permission, callback) => {
     if (permission === 'media') return callback(trustedMicIds.has(wc.id));
     callback(false);
   });
 
-  ipcMain.on(IPC.AUDIO_ERROR, (_e, message: string) => {
+  ipcMain.on(IPC.AUDIO_ERROR, (e, message: string) => {
+    // Only accept from the trusted hidden audio renderer.
+    const audioWcId = audio?.getWebContentsId();
+    if (audioWcId !== null && audioWcId !== undefined && e.sender.id !== audioWcId) {
+      return;
+    }
+    if (typeof message !== 'string') return;
     lastAudioError = message;
     process.stderr.write(`[audio] ${message}\n`);
     for (const win of BrowserWindow.getAllWindows()) {
@@ -173,7 +199,18 @@ app.whenReady().then(async () => {
     void orchestrator.prewarmConnection();
   }
 
+  // Surface duck / auto-launch errors to stderr (visible in dev console).
+  // A future iteration could also show a tray balloon; keep simple for now.
+  onDuckError((phase, message) => process.stderr.write(`[duck:${phase}] ${message}\n`));
+  onAutoLaunchError((message) => process.stderr.write(`[autoLaunch] ${message}\n`));
+
   applyAutoLaunch(settingsStore.get().ui.autoLaunch);
+
+  // Defer auto-update install while a dictation cycle is in flight.
+  onCheckDictationActive(() => orchestrator?.isActive() ?? false);
+  onStatusChanged((status) => {
+    if (status === 'idle') notifyDictationIdle();
+  });
   initAutoUpdater();
 
   await ensureApiKey();
@@ -185,8 +222,10 @@ app.on('window-all-closed', () => {
 
 app.on('before-quit', () => {
   hotkeys?.stop();
+  orchestrator?.dispose();
   audio?.destroy();
   overlay?.destroy();
+  flushHistory();
 });
 
 process.on('unhandledRejection', (reason) => {
