@@ -4,9 +4,10 @@ import { useI18n } from './useI18n';
 import { GeneralPage } from './pages/General';
 import { HotkeysPage } from './pages/Hotkeys';
 import { DictionaryPage } from './pages/Dictionary';
+import { ReplacementsPage } from './pages/Replacements';
 import { HistoryPage } from './pages/History';
 
-type Tab = 'general' | 'hotkeys' | 'dictionary' | 'history';
+type Tab = 'general' | 'hotkeys' | 'dictionary' | 'replacements' | 'history';
 
 export function App(): JSX.Element {
   const { t } = useI18n();
@@ -38,6 +39,7 @@ export function App(): JSX.Element {
               ['general', t('tab.general')],
               ['hotkeys', t('tab.hotkeys')],
               ['dictionary', t('tab.dictionary')],
+              ['replacements', t('tab.replacements')],
               ['history', t('tab.history')]
             ] as const
           ).map(([key, label]) => (
@@ -60,6 +62,9 @@ export function App(): JSX.Element {
         )}
         {settings && tab === 'dictionary' && (
           <DictionaryPage settings={settings} update={update} />
+        )}
+        {settings && tab === 'replacements' && (
+          <ReplacementsPage settings={settings} update={update} />
         )}
         {tab === 'history' && <HistoryPage />}
       </main>

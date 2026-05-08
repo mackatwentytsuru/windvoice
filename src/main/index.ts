@@ -9,6 +9,10 @@ import { OverlayWindow } from '@main/overlay/window';
 import { DictationOrchestrator } from '@main/dictation/orchestrator';
 import { createTray, setStatus, refreshTrayLanguage } from '@main/tray';
 import { registerIpc } from '@main/ipc/handlers';
+import { postProcessorPipeline } from '@main/postprocess/pipeline';
+import { gptFormatter } from '@main/postprocess/formatter';
+import { replacementsProcessor } from '@main/postprocess/replacements';
+import { fileTagsProcessor } from '@main/postprocess/fileTags';
 import { IPC } from '@shared/types';
 import { t } from '@shared/i18n';
 
@@ -105,6 +109,13 @@ app.whenReady().then(async () => {
   await audio.init(PRELOAD_PATH);
   const audioWcId = audio.getWebContentsId();
   if (audioWcId !== null) trustedMicIds.add(audioWcId);
+
+  // Register post-processors. Order matters: formatter first (cleans
+  // hallucinations + applies dictionary via prompt), then deterministic
+  // local steps (replacements, file tags).
+  postProcessorPipeline.register(gptFormatter);
+  postProcessorPipeline.register(replacementsProcessor);
+  postProcessorPipeline.register(fileTagsProcessor);
 
   overlay = new OverlayWindow();
   await overlay.init(PRELOAD_PATH);

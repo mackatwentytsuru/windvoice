@@ -234,7 +234,21 @@ export function GeneralPage({ settings, update }: Props): JSX.Element {
           />
           <span>{t('general.duckAudio')}</span>
         </div>
-        <div className="helper">{t('general.duckAudioHelper')}</div>
+        <div className="helper" style={{ marginBottom: 8 }}>{t('general.duckAudioHelper')}</div>
+
+        <div className="row">
+          <input
+            type="checkbox"
+            checked={settings.insertion.streaming}
+            onChange={(e) =>
+              void update({
+                insertion: { ...settings.insertion, streaming: e.target.checked }
+              })
+            }
+          />
+          <span>{t('general.streaming')}</span>
+        </div>
+        <div className="helper">{t('general.streamingHelper')}</div>
       </div>
 
       <div className="field" style={{ marginTop: 24, paddingTop: 16, borderTop: '1px solid var(--border)' }}>

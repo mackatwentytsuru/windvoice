@@ -4,10 +4,12 @@ import type { OverlayWindow } from '@main/overlay/window';
 import { audioDuck } from '@main/audio/duck';
 import { RealtimeClient } from '@main/realtime/client';
 import { pasteText } from '@main/inject/typer';
+import { streamingTyper } from '@main/inject/streamingTyper';
 import { secureStore } from '@main/store/secure';
 import { settingsStore } from '@main/store/settings';
 import { setStatus } from '@main/tray';
 import { historyStore } from '@main/store/history';
+import { postProcessorPipeline } from '@main/postprocess/pipeline';
 import { debug } from '@main/debug';
 import { IPC, type DictationStatus } from '@shared/types';
 import { CHUNK_MS, FINAL_TIMEOUT_MS, MIN_AUDIO_MS } from '@shared/constants';
@@ -17,7 +19,7 @@ const MIN_CHUNKS = Math.ceil(MIN_AUDIO_MS / CHUNK_MS);
 /**
  * Owns the persistent OpenAI Realtime connection, runs one-at-a-time
  * dictation cycles, and coordinates auxiliary feedback (overlay, beep,
- * system-volume duck).
+ * system-volume duck) and post-processing.
  */
 export class DictationOrchestrator {
   private client: RealtimeClient | null = null;
@@ -28,6 +30,9 @@ export class DictationOrchestrator {
   private pendingFinal: ((text: string) => void) | null = null;
   private cancelRequested = false;
   private duckedThisCycle = false;
+  private streamingActive = false;
+  /** How many chars of `partial` have already been streaming-pasted. */
+  private streamedPrefixLen = 0;
   private overlay: OverlayWindow | null = null;
 
   constructor(private audio: AudioBridge, overlay?: OverlayWindow) {
@@ -48,6 +53,8 @@ export class DictationOrchestrator {
     this.cancelRequested = false;
     this.partial = '';
     this.duckedThisCycle = false;
+    this.streamingActive = false;
+    this.streamedPrefixLen = 0;
 
     let client: RealtimeClient;
     try {
@@ -68,8 +75,6 @@ export class DictationOrchestrator {
     void client;
     const settings = settingsStore.get();
 
-    // Side-effects must happen AFTER the connect-cancel check so we don't
-    // duck/beep for a dictation we're about to cancel.
     if (settings.ui.duckOtherAudio) {
       this.duckedThisCycle = true;
       try {
@@ -81,6 +86,11 @@ export class DictationOrchestrator {
     }
     if (settings.ui.soundCuesEnabled) {
       this.audio.playBeep('start');
+    }
+
+    if (settings.insertion.streaming) {
+      streamingTyper.begin(settings.insertion.restoreClipboard);
+      this.streamingActive = true;
     }
 
     const { startCount } = this.audio.beginForwarding();
@@ -135,27 +145,60 @@ export class DictationOrchestrator {
       try {
         await audioDuck.restore();
       } catch (err) {
-        // A stuck-low master volume is user-visible, so log unconditionally.
         process.stderr.write(`[dictation] duck restore failed: ${errMsg(err)}\n`);
       }
     }
 
-    if (final.trim().length > 0) {
-      this.broadcast(IPC.TRANSCRIPT_FINAL, final);
+    // Streaming mode: the tail of `final` may not have been pasted yet
+    // (the last delta could arrive after we drain). Push the remaining
+    // suffix and end the streaming session. NO post-processing in this
+    // mode — the user explicitly opted into raw streaming.
+    if (this.streamingActive) {
+      const tail = final.slice(this.streamedPrefixLen);
+      if (tail) streamingTyper.append(tail);
       try {
-        await pasteText(final, settingsStore.get().insertion.restoreClipboard);
+        await streamingTyper.end();
       } catch (err) {
-        debug('DICTATION', `paste failed: ${errMsg(err)}`);
+        debug('DICTATION', `streamingTyper.end failed: ${errMsg(err)}`);
       }
-      try {
-        const entry = historyStore.add({
-          transcript: final,
-          durationMs: delivered * CHUNK_MS
-        });
-        this.broadcast(IPC.HISTORY_CHANGED, entry);
-      } catch (err) {
-        debug('DICTATION', `history.add failed: ${errMsg(err)}`);
+      this.streamingActive = false;
+      this.streamedPrefixLen = 0;
+      // Still record history (raw transcript).
+      if (final.trim().length > 0) {
+        this.broadcast(IPC.TRANSCRIPT_FINAL, final);
+        this.tryAddHistory(final, delivered);
       }
+      return;
+    }
+
+    if (final.trim().length === 0) return;
+
+    // Post-processing pipeline: formatter (if enabled) → replacements →
+    // file tags. Each step is best-effort; failures fall through.
+    const apiKey = (await secureStore.getApiKey()) ?? undefined;
+    const processed = await postProcessorPipeline.run(final, {
+      settings,
+      apiKey
+    });
+
+    this.broadcast(IPC.TRANSCRIPT_FINAL, processed);
+    try {
+      await pasteText(processed, settings.insertion.restoreClipboard);
+    } catch (err) {
+      debug('DICTATION', `paste failed: ${errMsg(err)}`);
+    }
+    this.tryAddHistory(processed, delivered);
+  }
+
+  private tryAddHistory(text: string, deliveredChunks: number): void {
+    try {
+      const entry = historyStore.add({
+        transcript: text,
+        durationMs: deliveredChunks * CHUNK_MS
+      });
+      this.broadcast(IPC.HISTORY_CHANGED, entry);
+    } catch (err) {
+      debug('DICTATION', `history.add failed: ${errMsg(err)}`);
     }
   }
 
@@ -193,6 +236,14 @@ export class DictationOrchestrator {
       client.on('delta', (text) => {
         this.partial += text;
         this.broadcastDelta(this.partial);
+        // Streaming insertion: flush the new tail to the streaming typer.
+        if (this.streamingActive) {
+          const tail = this.partial.slice(this.streamedPrefixLen);
+          if (tail) {
+            streamingTyper.append(tail);
+            this.streamedPrefixLen = this.partial.length;
+          }
+        }
       });
       client.on('final', (text) => {
         if (this.pendingFinal) this.pendingFinal(text);
@@ -200,17 +251,16 @@ export class DictationOrchestrator {
       client.on('error', (err) => {
         debug('REALTIME', err.message);
         this.broadcast(IPC.TRANSCRIPT_FINAL, `[error] ${err.message}`);
-        // Unblock a pending stop() if any.
         if (this.pendingFinal) this.pendingFinal('');
-        // If a dictation is in flight without an awaiting stop(), the WS
-        // dropped on its own (server kicked us, network blip, etc.). Reset
-        // state so the next hotkey press isn't ignored, and surface the
-        // error to the tray + overlay.
         if (this.inFlight && !this.pendingFinal) {
           this.inFlight = false;
           this.duckedThisCycle = false;
           this.audio.endForwarding(this.startCount);
           void audioDuck.restore();
+          if (this.streamingActive) {
+            void streamingTyper.end();
+            this.streamingActive = false;
+          }
           this.updateStatus('error');
         }
       });

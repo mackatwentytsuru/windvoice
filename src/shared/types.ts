@@ -16,10 +16,19 @@ export const DictionaryEntrySchema = z.object({
 });
 export type DictionaryEntry = z.infer<typeof DictionaryEntrySchema>;
 
+export const ReplacementEntrySchema = z.object({
+  trigger: z.string().min(1),
+  expansion: z.string(),
+  /** When true, match only at word boundaries (default true). */
+  wordBoundary: z.boolean().default(true)
+});
+export type ReplacementEntry = z.infer<typeof ReplacementEntrySchema>;
+
 export const SettingsSchema = z.object({
   hotkeys: z.array(HotkeyBindingSchema).default([
     { id: 'primary', keys: ['RightAlt'], mode: 'push-to-talk', format: true }
   ]),
+  replacements: z.array(ReplacementEntrySchema).default([]),
   audio: z
     .object({
       device: z.string().default('default'),
@@ -38,7 +47,9 @@ export const SettingsSchema = z.object({
   insertion: z
     .object({
       method: z.enum(['paste', 'type']).default('paste'),
-      restoreClipboard: z.boolean().default(true)
+      restoreClipboard: z.boolean().default(true),
+      /** When true, paste partial transcripts during recording instead of waiting for the final. */
+      streaming: z.boolean().default(false)
     })
     .default({}),
   ui: z
