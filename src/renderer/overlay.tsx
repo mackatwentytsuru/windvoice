@@ -8,6 +8,7 @@ function Overlay(): JSX.Element | null {
   const [status, setStatus] = useState<DictationStatus>('idle');
   const [level, setLevel] = useState(0);
   const [lang, setLang] = useState<UiLang>('ja');
+  const [overlayEnabled, setOverlayEnabled] = useState(true);
 
   useEffect(() => {
     const off = window.windvoice.onOverlayState((s: OverlayState) => {
@@ -17,16 +18,22 @@ function Overlay(): JSX.Element | null {
     return off;
   }, []);
 
+  // Pull settings once on mount, then keep up via the dedicated
+  // settings:changed event — NOT via status:changed (which fires per
+  // dictation and would re-trigger IPC at ~20 Hz during recording).
   useEffect(() => {
-    void window.windvoice.getSettings().then((s: Settings) => setLang(s.ui.uiLanguage));
-    const off = window.windvoice.onStatus(() => {
-      // settings may have changed too; re-fetch
-      void window.windvoice.getSettings().then((s: Settings) => setLang(s.ui.uiLanguage));
+    void window.windvoice.getSettings().then((s: Settings) => {
+      setLang(s.ui.uiLanguage);
+      setOverlayEnabled(s.ui.overlayEnabled);
+    });
+    const off = window.windvoice.onSettingsChanged((s: Settings) => {
+      setLang(s.ui.uiLanguage);
+      setOverlayEnabled(s.ui.overlayEnabled);
     });
     return off;
   }, []);
 
-  if (status === 'idle') return null;
+  if (status === 'idle' || !overlayEnabled) return null;
 
   const label =
     status === 'listening'

@@ -1,6 +1,7 @@
 import Store from 'electron-store';
 import { randomUUID } from 'node:crypto';
-import { HistoryEntrySchema, MAX_HISTORY, type HistoryEntry } from '@shared/types';
+import { HistoryEntrySchema, type HistoryEntry } from '@shared/types';
+import { MAX_HISTORY } from '@shared/constants';
 
 interface HistoryShape {
   entries: HistoryEntry[];

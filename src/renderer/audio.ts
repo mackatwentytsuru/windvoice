@@ -3,9 +3,7 @@
 // optional level to the main process.
 
 import workletSource from './audio-worklet.js?raw';
-
-const TARGET_SAMPLE_RATE = 24_000;
-const CHUNK_MS = 50;
+import { CHUNK_MS, TARGET_SAMPLE_RATE } from '../shared/constants';
 
 let audioCtx: AudioContext | null = null;
 let mediaStream: MediaStream | null = null;

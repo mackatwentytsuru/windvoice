@@ -1,5 +1,6 @@
 import WebSocket from 'ws';
 import { EventEmitter } from 'node:events';
+import { debug } from '@main/debug';
 import {
   TranscriptionDeltaEvent,
   TranscriptionCompletedEvent,
@@ -33,8 +34,6 @@ export declare interface RealtimeClient {
     ...args: Parameters<RealtimeClientEvents[K]>
   ): boolean;
 }
-
-const DEBUG = process.env['WINDVOICE_DEBUG_REALTIME'] === '1';
 
 export class RealtimeClient extends EventEmitter {
   private ws: WebSocket | null = null;
@@ -150,9 +149,7 @@ export class RealtimeClient extends EventEmitter {
     if (typeof parsed !== 'object' || parsed === null) return;
     const obj = parsed as { type?: string };
 
-    if (DEBUG) {
-      process.stderr.write(`[realtime] ${obj.type ?? 'unknown'}\n`);
-    }
+    debug('REALTIME', `${obj.type ?? 'unknown'}`);
 
     switch (obj.type) {
       case 'conversation.item.input_audio_transcription.delta': {

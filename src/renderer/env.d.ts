@@ -33,6 +33,7 @@ declare global {
       clearHistory(): Promise<HistoryEntry[]>;
       onHistoryChanged(cb: (entry: HistoryEntry) => void): () => void;
       copyText(text: string): void;
+      onSettingsChanged(cb: (s: Settings) => void): () => void;
     };
     audio: {
       ready(): void;

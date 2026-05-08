@@ -1,9 +1,8 @@
 import { BrowserWindow, ipcMain } from 'electron';
 import path from 'node:path';
 import { is } from './env';
+import { debug, isDebug } from '@main/debug';
 import { IPC, type AudioChunk, type BeepKind } from '@shared/types';
-
-const DEBUG = process.env['WINDVOICE_DEBUG_AUDIO'] === '1';
 
 /**
  * Owns a hidden BrowserWindow that performs WebAudio capture and forwards
@@ -23,15 +22,15 @@ export class AudioBridge {
     if (this.win) return;
 
     ipcMain.on(IPC.AUDIO_READY, () => {
-      if (DEBUG) process.stderr.write('[audio] renderer reported ready\n');
+      debug('AUDIO', 'renderer reported ready');
       this.ready = true;
       const resolvers = this.readyResolvers;
       this.readyResolvers = [];
       resolvers.forEach((r) => r());
     });
     ipcMain.on(IPC.AUDIO_CHUNK, (_e, chunk: AudioChunk) => {
-      if (DEBUG && this.chunkCount < 5) {
-        process.stderr.write(`[audio] chunk #${this.chunkCount + 1} samples=${chunk.samples} level=${chunk.level?.toFixed(3) ?? '?'}\n`);
+      if (isDebug('AUDIO') && this.chunkCount < 5) {
+        debug('AUDIO', `chunk #${this.chunkCount + 1} samples=${chunk.samples} level=${chunk.level?.toFixed(3) ?? '?'}`);
       }
       this.chunkCount++;
       // Always emit the level (used by the overlay meter while visible).
@@ -47,6 +46,11 @@ export class AudioBridge {
         preload: preloadPath,
         contextIsolation: true,
         nodeIntegration: false,
+        // Note: must remain `false`. With sandbox=true under Electron 42,
+        // AudioWorklet.addModule() is denied for blob: URLs in the renderer,
+        // which breaks our PCM downsampler. The other security knobs
+        // (contextIsolation + the scoped permission handler in main/index.ts)
+        // already cover the threat model for this hidden capture window.
         sandbox: false
       }
     });
@@ -57,7 +61,7 @@ export class AudioBridge {
     } else {
       await win.loadFile(path.join(__dirname, '../renderer/audio.html'));
     }
-    if (DEBUG) process.stderr.write('[audio] hidden window loaded\n');
+    debug('AUDIO', 'hidden window loaded');
   }
 
   setChunkListener(cb: ((chunk: AudioChunk) => void) | null): void {
@@ -68,16 +72,21 @@ export class AudioBridge {
     this.levelListener = cb;
   }
 
+  /** Used by main to scope `setPermissionRequestHandler` to this window only. */
+  getWebContentsId(): number | null {
+    return this.win?.webContents.id ?? null;
+  }
+
   async prewarm(deviceId?: string): Promise<void> {
     if (this.capturing) return;
     await this.waitReady();
-    this.win?.webContents.send('audio:start', deviceId);
+    this.win?.webContents.send(IPC.AUDIO_START_CMD, deviceId);
     this.capturing = true;
-    if (DEBUG) process.stderr.write(`[audio] prewarm requested (device=${deviceId ?? 'default'})\n`);
+    debug('AUDIO', `prewarm requested (device=${deviceId ?? 'default'})`);
   }
 
   changeDevice(deviceId: string): void {
-    this.win?.webContents.send('audio:deviceChange', deviceId);
+    this.win?.webContents.send(IPC.AUDIO_DEVICE_CHANGE, deviceId);
   }
 
   beginForwarding(): { startCount: number } {
@@ -95,15 +104,26 @@ export class AudioBridge {
   }
 
   destroy(): void {
-    this.win?.webContents.send('audio:stop');
+    this.win?.webContents.send(IPC.AUDIO_STOP_CMD);
     this.capturing = false;
     this.forwarding = false;
     this.win?.close();
     this.win = null;
   }
 
-  private waitReady(): Promise<void> {
+  private waitReady(timeoutMs = 8_000): Promise<void> {
     if (this.ready) return Promise.resolve();
-    return new Promise<void>((resolve) => this.readyResolvers.push(resolve));
+    return new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        const idx = this.readyResolvers.indexOf(wrapped);
+        if (idx >= 0) this.readyResolvers.splice(idx, 1);
+        reject(new Error(`AudioBridge.waitReady timed out after ${timeoutMs} ms`));
+      }, timeoutMs);
+      const wrapped = (): void => {
+        clearTimeout(timer);
+        resolve();
+      };
+      this.readyResolvers.push(wrapped);
+    });
   }
 }

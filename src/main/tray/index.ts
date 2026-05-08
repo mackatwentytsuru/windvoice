@@ -1,6 +1,6 @@
 import { Tray, Menu, nativeImage, app, BrowserWindow } from 'electron';
 import path from 'node:path';
-import type { DictationStatus } from '@shared/types';
+import { IPC, type DictationStatus } from '@shared/types';
 import { t } from '@shared/i18n';
 import { settingsStore } from '@main/store/settings';
 
@@ -54,7 +54,7 @@ export function setStatus(status: DictationStatus): void {
     refreshMenu();
   }
   for (const win of BrowserWindow.getAllWindows()) {
-    win.webContents.send('status:changed', status);
+    win.webContents.send(IPC.STATUS_CHANGED, status);
   }
 }
 

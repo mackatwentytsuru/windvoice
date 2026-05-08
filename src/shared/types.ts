@@ -70,16 +70,14 @@ export const HistoryEntrySchema = z.object({
 });
 export type HistoryEntry = z.infer<typeof HistoryEntrySchema>;
 
-export const MAX_HISTORY = 200;
-
 // ─── IPC channels ──────────────────────────────────────────────────────────
 
 export const IPC = {
   // settings
   SETTINGS_GET: 'settings:get',
   SETTINGS_SET: 'settings:set',
+  SETTINGS_CHANGED: 'settings:changed',
   // api key
-  APIKEY_GET: 'apikey:get',
   APIKEY_SET: 'apikey:set',
   APIKEY_HAS: 'apikey:has',
   // dictation control
@@ -94,16 +92,21 @@ export const IPC = {
   STATUS_CHANGED: 'status:changed',
   TRANSCRIPT_DELTA: 'transcript:delta',
   TRANSCRIPT_FINAL: 'transcript:final',
-  // audio worker (hidden renderer → main)
+  // audio worker IPC (renderer → main)
   AUDIO_CHUNK: 'audio:chunk',
   AUDIO_READY: 'audio:ready',
   AUDIO_ERROR: 'audio:error',
+  // audio worker IPC (main → renderer commands)
+  AUDIO_START_CMD: 'audio:start',
+  AUDIO_STOP_CMD: 'audio:stop',
+  AUDIO_DEVICE_CHANGE: 'audio:deviceChange',
   // overlay / level / beep
   AUDIO_LEVEL: 'audio:level',
   BEEP_PLAY: 'beep:play',
   OVERLAY_STATE: 'overlay:state',
-  // mic devices
-  MIC_LIST: 'mic:list'
+  // utilities
+  AUDIO_LAST_ERROR: 'audio:lastError',
+  CLIPBOARD_WRITE: 'clipboard:write'
 } as const;
 
 export interface AudioInputDevice {
@@ -114,7 +117,6 @@ export interface AudioInputDevice {
 export interface OverlayState {
   status: DictationStatus;
   level: number;
-  partial?: string;
 }
 
 // ─── Audio chunk envelope ──────────────────────────────────────────────────

@@ -21,6 +21,13 @@ let hotkeys: HotkeyManager | null = null;
 let orchestrator: DictationOrchestrator | null = null;
 let lastAudioError: string | null = null;
 
+/**
+ * webContents IDs that are allowed to receive a `media` (microphone) grant.
+ * Lazily populated as windows are created. The overlay window is NEVER added
+ * because it has no business calling getUserMedia.
+ */
+const trustedMicIds = new Set<number>();
+
 async function createSettingsWindow(): Promise<BrowserWindow> {
   if (settingsWindow && !settingsWindow.isDestroyed()) {
     if (settingsWindow.isMinimized()) settingsWindow.restore();
@@ -38,13 +45,16 @@ async function createSettingsWindow(): Promise<BrowserWindow> {
       preload: PRELOAD_PATH,
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: false
+      sandbox: true
     }
   });
   settingsWindow = win;
+  // Settings page calls getUserMedia to enumerate microphones with labels.
+  trustedMicIds.add(win.webContents.id);
 
   win.on('ready-to-show', () => win.show());
   win.on('closed', () => {
+    if (settingsWindow) trustedMicIds.delete(settingsWindow.webContents.id);
     settingsWindow = null;
   });
 
@@ -70,8 +80,8 @@ async function ensureApiKey(): Promise<void> {
 }
 
 app.whenReady().then(async () => {
-  session.defaultSession.setPermissionRequestHandler((_wc, permission, callback) => {
-    if (permission === 'media') return callback(true);
+  session.defaultSession.setPermissionRequestHandler((wc, permission, callback) => {
+    if (permission === 'media') return callback(trustedMicIds.has(wc.id));
     callback(false);
   });
 
@@ -93,6 +103,8 @@ app.whenReady().then(async () => {
 
   audio = new AudioBridge();
   await audio.init(PRELOAD_PATH);
+  const audioWcId = audio.getWebContentsId();
+  if (audioWcId !== null) trustedMicIds.add(audioWcId);
 
   overlay = new OverlayWindow();
   await overlay.init(PRELOAD_PATH);
@@ -115,7 +127,9 @@ app.whenReady().then(async () => {
     start: () => orchestrator?.start() ?? Promise.resolve(),
     stop: () => orchestrator?.stop() ?? Promise.resolve(),
     getLastAudioError: () => lastAudioError,
-    onApiKeyChanged: () => orchestrator?.prewarmConnection(),
+    onApiKeyChanged: async () => {
+      await orchestrator?.prewarmConnection();
+    },
     onSettingsChanged: (next, prev) => {
       if (next.audio.device !== prev.audio.device) {
         audio?.changeDevice(next.audio.device);

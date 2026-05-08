@@ -1,5 +1,6 @@
 import { uIOhook, UiohookKey } from 'uiohook-napi';
 import { EventEmitter } from 'node:events';
+import { debug, isDebug } from '@main/debug';
 import type { HotkeyBinding } from '@shared/types';
 
 export interface HotkeyEvents {
@@ -34,8 +35,6 @@ interface UiohookKeyboardEventLike {
   metaKey: boolean;
 }
 
-const DEBUG = process.env['WINDVOICE_DEBUG_HOTKEY'] === '1';
-
 export class HotkeyManager extends EventEmitter {
   private bindings: NormalizedBinding[] = [];
   private heldDown: Set<string> = new Set();
@@ -46,15 +45,14 @@ export class HotkeyManager extends EventEmitter {
     this.bindings = list
       .map((b) => HotkeyManager.normalize(b))
       .filter((x): x is NormalizedBinding => x !== null);
-    if (DEBUG) {
+    if (isDebug('HOTKEY')) {
       const summary = this.bindings.map((b) => ({
         id: b.binding.id,
         triggerKey: b.triggerKey,
         modifiers: b.modifiers,
         triggerProvidesModifier: b.triggerProvidesModifier
       }));
-      // Logged via stderr to avoid clobbering stdout in dev.
-      process.stderr.write(`[hotkey] bindings ${JSON.stringify(summary)}\n`);
+      debug('HOTKEY', `bindings ${JSON.stringify(summary)}`);
     }
   }
 
@@ -77,10 +75,8 @@ export class HotkeyManager extends EventEmitter {
   }
 
   private onKey(e: UiohookKeyboardEventLike, down: boolean): void {
-    if (DEBUG) {
-      process.stderr.write(
-        `[hotkey] ${down ? 'down' : 'up  '} keycode=${e.keycode} alt=${e.altKey} ctrl=${e.ctrlKey} shift=${e.shiftKey} meta=${e.metaKey}\n`
-      );
+    if (isDebug('HOTKEY')) {
+      debug('HOTKEY', `${down ? 'down' : 'up  '} keycode=${e.keycode} alt=${e.altKey} ctrl=${e.ctrlKey} shift=${e.shiftKey} meta=${e.metaKey}`);
     }
     for (const nb of this.bindings) {
       if (e.keycode !== nb.triggerKey) continue;

@@ -5,8 +5,7 @@
 // master-volume ducking is good enough for v1 and ships with no native deps.
 
 import loudness from 'loudness';
-
-const DEBUG = process.env['WINDVOICE_DEBUG_DUCK'] === '1';
+import { debug } from '@main/debug';
 
 export class AudioDuck {
   private originalVolume: number | null = null;
@@ -25,12 +24,10 @@ export class AudioDuck {
       const target = Math.max(0, Math.min(100, Math.round(v * multiplier)));
       await loudness.setVolume(target);
       this.active = true;
-      if (DEBUG) process.stderr.write(`[duck] ${v} → ${target}\n`);
+      debug('DUCK', `${v} → ${target}`);
     } catch (err) {
-      if (DEBUG) {
-        const msg = err instanceof Error ? err.message : String(err);
-        process.stderr.write(`[duck] failed to duck: ${msg}\n`);
-      }
+      const msg = err instanceof Error ? err.message : String(err);
+      debug('DUCK', `failed to duck: ${msg}`);
     }
   }
 
@@ -41,12 +38,10 @@ export class AudioDuck {
     this.originalVolume = null;
     try {
       await loudness.setVolume(original);
-      if (DEBUG) process.stderr.write(`[duck] restored to ${original}\n`);
+      debug('DUCK', `restored to ${original}`);
     } catch (err) {
-      if (DEBUG) {
-        const msg = err instanceof Error ? err.message : String(err);
-        process.stderr.write(`[duck] failed to restore: ${msg}\n`);
-      }
+      const msg = err instanceof Error ? err.message : String(err);
+      debug('DUCK', `failed to restore: ${msg}`);
     }
   }
 }

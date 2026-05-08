@@ -42,7 +42,7 @@ const api = {
     ipcRenderer.on(IPC.AUDIO_ERROR, handler);
     return () => ipcRenderer.removeListener(IPC.AUDIO_ERROR, handler);
   },
-  getLastAudioError: (): Promise<string | null> => ipcRenderer.invoke('audio:lastError'),
+  getLastAudioError: (): Promise<string | null> => ipcRenderer.invoke(IPC.AUDIO_LAST_ERROR),
 
   // overlay state subscription (used by overlay window only)
   onOverlayState: (cb: (s: OverlayState) => void): (() => void) => {
@@ -61,7 +61,12 @@ const api = {
     return () => ipcRenderer.removeListener(IPC.HISTORY_CHANGED, handler);
   },
   copyText: (text: string): void => {
-    void ipcRenderer.invoke('clipboard:write', text);
+    void ipcRenderer.invoke(IPC.CLIPBOARD_WRITE, text);
+  },
+  onSettingsChanged: (cb: (settings: Settings) => void): (() => void) => {
+    const handler = (_e: unknown, s: Settings): void => cb(s);
+    ipcRenderer.on(IPC.SETTINGS_CHANGED, handler);
+    return () => ipcRenderer.removeListener(IPC.SETTINGS_CHANGED, handler);
   }
 };
 
@@ -81,20 +86,20 @@ const audioBridge = {
   /** Main → hidden audio renderer: start capture (optionally with deviceId). */
   onStart: (cb: (deviceId?: string) => void): (() => void) => {
     const handler = (_e: unknown, deviceId?: string): void => cb(deviceId);
-    ipcRenderer.on('audio:start', handler);
-    return () => ipcRenderer.removeListener('audio:start', handler);
+    ipcRenderer.on(IPC.AUDIO_START_CMD, handler);
+    return () => ipcRenderer.removeListener(IPC.AUDIO_START_CMD, handler);
   },
   /** Main → hidden audio renderer: stop capture. */
   onStop: (cb: () => void): (() => void) => {
     const handler = (): void => cb();
-    ipcRenderer.on('audio:stop', handler);
-    return () => ipcRenderer.removeListener('audio:stop', handler);
+    ipcRenderer.on(IPC.AUDIO_STOP_CMD, handler);
+    return () => ipcRenderer.removeListener(IPC.AUDIO_STOP_CMD, handler);
   },
   /** Main → hidden audio renderer: switch input device. */
   onDeviceChange: (cb: (deviceId: string) => void): (() => void) => {
     const handler = (_e: unknown, deviceId: string): void => cb(deviceId);
-    ipcRenderer.on('audio:deviceChange', handler);
-    return () => ipcRenderer.removeListener('audio:deviceChange', handler);
+    ipcRenderer.on(IPC.AUDIO_DEVICE_CHANGE, handler);
+    return () => ipcRenderer.removeListener(IPC.AUDIO_DEVICE_CHANGE, handler);
   },
   /** Main → hidden audio renderer: play a short tone cue. */
   onBeep: (cb: (kind: BeepKind) => void): (() => void) => {

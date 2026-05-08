@@ -1,7 +1,7 @@
 import { BrowserWindow, screen } from 'electron';
 import path from 'node:path';
 import { is } from '@main/audio/env';
-import type { DictationStatus, OverlayState } from '@shared/types';
+import { IPC, type DictationStatus, type OverlayState } from '@shared/types';
 
 const WIDTH = 280;
 const HEIGHT = 56;
@@ -43,7 +43,7 @@ export class OverlayWindow {
         preload: preloadPath,
         contextIsolation: true,
         nodeIntegration: false,
-        sandbox: false
+        sandbox: true
       }
     });
 
@@ -67,12 +67,16 @@ export class OverlayWindow {
       this.cancelHide();
       this.show();
     } else {
-      // delay so user perceives the final state briefly
       this.scheduleHide(status === 'idle' ? 500 : 1500);
     }
   }
 
+  /**
+   * Receive RMS level updates. Skipped when the window is hidden so we don't
+   * burn ~20 Hz of IPC traffic while idle.
+   */
   setLevel(level: number): void {
+    if (!this.win || this.win.isDestroyed() || !this.win.isVisible()) return;
     this.level = level;
     this.broadcast();
   }
@@ -119,7 +123,7 @@ export class OverlayWindow {
   private broadcast(): void {
     if (!this.win || this.win.isDestroyed()) return;
     const state: OverlayState = { status: this.status, level: this.level };
-    this.win.webContents.send('overlay:state', state);
+    this.win.webContents.send(IPC.OVERLAY_STATE, state);
   }
 
   destroy(): void {

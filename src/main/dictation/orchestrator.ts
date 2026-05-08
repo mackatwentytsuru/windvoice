@@ -8,12 +8,11 @@ import { secureStore } from '@main/store/secure';
 import { settingsStore } from '@main/store/settings';
 import { setStatus } from '@main/tray';
 import { historyStore } from '@main/store/history';
+import { debug } from '@main/debug';
 import { IPC, type DictationStatus } from '@shared/types';
+import { CHUNK_MS, FINAL_TIMEOUT_MS, MIN_AUDIO_MS } from '@shared/constants';
 
-const MIN_AUDIO_MS = 200;
-const MIN_CHUNKS = Math.ceil(MIN_AUDIO_MS / 50);
-const FINAL_TIMEOUT_MS = 8_000;
-const DEBUG = process.env['WINDVOICE_DEBUG_DICTATION'] === '1';
+const MIN_CHUNKS = Math.ceil(MIN_AUDIO_MS / CHUNK_MS);
 
 /**
  * Owns the persistent OpenAI Realtime connection, runs one-at-a-time
@@ -39,8 +38,7 @@ export class DictationOrchestrator {
     try {
       await this.ensureConnected();
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      if (DEBUG) process.stderr.write(`[dictation] prewarm failed: ${msg}\n`);
+      debug('DICTATION', `prewarm failed: ${errMsg(err)}`);
     }
   }
 
@@ -57,8 +55,7 @@ export class DictationOrchestrator {
     } catch (err) {
       this.updateStatus('error');
       this.inFlight = false;
-      const msg = err instanceof Error ? err.message : String(err);
-      this.broadcast(IPC.TRANSCRIPT_FINAL, `[error] ${msg}`);
+      this.broadcast(IPC.TRANSCRIPT_FINAL, `[error] ${errMsg(err)}`);
       return;
     }
 
@@ -75,7 +72,12 @@ export class DictationOrchestrator {
     // duck/beep for a dictation we're about to cancel.
     if (settings.ui.duckOtherAudio) {
       this.duckedThisCycle = true;
-      void audioDuck.duck(settings.ui.duckLevel);
+      try {
+        await audioDuck.duck(settings.ui.duckLevel);
+      } catch (err) {
+        debug('DICTATION', `duck failed: ${errMsg(err)}`);
+        this.duckedThisCycle = false;
+      }
     }
     if (settings.ui.soundCuesEnabled) {
       this.audio.playBeep('start');
@@ -91,14 +93,14 @@ export class DictationOrchestrator {
 
     if (!this.client || !this.client.isOpen()) {
       this.cancelRequested = true;
-      if (DEBUG) process.stderr.write('[dictation] stop arrived before connect\n');
+      debug('DICTATION', 'stop arrived before connect');
       return;
     }
 
     this.updateStatus('processing');
     const settings = settingsStore.get();
     const { delivered } = this.audio.endForwarding(this.startCount);
-    if (DEBUG) process.stderr.write(`[dictation] delivered=${delivered} chunks\n`);
+    debug('DICTATION', `delivered=${delivered} chunks`);
 
     if (settings.ui.soundCuesEnabled) {
       this.audio.playBeep('stop');
@@ -121,8 +123,8 @@ export class DictationOrchestrator {
         };
         client.commit();
       });
-    } else if (DEBUG) {
-      process.stderr.write(`[dictation] skip commit: delivered=${delivered} (<${MIN_CHUNKS})\n`);
+    } else {
+      debug('DICTATION', `skip commit: delivered=${delivered} (<${MIN_CHUNKS})`);
     }
 
     this.inFlight = false;
@@ -130,7 +132,12 @@ export class DictationOrchestrator {
 
     if (this.duckedThisCycle) {
       this.duckedThisCycle = false;
-      void audioDuck.restore();
+      try {
+        await audioDuck.restore();
+      } catch (err) {
+        // A stuck-low master volume is user-visible, so log unconditionally.
+        process.stderr.write(`[dictation] duck restore failed: ${errMsg(err)}\n`);
+      }
     }
 
     if (final.trim().length > 0) {
@@ -138,22 +145,16 @@ export class DictationOrchestrator {
       try {
         await pasteText(final, settingsStore.get().insertion.restoreClipboard);
       } catch (err) {
-        if (DEBUG) {
-          const msg = err instanceof Error ? err.message : String(err);
-          process.stderr.write(`[dictation] paste failed: ${msg}\n`);
-        }
+        debug('DICTATION', `paste failed: ${errMsg(err)}`);
       }
       try {
         const entry = historyStore.add({
           transcript: final,
-          durationMs: delivered * 50
+          durationMs: delivered * CHUNK_MS
         });
         this.broadcast(IPC.HISTORY_CHANGED, entry);
       } catch (err) {
-        if (DEBUG) {
-          const msg = err instanceof Error ? err.message : String(err);
-          process.stderr.write(`[dictation] history.add failed: ${msg}\n`);
-        }
+        debug('DICTATION', `history.add failed: ${errMsg(err)}`);
       }
     }
   }
@@ -197,9 +198,21 @@ export class DictationOrchestrator {
         if (this.pendingFinal) this.pendingFinal(text);
       });
       client.on('error', (err) => {
-        if (DEBUG) process.stderr.write(`[realtime] ${err.message}\n`);
+        debug('REALTIME', err.message);
         this.broadcast(IPC.TRANSCRIPT_FINAL, `[error] ${err.message}`);
+        // Unblock a pending stop() if any.
         if (this.pendingFinal) this.pendingFinal('');
+        // If a dictation is in flight without an awaiting stop(), the WS
+        // dropped on its own (server kicked us, network blip, etc.). Reset
+        // state so the next hotkey press isn't ignored, and surface the
+        // error to the tray + overlay.
+        if (this.inFlight && !this.pendingFinal) {
+          this.inFlight = false;
+          this.duckedThisCycle = false;
+          this.audio.endForwarding(this.startCount);
+          void audioDuck.restore();
+          this.updateStatus('error');
+        }
       });
       client.on('close', () => {
         if (this.client === client) this.client = null;
@@ -229,4 +242,8 @@ function dictionaryPrompt(entries: { from: string; to: string }[]): string | und
   if (!entries.length) return undefined;
   const terms = entries.map((e) => e.to).join(', ');
   return `Use these proper nouns when relevant: ${terms}.`;
+}
+
+function errMsg(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
 }

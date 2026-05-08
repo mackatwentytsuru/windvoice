@@ -79,7 +79,15 @@ vi.mock('@main/store/settings', () => ({
       formatter: { model: 'gpt-5-mini', customInstructions: '', enabled: true },
       dictionary: [],
       insertion: { method: 'paste', restoreClipboard: true },
-      ui: { startMinimized: true, theme: 'system' }
+      ui: {
+        startMinimized: true,
+        theme: 'system',
+        uiLanguage: 'ja',
+        overlayEnabled: true,
+        soundCuesEnabled: true,
+        duckOtherAudio: false,
+        duckLevel: 0.3
+      }
     })),
     set: vi.fn(),
     reset: vi.fn()
@@ -112,10 +120,17 @@ vi.mock('electron', () => ({
 }));
 
 class FakeAudioBridge {
-  private listener: ((c: { base64: string; samples: number }) => void) | null = null;
+  private chunkListener: ((c: { base64: string; samples: number }) => void) | null = null;
+  private levelListener: ((level: number) => void) | null = null;
   private chunkCount = 0;
-  setChunkListener(cb: typeof this.listener): void {
-    this.listener = cb;
+  beeps: Array<'start' | 'stop'> = [];
+  devices: string[] = [];
+
+  setChunkListener(cb: ((c: { base64: string; samples: number }) => void) | null): void {
+    this.chunkListener = cb;
+  }
+  setLevelListener(cb: ((level: number) => void) | null): void {
+    this.levelListener = cb;
   }
   beginForwarding(): { startCount: number } {
     return { startCount: this.chunkCount };
@@ -123,10 +138,26 @@ class FakeAudioBridge {
   endForwarding(start: number): { delivered: number } {
     return { delivered: this.chunkCount - start };
   }
-  feed(n: number): void {
+  playBeep(kind: 'start' | 'stop'): void {
+    this.beeps.push(kind);
+  }
+  changeDevice(deviceId: string): void {
+    this.devices.push(deviceId);
+  }
+  getWebContentsId(): number | null {
+    return null;
+  }
+  async prewarm(): Promise<void> {
+    /* no-op */
+  }
+  destroy(): void {
+    /* no-op */
+  }
+  feed(n: number, level = 0.5): void {
     for (let i = 0; i < n; i++) {
       this.chunkCount++;
-      this.listener?.({ base64: 'AAA=', samples: 1200 });
+      this.chunkListener?.({ base64: 'AAA=', samples: 1200 });
+      this.levelListener?.(level);
     }
   }
 }
@@ -162,7 +193,7 @@ describe('DictationOrchestrator', () => {
     expect(pasteText).not.toHaveBeenCalled();
   });
 
-  it('happy path: receives final, pastes, and adds to history', async () => {
+  it('happy path: receives final, pastes, adds to history, plays beeps', async () => {
     await orch.start();
     audio.feed(10);
 
@@ -177,6 +208,7 @@ describe('DictationOrchestrator', () => {
       transcript: 'hello world',
       durationMs: 500
     });
+    expect(audio.beeps).toEqual(['start', 'stop']);
   });
 
   it('skips commit when no audio chunks were delivered', async () => {
@@ -231,5 +263,27 @@ describe('DictationOrchestrator', () => {
     await stop;
 
     expect(hoisted.instances).toHaveLength(1);
+  });
+
+  it('recovers when the WS errors mid-flight without an awaiting stop()', async () => {
+    await orch.start();
+    audio.feed(5);
+    // Server-side close: error fires while `inFlight` is true and no stop()
+    // is awaiting `pendingFinal`. Orchestrator must reset inFlight so the
+    // next hotkey press is not ignored.
+    hoisted.instances[0]!.emit('error', new Error('server kicked us'));
+
+    // Allow one event-loop turn for the handler.
+    await new Promise((r) => setTimeout(r, 10));
+
+    // Next start() should not be a no-op: it must spin up a new client.
+    await orch.start();
+    audio.feed(10);
+    const stop = orch.stop();
+    await new Promise((r) => setTimeout(r, 100));
+    hoisted.instances[hoisted.instances.length - 1]!.emit('final', 'recovered');
+    await stop;
+
+    expect(pasteText).toHaveBeenCalledWith('recovered', true);
   });
 });
