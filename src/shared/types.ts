@@ -70,64 +70,12 @@ export const HistoryEntrySchema = z.object({
 });
 export type HistoryEntry = z.infer<typeof HistoryEntrySchema>;
 
+// Re-export the IPC channel constants and runtime-free types so existing
+// `@shared/types` imports keep working. Preload must use `@shared/ipc`
+// directly because importing `@shared/types` pulls in zod, which is
+// externalized and therefore unavailable in a sandboxed renderer.
+export { IPC, type AudioInputDevice, type AudioChunk, type OverlayState, type BeepKind } from './ipc';
+
 // ─── IPC channels ──────────────────────────────────────────────────────────
 
-export const IPC = {
-  // settings
-  SETTINGS_GET: 'settings:get',
-  SETTINGS_SET: 'settings:set',
-  SETTINGS_CHANGED: 'settings:changed',
-  // api key
-  APIKEY_SET: 'apikey:set',
-  APIKEY_HAS: 'apikey:has',
-  // dictation control
-  DICTATION_START: 'dictation:start',
-  DICTATION_STOP: 'dictation:stop',
-  // history
-  HISTORY_LIST: 'history:list',
-  HISTORY_CLEAR: 'history:clear',
-  HISTORY_REMOVE: 'history:remove',
-  HISTORY_CHANGED: 'history:changed',
-  // events fired from main → renderer
-  STATUS_CHANGED: 'status:changed',
-  TRANSCRIPT_DELTA: 'transcript:delta',
-  TRANSCRIPT_FINAL: 'transcript:final',
-  // audio worker IPC (renderer → main)
-  AUDIO_CHUNK: 'audio:chunk',
-  AUDIO_READY: 'audio:ready',
-  AUDIO_ERROR: 'audio:error',
-  // audio worker IPC (main → renderer commands)
-  AUDIO_START_CMD: 'audio:start',
-  AUDIO_STOP_CMD: 'audio:stop',
-  AUDIO_DEVICE_CHANGE: 'audio:deviceChange',
-  // overlay / level / beep
-  AUDIO_LEVEL: 'audio:level',
-  BEEP_PLAY: 'beep:play',
-  OVERLAY_STATE: 'overlay:state',
-  // utilities
-  AUDIO_LAST_ERROR: 'audio:lastError',
-  CLIPBOARD_WRITE: 'clipboard:write'
-} as const;
 
-export interface AudioInputDevice {
-  deviceId: string;
-  label: string;
-}
-
-export interface OverlayState {
-  status: DictationStatus;
-  level: number;
-}
-
-// ─── Audio chunk envelope ──────────────────────────────────────────────────
-
-export interface AudioChunk {
-  /** base64-encoded 16-bit PCM, 24 kHz, mono */
-  base64: string;
-  /** sample count in this chunk */
-  samples: number;
-  /** RMS level in [0..1] for the chunk; renderer-computed */
-  level?: number;
-}
-
-export type BeepKind = 'start' | 'stop';

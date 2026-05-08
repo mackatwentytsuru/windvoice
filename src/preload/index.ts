@@ -1,4 +1,8 @@
 import { contextBridge, ipcRenderer } from 'electron';
+// IMPORTANT: import from `@shared/ipc` (zod-free), NOT `@shared/types`.
+// Under sandbox: true the preload runs without Node module resolution,
+// and zod (which `types.ts` imports) is externalized — pulling it in via
+// types.ts causes "Unable to load preload script: module not found: zod".
 import {
   IPC,
   type Settings,
@@ -6,7 +10,7 @@ import {
   type HistoryEntry,
   type OverlayState,
   type BeepKind
-} from '../shared/types';
+} from '../shared/ipc';
 
 const api = {
   // settings
