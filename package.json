@@ -12,7 +12,10 @@
     "typecheck": "npm run typecheck:node && npm run typecheck:web",
     "test": "vitest run",
     "test:watch": "vitest",
-    "package": "electron-vite build && electron-builder --win --x64",
+    "package": "electron-vite build && electron-builder",
+    "package:win": "electron-vite build && electron-builder --win --x64",
+    "package:mac": "electron-vite build && electron-builder --mac",
+    "release": "electron-vite build && electron-builder --publish always",
     "postinstall": "electron-builder install-app-deps"
   },
   "dependencies": {

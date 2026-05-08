@@ -115,6 +115,10 @@ vi.mock('@main/store/history', () => ({
   }
 }));
 
+vi.mock('@main/context/activeWindow', () => ({
+  getActiveWindow: vi.fn().mockResolvedValue(null)
+}));
+
 vi.mock('electron', () => ({
   BrowserWindow: { getAllWindows: () => [] }
 }));

@@ -13,6 +13,8 @@ import { postProcessorPipeline } from '@main/postprocess/pipeline';
 import { gptFormatter } from '@main/postprocess/formatter';
 import { replacementsProcessor } from '@main/postprocess/replacements';
 import { fileTagsProcessor } from '@main/postprocess/fileTags';
+import { initAutoUpdater } from '@main/updater';
+import { applyAutoLaunch } from '@main/autoLaunch';
 import { IPC } from '@shared/types';
 import { t } from '@shared/i18n';
 
@@ -84,6 +86,11 @@ async function ensureApiKey(): Promise<void> {
 }
 
 app.whenReady().then(async () => {
+  // macOS: hide the Dock icon — WindVoice is a tray-only app.
+  if (process.platform === 'darwin' && app.dock) {
+    app.dock.hide();
+  }
+
   session.defaultSession.setPermissionRequestHandler((wc, permission, callback) => {
     if (permission === 'media') return callback(trustedMicIds.has(wc.id));
     callback(false);
@@ -154,6 +161,9 @@ app.whenReady().then(async () => {
       if (next.ui.uiLanguage !== prev.ui.uiLanguage) {
         refreshTrayLanguage();
       }
+      if (next.ui.autoLaunch !== prev.ui.autoLaunch) {
+        applyAutoLaunch(next.ui.autoLaunch);
+      }
     }
   });
 
@@ -162,6 +172,9 @@ app.whenReady().then(async () => {
   if (await secureStore.hasApiKey()) {
     void orchestrator.prewarmConnection();
   }
+
+  applyAutoLaunch(settingsStore.get().ui.autoLaunch);
+  initAutoUpdater();
 
   await ensureApiKey();
 });

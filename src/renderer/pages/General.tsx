@@ -251,6 +251,33 @@ export function GeneralPage({ settings, update }: Props): JSX.Element {
         <div className="helper">{t('general.streamingHelper')}</div>
       </div>
 
+      <div className="field" style={{ paddingTop: 12, borderTop: '1px solid var(--border)' }}>
+        <span className="field-label">{t('general.system')}</span>
+        <div className="row">
+          <input
+            type="checkbox"
+            checked={settings.ui.autoLaunch}
+            onChange={(e) =>
+              void update({ ui: { ...settings.ui, autoLaunch: e.target.checked } })
+            }
+          />
+          <span>{t('general.autoLaunch')}</span>
+        </div>
+        <div className="helper" style={{ marginBottom: 8 }}>{t('general.autoLaunchHelper')}</div>
+
+        <div className="row">
+          <input
+            type="checkbox"
+            checked={settings.ui.autoUpdate}
+            onChange={(e) =>
+              void update({ ui: { ...settings.ui, autoUpdate: e.target.checked } })
+            }
+          />
+          <span>{t('general.autoUpdate')}</span>
+        </div>
+        <div className="helper">{t('general.autoUpdateHelper')}</div>
+      </div>
+
       <div className="field" style={{ marginTop: 24, paddingTop: 16, borderTop: '1px solid var(--border)' }}>
         <span className="field-label">{t('general.diagnostics')}</span>
         <div className="row">

@@ -60,7 +60,11 @@ export const SettingsSchema = z.object({
       overlayEnabled: z.boolean().default(true),
       soundCuesEnabled: z.boolean().default(true),
       duckOtherAudio: z.boolean().default(true),
-      duckLevel: z.number().min(0).max(1).default(0.3)
+      duckLevel: z.number().min(0).max(1).default(0.3),
+      /** Launch WindVoice automatically when the OS starts. */
+      autoLaunch: z.boolean().default(false),
+      /** Auto-check + auto-download GitHub releases on startup. */
+      autoUpdate: z.boolean().default(true)
     })
     .default({})
 });

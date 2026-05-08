@@ -5,6 +5,11 @@ import { debug } from '@main/debug';
 const PASTE_INTERVAL_MS = 60;
 const SETTLE_MS = 12;
 
+/** macOS uses Cmd, every other platform uses Ctrl, for the paste shortcut. */
+function pasteModifier(): number {
+  return process.platform === 'darwin' ? UiohookKey.Meta : UiohookKey.Ctrl;
+}
+
 /**
  * Streaming text injector. Used when `settings.insertion.streaming === true`.
  *
@@ -60,7 +65,7 @@ export class StreamingTyper {
         clipboard.writeText(chunk);
         await sleep(SETTLE_MS);
         try {
-          uIOhook.keyTap(UiohookKey.V, [UiohookKey.Ctrl]);
+          uIOhook.keyTap(UiohookKey.V, [pasteModifier()]);
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
           debug('DICTATION', `streaming paste failed: ${msg}`);

@@ -10,6 +10,7 @@ import { settingsStore } from '@main/store/settings';
 import { setStatus } from '@main/tray';
 import { historyStore } from '@main/store/history';
 import { postProcessorPipeline } from '@main/postprocess/pipeline';
+import { getActiveWindow } from '@main/context/activeWindow';
 import { debug } from '@main/debug';
 import { IPC, type DictationStatus } from '@shared/types';
 import { CHUNK_MS, FINAL_TIMEOUT_MS, MIN_AUDIO_MS } from '@shared/constants';
@@ -173,12 +174,17 @@ export class DictationOrchestrator {
 
     if (final.trim().length === 0) return;
 
+    // Active window context (best-effort, cached). Used by the formatter
+    // for app-aware behavior and by history for the `app` field.
+    const active = await getActiveWindow();
+
     // Post-processing pipeline: formatter (if enabled) → replacements →
     // file tags. Each step is best-effort; failures fall through.
     const apiKey = (await secureStore.getApiKey()) ?? undefined;
     const processed = await postProcessorPipeline.run(final, {
       settings,
-      apiKey
+      apiKey,
+      activeWindowTitle: active?.title
     });
 
     this.broadcast(IPC.TRANSCRIPT_FINAL, processed);
@@ -187,14 +193,15 @@ export class DictationOrchestrator {
     } catch (err) {
       debug('DICTATION', `paste failed: ${errMsg(err)}`);
     }
-    this.tryAddHistory(processed, delivered);
+    this.tryAddHistory(processed, delivered, active?.app);
   }
 
-  private tryAddHistory(text: string, deliveredChunks: number): void {
+  private tryAddHistory(text: string, deliveredChunks: number, app?: string): void {
     try {
       const entry = historyStore.add({
         transcript: text,
-        durationMs: deliveredChunks * CHUNK_MS
+        durationMs: deliveredChunks * CHUNK_MS,
+        ...(app ? { app } : {})
       });
       this.broadcast(IPC.HISTORY_CHANGED, entry);
     } catch (err) {
