@@ -17,6 +17,9 @@ win:
         - x64
   icon: resources/icon.ico
   artifactName: WindVoice-Setup-${version}-${arch}.${ext}
+  # Skip signtool/osslsigncode altogether — we don't sign personal builds.
+  signtoolOptions: null
+  signAndEditExecutable: false
 nsis:
   oneClick: false
   perMachine: false
@@ -24,6 +27,10 @@ nsis:
   allowToChangeInstallationDirectory: true
   shortcutName: WindVoice
   createDesktopShortcut: true
+# Disable signing entirely (no cert) — also skips winCodeSign download which
+# fails on Windows without Developer Mode (cannot create symlinks for the
+# embedded macOS signing tools).
+forceCodeSigning: false
 
 # ─── macOS ──────────────────────────────────────────────────────────────────
 mac:

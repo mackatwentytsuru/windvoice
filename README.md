@@ -54,10 +54,20 @@ stderr に `[hotkey]` `[audio]` `[realtime]` `[dictation]` のログが流れる
 ### テスト
 
 ```powershell
-npm test               # vitest run (16 tests)
+npm test               # vitest run (73 tests)
 npm run typecheck      # node + web の strict TS チェック
-npm run package        # NSIS インストーラを release/<version>/ に生成
 ```
+
+### インストーラ生成
+
+```powershell
+npm run package:win    # → release/<ver>/WindVoice-Setup-<ver>-x64.exe (NSIS, 98 MB)
+npm run package:mac    # → release/<ver>/WindVoice-<ver>-{arm64,x64}.dmg (Macで実行)
+npm run release        # GitHub Releases に publish (auto-updater が拾う)
+```
+
+`package:win` は署名なし(`signtoolOptions: null` + `forceCodeSigning: false`)。
+出力されたNSIS .exe をそのまま配布できます。
 
 ---
 
