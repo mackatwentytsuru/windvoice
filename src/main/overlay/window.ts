@@ -131,12 +131,7 @@ export class OverlayWindow {
   private broadcast(): void {
     if (!this.win || this.win.isDestroyed()) return;
     const state: OverlayState = { status: this.status, level: this.level };
-    if (this.win.webContents.isDestroyed()) return;
-    try {
-      this.win.webContents.send(IPC.OVERLAY_STATE, state);
-    } catch {
-      /* window torn down mid-broadcast */
-    }
+    this.win.webContents.send(IPC.OVERLAY_STATE, state);
   }
 
   destroy(): void {

@@ -299,12 +299,7 @@ export class DictationOrchestrator {
 
   private broadcast(channel: string, payload: unknown): void {
     for (const win of BrowserWindow.getAllWindows()) {
-      if (win.isDestroyed() || win.webContents.isDestroyed()) continue;
-      try {
-        win.webContents.send(channel, payload);
-      } catch {
-        /* window torn down mid-broadcast */
-      }
+      win.webContents.send(channel, payload);
     }
   }
 

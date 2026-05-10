@@ -75,26 +75,8 @@ export function recoverClipboardIfPending(): void {
  *   4. restoring the original clipboard
  *
  * Compared to per-character typing, this is faster and IME-safe.
- *
- * Serialized via `pasteQueue` so two rapid dictations cannot interleave —
- * cycle B's clipboard write or Ctrl+V used to race with cycle A's
- * restoreClipboard step (firing at t = previous + 30 + 120 ms), which
- * caused the first few characters of cycle B's paste to drop.
  */
-let pasteQueue: Promise<unknown> = Promise.resolve();
-
-export function pasteText(text: string, restoreClipboard = true): Promise<void> {
-  const job = pasteQueue.then(
-    () => doPasteText(text, restoreClipboard),
-    () => doPasteText(text, restoreClipboard)
-  );
-  // Swallow rejections in the queue tail so one failed paste does not
-  // poison the queue for subsequent calls.
-  pasteQueue = job.catch(() => undefined);
-  return job;
-}
-
-async function doPasteText(text: string, restoreClipboard: boolean): Promise<void> {
+export async function pasteText(text: string, restoreClipboard = true): Promise<void> {
   if (!text) return;
 
   const previous = restoreClipboard ? clipboard.readText() : null;
