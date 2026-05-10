@@ -62,7 +62,12 @@ export function setStatus(status: DictationStatus): void {
     refreshMenu();
   }
   for (const win of BrowserWindow.getAllWindows()) {
-    win.webContents.send(IPC.STATUS_CHANGED, status);
+    if (win.isDestroyed() || win.webContents.isDestroyed()) continue;
+    try {
+      win.webContents.send(IPC.STATUS_CHANGED, status);
+    } catch {
+      /* window torn down mid-broadcast */
+    }
   }
   for (const l of statusListeners) {
     try {

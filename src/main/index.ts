@@ -126,7 +126,12 @@ app.whenReady().then(async () => {
     lastAudioError = message;
     process.stderr.write(`[audio] ${message}\n`);
     for (const win of BrowserWindow.getAllWindows()) {
-      win.webContents.send(IPC.AUDIO_ERROR, message);
+      if (win.isDestroyed() || win.webContents.isDestroyed()) continue;
+      try {
+        win.webContents.send(IPC.AUDIO_ERROR, message);
+      } catch {
+        /* window torn down between iter and send */
+      }
     }
   });
 
