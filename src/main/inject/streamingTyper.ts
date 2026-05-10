@@ -1,6 +1,7 @@
 import { clipboard } from 'electron';
 import { uIOhook, UiohookKey } from 'uiohook-napi';
 import { debug } from '@main/debug';
+import { releaseStuckModifiers } from './typer';
 
 const PASTE_INTERVAL_MS = 60;
 const SETTLE_MS = 12;
@@ -117,6 +118,9 @@ export class StreamingTyper {
         // Bail if a later seq has already started; prevents stale callbacks
         // from mutating state of the next paste.
         if (seq !== this.flushSeq) continue;
+        // Release any held modifier (especially Right Alt from push-to-talk)
+        // so our Ctrl+V isn't combined with it into Alt+Ctrl+V (menu trigger).
+        releaseStuckModifiers();
         try {
           uIOhook.keyTap(UiohookKey.V, [pasteModifier()]);
         } catch (err) {

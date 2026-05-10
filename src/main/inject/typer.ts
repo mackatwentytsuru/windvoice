@@ -13,6 +13,39 @@ function pasteModifier(): number {
   return process.platform === 'darwin' ? UiohookKey.Meta : UiohookKey.Ctrl;
 }
 
+/**
+ * If the user's hotkey is Right Alt (the WindVoice default for push-to-talk),
+ * the OS may still see Alt as held when our `Ctrl+V` keyTap fires —
+ * the physical keyup hasn't been processed yet. The receiving app then
+ * interprets the input as `Alt+Ctrl+V` and triggers the menu (e.g. Notepad
+ * shows the access-key overlay and `V` activates the View menu instead of
+ * pasting).
+ *
+ * Workaround: explicitly release every modifier key before each Ctrl+V.
+ * uIOhook's `keyToggle(_, 'up')` is a no-op if the key isn't actually held,
+ * so this is safe to call unconditionally.
+ */
+const MODIFIER_KEYS_TO_CLEAR: number[] = [
+  UiohookKey.Alt,
+  UiohookKey.AltRight,
+  UiohookKey.Ctrl,
+  UiohookKey.CtrlRight,
+  UiohookKey.Shift,
+  UiohookKey.ShiftRight,
+  UiohookKey.Meta,
+  UiohookKey.MetaRight
+];
+
+export function releaseStuckModifiers(): void {
+  for (const k of MODIFIER_KEYS_TO_CLEAR) {
+    try {
+      uIOhook.keyToggle(k, 'up');
+    } catch {
+      /* ignore — best-effort */
+    }
+  }
+}
+
 function restoreFilePath(): string | null {
   try {
     return path.join(app.getPath('userData'), RESTORE_FILE);
@@ -86,6 +119,12 @@ export async function pasteText(text: string, restoreClipboard = true): Promise<
   clipboard.writeText(text);
 
   await sleep(SETTLE_MS);
+  // Clear any modifier (especially Right Alt from push-to-talk) that the OS
+  // might still see as held when our keyTap fires below. Without this the
+  // synthesized Ctrl+V combines with held Alt and the receiving app sees
+  // Alt+Ctrl+V (menu activation) instead of paste.
+  releaseStuckModifiers();
+  await sleep(20);
   try {
     uIOhook.keyTap(UiohookKey.V, [pasteModifier()]);
   } catch (err) {
