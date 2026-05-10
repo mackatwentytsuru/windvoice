@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { uIOhook, UiohookKey } from 'uiohook-napi';
 import { debug } from '@main/debug';
+import { getActiveHotkeyManager } from '@main/hotkey/manager';
 
 const SETTLE_MS = 30;
 const RESTORE_DELAY_MS = 120;
@@ -118,11 +119,17 @@ export async function pasteText(text: string, restoreClipboard = true): Promise<
   }
   clipboard.writeText(text);
 
+  // Wait for the user to physically release any modifier key. Synthesized
+  // keyToggle('up') events alone are NOT enough — Windows re-reads the
+  // pressed-by-user state on the next keyboard scan. We have to wait for
+  // an actual hardware keyup. uIOhook reports modifier state on every
+  // event so this resolves the moment the user lets go.
+  const hkm = getActiveHotkeyManager();
+  if (hkm) await hkm.untilAllModifiersUp(600);
+
   await sleep(SETTLE_MS);
-  // Clear any modifier (especially Right Alt from push-to-talk) that the OS
-  // might still see as held when our keyTap fires below. Without this the
-  // synthesized Ctrl+V combines with held Alt and the receiving app sees
-  // Alt+Ctrl+V (menu activation) instead of paste.
+  // Belt-and-suspenders: even after waitForModifierRelease, send keyToggle
+  // 'up' for every modifier to clear any sticky synthesized state.
   releaseStuckModifiers();
   await sleep(20);
   try {

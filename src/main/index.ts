@@ -3,7 +3,7 @@ import path from 'node:path';
 import { is } from '@main/audio/env';
 import { settingsStore } from '@main/store/settings';
 import { secureStore } from '@main/store/secure';
-import { HotkeyManager } from '@main/hotkey/manager';
+import { HotkeyManager, setActiveHotkeyManager } from '@main/hotkey/manager';
 import { AudioBridge } from '@main/audio/bridge';
 import { OverlayWindow } from '@main/overlay/window';
 import { DictationOrchestrator } from '@main/dictation/orchestrator';
@@ -158,6 +158,7 @@ app.whenReady().then(async () => {
   orchestrator = new DictationOrchestrator(audio, overlay);
 
   hotkeys = new HotkeyManager();
+  setActiveHotkeyManager(hotkeys);
   hotkeys.setBindings(settingsStore.get().hotkeys);
   hotkeys.on('start', () => {
     void orchestrator?.start().catch((err) => process.stderr.write(`[hotkey] start: ${err}\n`));

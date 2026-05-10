@@ -2,6 +2,7 @@ import { clipboard } from 'electron';
 import { uIOhook, UiohookKey } from 'uiohook-napi';
 import { debug } from '@main/debug';
 import { releaseStuckModifiers } from './typer';
+import { getActiveHotkeyManager } from '@main/hotkey/manager';
 
 const PASTE_INTERVAL_MS = 60;
 const SETTLE_MS = 12;
@@ -118,8 +119,13 @@ export class StreamingTyper {
         // Bail if a later seq has already started; prevents stale callbacks
         // from mutating state of the next paste.
         if (seq !== this.flushSeq) continue;
-        // Release any held modifier (especially Right Alt from push-to-talk)
-        // so our Ctrl+V isn't combined with it into Alt+Ctrl+V (menu trigger).
+        // Wait for any user-held modifier to release. Critical when the
+        // hotkey is Right Alt and the user is mid-dictation — we don't want
+        // a streaming paste to fire while Alt is still being held.
+        const hkm = getActiveHotkeyManager();
+        if (hkm) await hkm.untilAllModifiersUp(400);
+        if (seq !== this.flushSeq) continue;
+        // Belt-and-suspenders modifier release for any synthesized state.
         releaseStuckModifiers();
         try {
           uIOhook.keyTap(UiohookKey.V, [pasteModifier()]);

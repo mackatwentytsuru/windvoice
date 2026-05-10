@@ -40,6 +40,19 @@ export class HotkeyManager extends EventEmitter {
   private heldDown: Set<string> = new Set();
   private toggleActive: Set<string> = new Set();
   private started = false;
+  /**
+   * Live snapshot of the OS modifier state, refreshed on every key event.
+   * Used by the typer to wait for the user to physically release any
+   * modifier (especially Right Alt as the push-to-talk hotkey) before
+   * synthesizing Ctrl+V — otherwise the receiving app sees Alt+Ctrl+V and
+   * triggers a menu instead of pasting.
+   */
+  private modifierState: Record<Modifier, boolean> = {
+    ctrl: false,
+    alt: false,
+    shift: false,
+    meta: false
+  };
 
   setBindings(list: HotkeyBinding[]): void {
     this.bindings = list
@@ -74,7 +87,44 @@ export class HotkeyManager extends EventEmitter {
     }
   }
 
+  /**
+   * Returns true if any modifier (Alt/Ctrl/Shift/Meta) is currently
+   * physically held by the user, per the latest uIOhook event.
+   */
+  isAnyModifierHeld(): boolean {
+    return (
+      this.modifierState.alt ||
+      this.modifierState.ctrl ||
+      this.modifierState.shift ||
+      this.modifierState.meta
+    );
+  }
+
+  /**
+   * Resolve once no modifier key is physically held, or after `timeoutMs`.
+   * The typer awaits this before synthesizing Ctrl+V to dodge the
+   * Right-Alt-still-held → Alt+Ctrl+V → menu-activation bug.
+   */
+  async untilAllModifiersUp(timeoutMs = 600): Promise<void> {
+    if (!this.isAnyModifierHeld()) return;
+    const start = Date.now();
+    while (this.isAnyModifierHeld()) {
+      if (Date.now() - start > timeoutMs) {
+        debug('HOTKEY', `untilAllModifiersUp: timed out after ${timeoutMs}ms`);
+        return;
+      }
+      await new Promise<void>((resolve) => setTimeout(resolve, 8));
+    }
+  }
+
   private onKey(e: UiohookKeyboardEventLike, down: boolean): void {
+    // Refresh modifier snapshot on every key event. This is fed by the OS,
+    // so it correctly reflects the user's physical key state at any moment.
+    this.modifierState.ctrl = e.ctrlKey;
+    this.modifierState.alt = e.altKey;
+    this.modifierState.shift = e.shiftKey;
+    this.modifierState.meta = e.metaKey;
+
     if (isDebug('HOTKEY')) {
       debug('HOTKEY', `${down ? 'down' : 'up  '} keycode=${e.keycode} alt=${e.altKey} ctrl=${e.ctrlKey} shift=${e.shiftKey} meta=${e.metaKey}`);
     }
@@ -147,6 +197,21 @@ export class HotkeyManager extends EventEmitter {
     if (trigger == null) return null;
     return { binding: b, triggerKey: trigger, modifiers: mods, triggerProvidesModifier };
   }
+}
+
+/**
+ * Process-wide accessor so non-EventEmitter callers (e.g. the typer) can
+ * await modifier-release without explicit dependency injection. Set by
+ * main/index.ts after the manager is constructed.
+ */
+let activeManager: HotkeyManager | null = null;
+
+export function setActiveHotkeyManager(m: HotkeyManager | null): void {
+  activeManager = m;
+}
+
+export function getActiveHotkeyManager(): HotkeyManager | null {
+  return activeManager;
 }
 
 interface KeyLookup {
