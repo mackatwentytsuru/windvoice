@@ -1,15 +1,14 @@
 # WindVoice
 
 > WindVoice — voice dictation for Windows and macOS, powered by the OpenAI Realtime API.
-> Right Alt (Win) / Right Ctrl (mac) を押しっぱなし → 喋る → 離す → カーソル位置に転写が貼り付く。
+> **Right Ctrl** を押しっぱなし → 喋る → 離す → カーソル位置に転写が貼り付く。
 
 OpenAI が 2026/05 に発表した GA Realtime API (`gpt-realtime-whisper`) を使った Electron アプリ。Notepad / Chrome / VS Code / Slack / Word / ChatGPT 等、任意の入力欄で動く。Windows と macOS の両方で動作する。
 
-**Status**:
-- Phase 1 完了 — push-to-talk + 履歴 + 設定UI
-- Phase 2 完了 — GPT-5-mini フォーマッター, ライブオーバーレイ, ホットキー再バインドUI
-- Phase 3 進行中 — Replacements / ストリーミング挿入 / ファイルタグ / アクティブウィンドウ認識 / electron-updater / macOS 対応 はすべて実装済み
-- 残: 音声フィードバック (start/stop beep) はオプションで実装済み
+**Status (v0.1.0, ローカルビルドのみ)**:
+- Phase 1-3 すべて実装済み — push-to-talk / 履歴 / 設定UI / GPT-5-mini フォーマッター / ライブオーバーレイ / ホットキー再バインド / Replacements / ストリーミング挿入 / ファイルタグ / アクティブウィンドウ認識 / electron-updater / macOS 対応 / 音声フィードバック
+- GitHub Releases は **空**(自動更新無効状態)。`npm run release` で必要なときに publish。
+- リポジトリは PUBLIC、MIT License。
 
 詳細メモ: Obsidian `1_Projects/WindVoice/WindVoice.md`
 
@@ -17,12 +16,15 @@ OpenAI が 2026/05 に発表した GA Realtime API (`gpt-realtime-whisper`) を�
 
 ## スタック
 
-- Electron 32 + TypeScript (electron-vite + electron-builder)
-- React 18 (renderer)
+- Electron 42 + TypeScript (electron-vite 5 + electron-builder 26)
+- Vite 6 + React 18 (renderer)
 - OpenAI Realtime WebSocket: `wss://api.openai.com/v1/realtime?intent=transcription`, model `gpt-realtime-whisper`
 - `uiohook-napi` — グローバルホットキー + `Ctrl+V` / `Cmd+V` 送信を兼用
 - `keytar` — API キーを Windows 資格情報マネージャー / macOS Keychain に保存
 - `electron-store` + Zod — 一般設定の永続化
+- `get-windows` — アクティブウィンドウ検知(履歴・フォーマッタ文脈)
+- `electron-updater` — GitHub Releases 経由の自動更新
+- `loudness` — 録音中のシステム音量ダック
 - WebAudio + AudioWorklet (隠しレンダラー) — 24 kHz mono PCM16 ダウンサンプル
 
 ## 使い方 (開発)
@@ -44,10 +46,19 @@ npm run dev            # electron-vite dev mode
 
 ### デフォルトホットキー
 
-- **Windows**: Right Alt (push-to-talk)
-- **macOS**: Right Ctrl (push-to-talk) — Right Alt = Option はダイアクリティカル入力で予約されているため使わない
+- **Windows / macOS**: **Right Ctrl** (push-to-talk) — Settings → Hotkeys タブから打鍵で再バインド可能。
 
-ホットキーは Settings → Hotkeys タブから打鍵で再バインド可能。
+#### ホットキー選択のガイド
+
+| キー | Win 推奨度 | 備考 |
+|---|---|---|
+| **Right Ctrl** | ⭐ 最推奨 | 修飾キーだが menu mode に引っかからない・streaming も実用的 |
+| F13 / Caps Lock | ⭐ 推奨 | 非修飾キーなのでレース皆無。AHK でリマップ済みの人向け |
+| **Right Alt** | ⚠️ 非推奨 | Windows の Alt menu mode に引っかかり、Notepad 等で paste がメニュー操作に化ける場合あり。modifier release を待つ実装で軽減はしているが、Alt 解放後のメニューモード残留は OS 仕様で完全には逃げきれない |
+| Right Shift | ⚠️ 非推奨 | 多くの IME が日本語入力切替に使う |
+| Space / Enter | ❌ NG | 通常入力と衝突 |
+
+> **実環境テスト結果**: Right Ctrl だと Notepad / Windows Terminal / ChatGPT すべてで paste が完全に動作。streaming insertion も実用的。Right Alt は Notepad で menu activation キーが overlay 表示されて paste が崩れる場合がある。
 
 ### macOS 初回起動
 

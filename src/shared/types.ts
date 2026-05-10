@@ -10,10 +10,15 @@ export const HotkeyBindingSchema = z.object({
 });
 export type HotkeyBinding = z.infer<typeof HotkeyBindingSchema>;
 
-// On macOS, RightAlt (Option) is reserved for diacritic input — must not be
-// swallowed. Fall back to RightCtrl, which is otherwise unused.
+// Default hotkey is RightCtrl on every platform.
+//
+// - macOS: RightAlt (Option) is reserved for diacritic input.
+// - Windows: RightAlt activates the Alt menu-mode in apps like Notepad.
+//   Even after release, menu-mode lingers briefly and can swallow the
+//   synthesized Ctrl+V as a menu access key. RightCtrl avoids this and
+//   tested clean in Notepad / Windows Terminal / ChatGPT / VS Code.
 export function defaultHotkey(): string {
-  return process.platform === 'darwin' ? 'RightCtrl' : 'RightAlt';
+  return 'RightCtrl';
 }
 
 export function defaultHotkeyBindings(): HotkeyBinding[] {
