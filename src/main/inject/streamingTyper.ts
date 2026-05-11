@@ -44,7 +44,16 @@ export class StreamingTyper {
   /** Append a fragment to be pasted as soon as possible. */
   append(text: string): void {
     if (!this.active || !text) return;
-    this.buffer += text;
+    // Strip CR/LF from streaming text. Whisper-style transcripts can emit
+    // `\n` at phrase boundaries; with Ctrl+V into a terminal or REPL input
+    // that's treated as Enter, causing the partial paste to be submitted
+    // mid-dictation. Streaming insertion is meant to grow a single line of
+    // text — explicit line breaks via voice aren't a use case worth the
+    // ambiguity. The final paste path (non-streaming) leaves newlines
+    // intact via the GPT formatter pipeline.
+    const safe = text.replace(/[\r\n]+/g, ' ');
+    if (!safe) return;
+    this.buffer += safe;
     if (this.buffer.length >= COALESCE_MAX_CHARS) {
       this.clearDebounce();
       if (!this.flushing) void this.flush();
