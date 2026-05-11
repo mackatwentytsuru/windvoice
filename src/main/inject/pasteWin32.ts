@@ -84,17 +84,18 @@ export function sendCtrlVAtomic(): void {
     uIOhook.keyTap(UiohookKey.V, [UiohookKey.Ctrl]);
     return;
   }
-  // Atomic batch — releases all common modifiers, then sends Ctrl+V,
-  // then releases Ctrl. We do NOT re-press the released modifiers; if
-  // the user is still physically holding one, the OS's next physical
-  // keyboard scan will report it as down again on its own.
+  // Plain atomic Ctrl+V. Earlier iterations of this code prepended
+  // phantom key-up events for Alt/Shift/Win (to defend against
+  // Right-Alt-PTT menu-mode), but those key-ups fire WM_KEYUP messages
+  // even when the key wasn't pressed, which confuses PSReadLine's
+  // bracketed-paste state machine and produced both `^V` echoes and
+  // mid-dictation Enter submissions in Windows Terminal.
+  //
+  // Modifier-released-before-paste is now handled upstream by
+  // HotkeyManager.untilAllModifiersUp() in typer.ts / streamingTyper.ts,
+  // which waits for the user's physical modifier to release before
+  // dispatching this batch. No phantom releases needed here.
   const batch: KBDInput[] = [
-    { up: true, val: VK.LMENU, type: 0 },
-    { up: true, val: VK.RMENU, type: 0 },
-    { up: true, val: VK.LSHIFT, type: 0 },
-    { up: true, val: VK.RSHIFT, type: 0 },
-    { up: true, val: VK.LWIN, type: 0 },
-    { up: true, val: VK.RWIN, type: 0 },
     { up: false, val: VK.LCONTROL, type: 0 },
     { up: false, val: VK.V, type: 0 },
     { up: true, val: VK.V, type: 0 },
