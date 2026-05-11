@@ -1,6 +1,6 @@
 import { clipboard } from 'electron';
-import { uIOhook, UiohookKey } from 'uiohook-napi';
 import { debug } from '@main/debug';
+import { sendCtrlVAtomic } from '@main/inject/pasteWin32';
 import { releaseStuckModifiers } from './typer';
 import { getActiveHotkeyManager } from '@main/hotkey/manager';
 
@@ -9,11 +9,6 @@ const SETTLE_MS = 12;
 const DEBOUNCE_MS = 80;
 const COALESCE_MAX_CHARS = 200;
 const END_MAX_WAIT_MS = 2_000;
-
-/** macOS uses Cmd, every other platform uses Ctrl, for the paste shortcut. */
-function pasteModifier(): number {
-  return process.platform === 'darwin' ? UiohookKey.Meta : UiohookKey.Ctrl;
-}
 
 /**
  * Streaming text injector. Used when `settings.insertion.streaming === true`.
@@ -128,7 +123,7 @@ export class StreamingTyper {
         // Belt-and-suspenders modifier release for any synthesized state.
         releaseStuckModifiers();
         try {
-          uIOhook.keyTap(UiohookKey.V, [pasteModifier()]);
+          sendCtrlVAtomic();
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
           debug('DICTATION', `streaming paste failed: ${msg}`);

@@ -26,19 +26,22 @@ describe('types defaults / platform-aware factories', () => {
     });
   }
 
+  // defaultHotkey() is RightCtrl everywhere now — see comment in
+  // src/shared/types.ts. RightAlt was the previous Win32 default but caused
+  // menu-mode activation in Notepad/Windows Terminal even with paste guards.
   it('defaultHotkey() returns RightCtrl on darwin', () => {
     setPlatform('darwin');
     expect(defaultHotkey()).toBe('RightCtrl');
   });
 
-  it('defaultHotkey() returns RightAlt on win32', () => {
+  it('defaultHotkey() returns RightCtrl on win32', () => {
     setPlatform('win32');
-    expect(defaultHotkey()).toBe('RightAlt');
+    expect(defaultHotkey()).toBe('RightCtrl');
   });
 
-  it('defaultHotkey() returns RightAlt on linux', () => {
+  it('defaultHotkey() returns RightCtrl on linux', () => {
     setPlatform('linux');
-    expect(defaultHotkey()).toBe('RightAlt');
+    expect(defaultHotkey()).toBe('RightCtrl');
   });
 
   it('defaultHotkeyBindings() is a non-empty array reflecting defaultHotkey()', () => {
@@ -46,8 +49,7 @@ describe('types defaults / platform-aware factories', () => {
     const linuxBindings = defaultHotkeyBindings();
     expect(Array.isArray(linuxBindings)).toBe(true);
     expect(linuxBindings.length).toBeGreaterThan(0);
-    const linuxKey = defaultHotkey();
-    expect(linuxBindings[0]?.keys).toContain(linuxKey);
+    expect(linuxBindings[0]?.keys).toContain('RightCtrl');
 
     setPlatform('darwin');
     const darwinBindings = defaultHotkeyBindings();
@@ -64,6 +66,6 @@ describe('types defaults / platform-aware factories', () => {
     setPlatform('win32');
     const winSettings = SettingsSchema.parse({});
     expect(winSettings.hotkeys.length).toBeGreaterThan(0);
-    expect(winSettings.hotkeys[0]?.keys).toContain('RightAlt');
+    expect(winSettings.hotkeys[0]?.keys).toContain('RightCtrl');
   });
 });

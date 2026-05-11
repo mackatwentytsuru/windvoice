@@ -6,7 +6,7 @@ describe('SettingsSchema', () => {
     const s = SettingsSchema.parse({});
     expect(s.hotkeys).toHaveLength(1);
     expect(s.hotkeys[0]?.mode).toBe('push-to-talk');
-    expect(s.hotkeys[0]?.keys).toEqual(['RightAlt']);
+    expect(s.hotkeys[0]?.keys).toEqual(['RightCtrl']);
     expect(s.language).toBe('ja');
     expect(s.formatter.model).toBe('gpt-5-mini');
     expect(s.insertion.method).toBe('paste');

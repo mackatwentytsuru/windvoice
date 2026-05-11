@@ -25,6 +25,7 @@
     "keytar": "^7.9.0",
     "loudness": "^0.4.2",
     "openai": "^5.0.0",
+    "sendinput": "^0.2.0",
     "uiohook-napi": "^1.5.4",
     "ws": "^8.18.0",
     "zod": "^3.23.8"

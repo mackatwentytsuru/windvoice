@@ -4,6 +4,7 @@ import path from 'node:path';
 import { uIOhook, UiohookKey } from 'uiohook-napi';
 import { debug } from '@main/debug';
 import { getActiveHotkeyManager } from '@main/hotkey/manager';
+import { sendCtrlVAtomic } from '@main/inject/pasteWin32';
 
 const SETTLE_MS = 30;
 const RESTORE_DELAY_MS = 120;
@@ -133,7 +134,7 @@ export async function pasteText(text: string, restoreClipboard = true): Promise<
   releaseStuckModifiers();
   await sleep(20);
   try {
-    uIOhook.keyTap(UiohookKey.V, [pasteModifier()]);
+    sendCtrlVAtomic();
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     process.stderr.write(`[error] paste keyTap failed: ${msg}\n`);
