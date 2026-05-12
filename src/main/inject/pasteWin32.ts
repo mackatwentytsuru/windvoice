@@ -75,8 +75,15 @@ function loadSendInput(): SendInputModule | null {
  * to load (e.g. on a future Electron version that breaks the addon).
  */
 export function sendCtrlVAtomic(): void {
+  if (process.platform === 'darwin') {
+    // macOS uses Cmd+V (UiohookKey.Meta). The function name is historical —
+    // on darwin this is Cmd+V, not Ctrl+V. Using Ctrl+V here would silently
+    // do nothing in every standard mac text field.
+    uIOhook.keyTap(UiohookKey.V, [UiohookKey.Meta]);
+    return;
+  }
   if (process.platform !== 'win32') {
-    // macOS and Linux: no menu-mode quirk, use the simple path.
+    // Linux: no menu-mode quirk, use Ctrl+V.
     uIOhook.keyTap(UiohookKey.V, [UiohookKey.Ctrl]);
     return;
   }

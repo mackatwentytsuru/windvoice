@@ -142,6 +142,10 @@ export async function pasteText(text: string, restoreClipboard = true): Promise<
   // physically holding it (no synth Ctrl-up race with the OS's next
   // physical scan).
   await sleep(20);
+  // Suppress hotkey detection during the synthesized Cmd+V — uIOhook reports
+  // our own emitted Meta-down/Meta-up back through the same listener and
+  // would otherwise start a brand-new push-to-talk cycle from the paste.
+  hkm?.suppressFor(250);
   try {
     sendCtrlVAtomic();
   } catch (err) {

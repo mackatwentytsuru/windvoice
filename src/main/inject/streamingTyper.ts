@@ -132,6 +132,10 @@ export class StreamingTyper {
         // No phantom modifier release. sendCtrlVAtomic detects a held
         // physical Ctrl (the user's PTT key) and omits the synth Ctrl
         // press/release so the user's own Ctrl provides the modifier.
+        // On macOS we also mute hotkey detection during the synthesized
+        // Cmd+V so uIOhook's own re-broadcast of the Meta-down does not
+        // self-trigger a new dictation cycle.
+        hkm?.suppressFor(250);
         try {
           sendCtrlVAtomic();
         } catch (err) {
