@@ -142,11 +142,19 @@ export class AudioBridge {
 
   beginForwarding(): { startCount: number } {
     this.forwarding = true;
+    // Resume the AudioContext if it was suspended during idle. The
+    // first chunk after resume arrives in ~5-15ms, well within the
+    // perceived start-recording window.
+    this.win?.webContents.send(IPC.AUDIO_RESUME_CMD);
     return { startCount: this.chunkCount };
   }
 
   endForwarding(startCount: number): { delivered: number } {
     this.forwarding = false;
+    // Suspend the AudioContext so the worklet stops generating 50ms
+    // chunks (issue #7). Saves ~20 IPC crossings + Buffer.from copies
+    // per idle second.
+    this.win?.webContents.send(IPC.AUDIO_SUSPEND_CMD);
     return { delivered: this.chunkCount - startCount };
   }
 

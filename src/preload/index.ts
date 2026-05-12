@@ -134,6 +134,18 @@ const audioBridge = {
     ipcRenderer.on(IPC.AUDIO_DEVICE_CHANGE, handler);
     return () => ipcRenderer.removeListener(IPC.AUDIO_DEVICE_CHANGE, handler);
   },
+  /** Main → hidden audio renderer: suspend AudioContext during idle. */
+  onSuspend: (cb: () => void): (() => void) => {
+    const handler = (): void => cb();
+    ipcRenderer.on(IPC.AUDIO_SUSPEND_CMD, handler);
+    return () => ipcRenderer.removeListener(IPC.AUDIO_SUSPEND_CMD, handler);
+  },
+  /** Main → hidden audio renderer: resume AudioContext for a new cycle. */
+  onResume: (cb: () => void): (() => void) => {
+    const handler = (): void => cb();
+    ipcRenderer.on(IPC.AUDIO_RESUME_CMD, handler);
+    return () => ipcRenderer.removeListener(IPC.AUDIO_RESUME_CMD, handler);
+  },
   /** Main → hidden audio renderer: play a short tone cue. */
   onBeep: (cb: (kind: BeepKind) => void): (() => void) => {
     const handler = (_e: unknown, kind: BeepKind): void => cb(kind);

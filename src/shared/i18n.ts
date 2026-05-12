@@ -25,9 +25,11 @@ const ja: Dict = {
 
   // tray
   'tray.ready': 'WindVoice — 待機中',
+  'tray.connecting': 'WindVoice — 接続中…',
   'tray.listening': 'WindVoice — 録音中…',
   'tray.processing': 'WindVoice — 処理中…',
   'tray.error': 'WindVoice — エラー',
+  'tray.unavailable': 'WindVoice — 利用不可（設定を確認）',
   'tray.settings': '設定…',
   'tray.quit': '終了',
   'tray.accessibilityWarning': '⚠ アクセシビリティ権限が未許可 — クリックして開く',
@@ -166,9 +168,11 @@ const en: Dict = {
 
   // tray
   'tray.ready': 'WindVoice — Ready',
+  'tray.connecting': 'WindVoice — Connecting...',
   'tray.listening': 'WindVoice — Listening...',
   'tray.processing': 'WindVoice — Processing...',
   'tray.error': 'WindVoice — Error',
+  'tray.unavailable': 'WindVoice — Unavailable (check settings)',
   'tray.settings': 'Settings...',
   'tray.quit': 'Quit',
   'tray.accessibilityWarning': '⚠ Accessibility not granted — click to open',

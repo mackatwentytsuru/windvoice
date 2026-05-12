@@ -57,6 +57,16 @@ async function startCapture(deviceId?: string): Promise<void> {
     };
     source.connect(workletNode);
     workletNode.connect(audioCtx.destination);
+    // Idle suspension (issue #7): once the audio graph is wired and
+    // mic permission is granted, suspend the context immediately. The
+    // next `beginForwarding()` on main will fire AUDIO_RESUME_CMD,
+    // which resumes in ~5-15ms — well within perceptual start-recording
+    // latency. This stops the 20Hz IPC + Buffer churn during idle.
+    try {
+      await audioCtx.suspend();
+    } catch {
+      /* best-effort */
+    }
   } catch (err) {
     const msg = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
     window.audio.reportError(msg);
@@ -146,6 +156,18 @@ window.audio.onStop(() => {
 });
 window.audio.onDeviceChange((deviceId: string) => {
   void restartWithDevice(deviceId);
+});
+// Suspend / resume the AudioContext on idle to stop the 20Hz chunk
+// pipeline when the user is not dictating (issue #7).
+window.audio.onSuspend?.(() => {
+  if (audioCtx && audioCtx.state === 'running') {
+    void audioCtx.suspend();
+  }
+});
+window.audio.onResume?.(() => {
+  if (audioCtx && audioCtx.state === 'suspended') {
+    void audioCtx.resume();
+  }
 });
 window.audio.onBeep((kind: 'start' | 'stop') => {
   playBeep(kind);

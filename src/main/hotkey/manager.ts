@@ -23,8 +23,12 @@ interface NormalizedBinding {
    * a left and right physical key (uiohook reports `Meta` for the left
    * Cmd/Win key and `MetaRight` for the right one), and we want either
    * to trigger the binding.
+   *
+   * Typed as a non-empty tuple so the construction site in `normalize`
+   * is forced to provide at least one keycode (L1) — an empty array
+   * would silently disable the binding at runtime.
    */
-  triggerKeys: number[];
+  triggerKeys: readonly [number, ...number[]];
   modifiers: Record<Modifier, boolean>;
   /**
    * If the trigger key itself sets a modifier flag (e.g. Right Alt → altKey),
@@ -134,30 +138,63 @@ export class HotkeyManager extends EventEmitter {
     );
   }
 
+  /** Waiters that resolve the next time all modifiers transition to up. */
+  private modifierReleaseWaiters: Array<() => void> = [];
+
   /**
    * Resolve once no modifier key is physically held, or after `timeoutMs`.
    * The typer awaits this before synthesizing Ctrl+V to dodge the
    * Right-Alt-still-held → Alt+Ctrl+V → menu-activation bug.
+   *
+   * Event-driven: registers a one-shot waiter that fires when `onKey`
+   * observes the transition. Previously this busy-polled with a 8ms
+   * setTimeout loop (issue #9) — up to 75 timer wakeups per paste,
+   * which contended with the paste-settle window we were trying to
+   * protect. The fallback `setTimeout(timeoutMs)` guards against
+   * uIOhook never delivering the up event.
    */
-  async untilAllModifiersUp(timeoutMs = 600): Promise<void> {
-    if (!this.isAnyModifierHeld()) return;
-    const start = Date.now();
-    while (this.isAnyModifierHeld()) {
-      if (Date.now() - start > timeoutMs) {
+  untilAllModifiersUp(timeoutMs = 600): Promise<void> {
+    if (!this.isAnyModifierHeld()) return Promise.resolve();
+    return new Promise<void>((resolve) => {
+      let done = false;
+      const finish = (): void => {
+        if (done) return;
+        done = true;
+        clearTimeout(timer);
+        const idx = this.modifierReleaseWaiters.indexOf(finish);
+        if (idx !== -1) this.modifierReleaseWaiters.splice(idx, 1);
+        resolve();
+      };
+      const timer = setTimeout(() => {
         debug('HOTKEY', `untilAllModifiersUp: timed out after ${timeoutMs}ms`);
-        return;
-      }
-      await new Promise<void>((resolve) => setTimeout(resolve, 8));
-    }
+        finish();
+      }, timeoutMs);
+      this.modifierReleaseWaiters.push(finish);
+    });
   }
 
   private onKey(e: UiohookKeyboardEventLike, down: boolean): void {
     // Refresh modifier snapshot on every key event. This is fed by the OS,
     // so it correctly reflects the user's physical key state at any moment.
+    const wasAnyHeld = this.isAnyModifierHeld();
     this.modifierState.ctrl = e.ctrlKey;
     this.modifierState.alt = e.altKey;
     this.modifierState.shift = e.shiftKey;
     this.modifierState.meta = e.metaKey;
+
+    // Wake up any `untilAllModifiersUp` waiters the instant all
+    // modifiers transition to released — replaces the 8ms busy-poll.
+    if (wasAnyHeld && !this.isAnyModifierHeld() && this.modifierReleaseWaiters.length > 0) {
+      const waiters = this.modifierReleaseWaiters.slice();
+      this.modifierReleaseWaiters.length = 0;
+      for (const w of waiters) {
+        try {
+          w();
+        } catch {
+          /* ignore — waiter throw must not break onKey */
+        }
+      }
+    }
 
     if (isDebug('HOTKEY')) {
       debug('HOTKEY', `${down ? 'down' : 'up  '} keycode=${e.keycode} alt=${e.altKey} ctrl=${e.ctrlKey} shift=${e.shiftKey} meta=${e.metaKey}`);
@@ -266,8 +303,9 @@ export class HotkeyManager extends EventEmitter {
         }
       }
     }
-    if (triggerKeys == null) return null;
-    return { binding: b, triggerKeys, modifiers: mods, triggerProvidesModifier };
+    if (triggerKeys == null || triggerKeys.length === 0) return null;
+    const tuple = triggerKeys as [number, ...number[]];
+    return { binding: b, triggerKeys: tuple, modifiers: mods, triggerProvidesModifier };
   }
 }
 

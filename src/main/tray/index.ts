@@ -17,16 +17,28 @@ const iconPath = (name: string): string => {
 
 const STATUS_ICON: Record<DictationStatus, string> = {
   idle: 'tray-idle.png',
+  connecting: 'tray-processing.png',
   listening: 'tray-listening.png',
   processing: 'tray-processing.png',
-  error: 'tray-error.png'
+  error: 'tray-error.png',
+  unavailable: 'tray-error.png'
 };
 
-const STATUS_LABEL_KEY: Record<DictationStatus, 'tray.ready' | 'tray.listening' | 'tray.processing' | 'tray.error'> = {
+type TrayLabelKey =
+  | 'tray.ready'
+  | 'tray.connecting'
+  | 'tray.listening'
+  | 'tray.processing'
+  | 'tray.error'
+  | 'tray.unavailable';
+
+const STATUS_LABEL_KEY: Record<DictationStatus, TrayLabelKey> = {
   idle: 'tray.ready',
+  connecting: 'tray.connecting',
   listening: 'tray.listening',
   processing: 'tray.processing',
-  error: 'tray.error'
+  error: 'tray.error',
+  unavailable: 'tray.unavailable'
 };
 
 let currentStatus: DictationStatus = 'idle';

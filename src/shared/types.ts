@@ -40,7 +40,15 @@ export const ReplacementEntrySchema = z.object({
 export type ReplacementEntry = z.infer<typeof ReplacementEntrySchema>;
 
 export const SettingsSchema = z.object({
-  hotkeys: z.array(HotkeyBindingSchema).default(() => defaultHotkeyBindings()),
+  // `.min(1)` makes "no hotkeys configured" an invalid state at the
+  // schema boundary (L2). An empty array would leave the orchestrator
+  // unable to fire any binding — defaultHotkeyBindings() guarantees at
+  // least the primary RightCtrl entry.
+  hotkeys: z
+    .array(HotkeyBindingSchema)
+    .min(1)
+    .catch(() => defaultHotkeyBindings())
+    .default(() => defaultHotkeyBindings()),
   replacements: z.array(ReplacementEntrySchema).default([]),
   audio: z
     .object({
@@ -93,7 +101,19 @@ export type Settings = z.infer<typeof SettingsSchema>;
 
 // ─── Runtime status ────────────────────────────────────────────────────────
 
-export type DictationStatus = 'idle' | 'listening' | 'processing' | 'error';
+// 'connecting': realtime WS handshake in progress (after start, before
+//   the first audio chunk lands). Replaces the gap where the tray would
+//   stay on 'idle' until 'listening' suddenly jumped in.
+// 'unavailable': a permanent precondition is missing (no API key, no
+//   Accessibility permission, secure-store unavailable). Distinct from
+//   'error' which signals a transient runtime failure.
+export type DictationStatus =
+  | 'idle'
+  | 'connecting'
+  | 'listening'
+  | 'processing'
+  | 'error'
+  | 'unavailable';
 
 // ─── History ───────────────────────────────────────────────────────────────
 

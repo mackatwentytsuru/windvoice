@@ -19,9 +19,19 @@ export function App(): JSX.Element {
   const tabRefs = useRef<Map<Tab, HTMLButtonElement | null>>(new Map());
 
   useEffect(() => {
-    void window.windvoice.getSettings().then(setSettings);
-    const off = window.windvoice.onStatus(setStatus);
-    return off;
+    // Guard against the async settings load resolving after the
+    // component unmounts (e.g. React 18 StrictMode double-mount, or a
+    // fast-close + reopen of the Settings window). Without this the
+    // `setSettings` call lands on a dead component and React warns.
+    let cancelled = false;
+    void window.windvoice.getSettings().then((s) => {
+      if (!cancelled) setSettings(s);
+    });
+    const offStatus = window.windvoice.onStatus(setStatus);
+    return () => {
+      cancelled = true;
+      offStatus();
+    };
   }, []);
 
   async function update(partial: Partial<Settings>): Promise<void> {

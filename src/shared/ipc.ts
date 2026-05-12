@@ -35,6 +35,10 @@ export const IPC = {
   AUDIO_START_CMD: 'audio:start',
   AUDIO_STOP_CMD: 'audio:stop',
   AUDIO_DEVICE_CHANGE: 'audio:deviceChange',
+  // Suspend / resume the underlying AudioContext to avoid 20Hz IPC churn
+  // while the user is not actively dictating (issue #7).
+  AUDIO_SUSPEND_CMD: 'audio:suspend',
+  AUDIO_RESUME_CMD: 'audio:resume',
   // overlay / level / beep
   AUDIO_LEVEL: 'audio:level',
   BEEP_PLAY: 'beep:play',
