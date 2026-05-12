@@ -2,6 +2,10 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Settings, HotkeyBinding } from '../../shared/types';
 import { useI18n } from '../useI18n';
 
+// Inlined from shared/types.ts:defaultHotkey() to avoid pulling the zod
+// schema into the renderer bundle. Keep in sync with that source of truth.
+const DEFAULT_HOTKEY_TOKEN = 'RightCtrl';
+
 interface Props {
   settings: Settings;
   update: (partial: Partial<Settings>) => Promise<void>;
@@ -139,6 +143,22 @@ function HotkeyRow({ binding, index, canRemove, duplicate, onPatch, onRemove }: 
       }
 
       pressedCodesRef.current.add(e.code);
+
+      // macOS: pressing the Fn (Globe) key in Chromium surfaces as F13 with
+      // no modifiers. There is no F13 key on Mac laptops, so a bare F13 is
+      // almost certainly the user trying to bind Fn. Auto-substitute so the
+      // standard "Record" flow works without forcing the user to discover
+      // the separate "Fn キーを使う" button.
+      if (
+        e.code === 'F13' &&
+        !e.ctrlKey &&
+        !e.altKey &&
+        !e.shiftKey &&
+        !e.metaKey
+      ) {
+        tryCommit(['Fn']);
+        return;
+      }
 
       // Bare modifier: don't commit yet — wait for either a non-modifier
       // trigger (=> chord) or a keyup of all modifiers (=> bare modifier).
@@ -334,9 +354,13 @@ export function HotkeysPage({ settings, update }: Props): JSX.Element {
   );
 
   const add = useCallback((): void => {
+    // F13 used to be the default placeholder; it surfaced as "F13" in the UI
+    // and confused users who pressed Fn (Chromium emits F13 for Fn). Use the
+    // canonical defaultHotkey() instead so new bindings start with a key that
+    // actually exists on most keyboards.
     const newBinding: HotkeyBinding = {
       id: `binding-${Date.now()}`,
-      keys: ['F13'],
+      keys: [DEFAULT_HOTKEY_TOKEN],
       mode: 'push-to-talk',
       format: true
     };
