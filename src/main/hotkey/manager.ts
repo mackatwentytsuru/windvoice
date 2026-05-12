@@ -336,13 +336,34 @@ export class HotkeyManager extends EventEmitter {
         mods.alt = true;
       } else if (/^shift$/i.test(norm)) {
         mods.shift = true;
+      } else if (/^leftmeta$/i.test(norm) || /^(leftwin|leftcmd)$/i.test(norm)) {
+        // Left-Cmd ONLY. Used when the user wants to keep the OTHER Cmd free
+        // for normal shortcuts (e.g. Cmd+C / Cmd+V on the left while right
+        // Cmd is the push-to-talk hotkey, or vice versa).
+        mods.meta = true;
+        if (triggerKeys == null) {
+          const left = UiohookKey.Meta;
+          if (typeof left === 'number') {
+            triggerKeys = [left];
+            triggerProvidesModifier = 'meta';
+          }
+        }
+      } else if (/^rightmeta$/i.test(norm) || /^(rightwin|rightcmd)$/i.test(norm)) {
+        // Right-Cmd ONLY. Symmetric counterpart to LeftMeta.
+        mods.meta = true;
+        if (triggerKeys == null) {
+          const right = (UiohookKey as Record<string, number | undefined>).MetaRight;
+          if (typeof right === 'number') {
+            triggerKeys = [right];
+            triggerProvidesModifier = 'meta';
+          }
+        }
       } else if (/^(meta|win|cmd)$/i.test(norm)) {
         mods.meta = true;
-        // Bare Meta/Cmd is allowed as a push-to-talk trigger (e.g. Cmd alone
-        // on macOS). The Hotkey rebind UI emits a single "Meta" token regardless
-        // of which physical Cmd key was pressed, so we must accept BOTH the
-        // left (`UiohookKey.Meta`) and the right (`UiohookKey.MetaRight`)
-        // keycodes — otherwise pressing the wrong Cmd silently does nothing.
+        // Bare "Meta" remains supported for backward compatibility with
+        // existing settings files — it matches BOTH physical Cmd keys. New
+        // bindings created via the rebind UI now emit "LeftMeta" or
+        // "RightMeta" explicitly so the user can pick a side.
         if (triggerKeys == null) {
           triggerKeys = metaKeyCodes();
           triggerProvidesModifier = 'meta';

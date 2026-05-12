@@ -7,7 +7,7 @@ interface Props {
   update: (partial: Partial<Settings>) => Promise<void>;
 }
 
-type ModifierToken = 'Ctrl' | 'LeftCtrl' | 'RightCtrl' | 'Alt' | 'LeftAlt' | 'RightAlt' | 'Shift' | 'LeftShift' | 'RightShift' | 'Meta';
+type ModifierToken = 'Ctrl' | 'LeftCtrl' | 'RightCtrl' | 'Alt' | 'LeftAlt' | 'RightAlt' | 'Shift' | 'LeftShift' | 'RightShift' | 'Meta' | 'LeftMeta' | 'RightMeta';
 
 /**
  * Codes that represent a modifier key being pressed in isolation. When the user
@@ -21,10 +21,12 @@ const MODIFIER_CODE_TO_TOKEN: Readonly<Record<string, ModifierToken>> = {
   ControlRight: 'RightCtrl',
   ShiftLeft: 'LeftShift',
   ShiftRight: 'RightShift',
-  MetaLeft: 'Meta',
-  MetaRight: 'Meta',
-  OSLeft: 'Meta',
-  OSRight: 'Meta'
+  // Distinguish Left vs Right Cmd so a user can bind dictation to the RIGHT
+  // Cmd alone, keeping the LEFT Cmd free for normal Cmd+C / Cmd+V combos.
+  MetaLeft: 'LeftMeta',
+  MetaRight: 'RightMeta',
+  OSLeft: 'LeftMeta',
+  OSRight: 'RightMeta'
 };
 
 /**
@@ -71,7 +73,7 @@ function chordToKeys(e: KeyboardEvent): string[] | null {
     tokens.push(e.location === 2 ? 'RightShift' : 'LeftShift');
   }
   if (e.metaKey) {
-    tokens.push('Meta');
+    tokens.push(e.location === 2 ? 'RightMeta' : 'LeftMeta');
   }
   tokens.push(trigger);
   return tokens;
