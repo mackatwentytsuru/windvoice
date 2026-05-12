@@ -1,74 +1,154 @@
 # WindVoice
 
-> WindVoice — voice dictation for Windows and macOS, powered by the OpenAI Realtime API.
 > **Right Ctrl** を押しっぱなし → 喋る → 離す → カーソル位置に転写が貼り付く。
+> OpenAI Realtime API を使った Windows / macOS 向けの音声入力 Electron アプリ。
 
-OpenAI が 2026/05 に発表した GA Realtime API (`gpt-realtime-whisper`) を使った Electron アプリ。Notepad / Chrome / VS Code / Slack / Word / ChatGPT 等、任意の入力欄で動く。Windows と macOS の両方で動作する。
-
-**Status (v0.1.0, ローカルビルドのみ)**:
-- Phase 1-3 すべて実装済み — push-to-talk / 履歴 / 設定UI / GPT-5-mini フォーマッター / ライブオーバーレイ / ホットキー再バインド / Replacements / ストリーミング挿入 / ファイルタグ / アクティブウィンドウ認識 / electron-updater / macOS 対応 / 音声フィードバック
-- GitHub Releases は **空**(自動更新無効状態)。`npm run release` で必要なときに publish。
-- リポジトリは PUBLIC、MIT License。
-
-詳細メモ: Obsidian `1_Projects/WindVoice/WindVoice.md`
+Notepad / Chrome / VS Code / Slack / Word / ChatGPT など、任意のテキスト入力欄で動作します。Whisper 系列の `gpt-realtime-whisper` でストリーミング転写し、GPT-5-mini で句読点・整形・辞書適用を行ったうえでクリップボード経由でペーストします。
 
 ---
 
-## スタック
+## ステータス
 
-- Electron 42 + TypeScript (electron-vite 5 + electron-builder 26)
-- Vite 6 + React 18 (renderer)
-- OpenAI Realtime WebSocket: `wss://api.openai.com/v1/realtime?intent=transcription`, model `gpt-realtime-whisper`
-- `uiohook-napi` — グローバルホットキー + `Ctrl+V` / `Cmd+V` 送信を兼用
-- `keytar` — API キーを Windows 資格情報マネージャー / macOS Keychain に保存
-- `electron-store` + Zod — 一般設定の永続化
-- `get-windows` — アクティブウィンドウ検知(履歴・フォーマッタ文脈)
-- `electron-updater` — GitHub Releases 経由の自動更新
-- `loudness` — 録音中のシステム音量ダック
-- WebAudio + AudioWorklet (隠しレンダラー) — 24 kHz mono PCM16 ダウンサンプル
+| 項目 | 内容 |
+|---|---|
+| 最新リリース | **v0.1.4** ([releases/tag/v0.1.4](https://github.com/mackatwentytsuru/windvoice/releases/tag/v0.1.4)) |
+| 対応プラットフォーム | macOS (Apple Silicon arm64) / Windows x64 |
+| ビルド署名 | 未署名 (Gatekeeper / SmartScreen 回避手順あり) |
+| 自動更新 | macOS は opt-in / Windows は既定で有効 |
+| Unit test | 175 / 175 passed (19 files) |
+| ライセンス | MIT |
 
-## 使い方 (開発)
+セッションで解決した GitHub Issue 累計: **35件** (Closed: #2–#12, #16–#35, #37, #39, #45, #46)
+
+---
+
+## インストール (エンドユーザー)
+
+### macOS (Apple Silicon)
 
 ```bash
-# Windows
-cd C:\Users\macka\Projects\windvoice
-# macOS
-cd ~/Projects/windvoice
+# 1. DMG をダウンロード
+curl -L -o WindVoice.dmg \
+  https://github.com/mackatwentytsuru/windvoice/releases/download/v0.1.4/WindVoice-0.1.4-arm64.dmg
 
-npm install            # uiohook-napi + keytar を Electron 用に rebuild
-npm run dev            # electron-vite dev mode
+# 2. マウントして /Applications にドラッグ (もしくは Finder から)
+hdiutil attach WindVoice.dmg
+cp -R "/Volumes/WindVoice 0.1.4-arm64/WindVoice.app" /Applications/
+hdiutil detach "/Volumes/WindVoice 0.1.4-arm64"
+
+# 3. 未署名なので quarantine 属性を除去
+xattr -cr /Applications/WindVoice.app
+
+# 4. 起動
+open /Applications/WindVoice.app
 ```
 
-初回起動:
-1. トレイ (Win) / メニューバー (mac) に WindVoice アイコン
-2. Settings → General → API Key 欄に `sk-...` を貼って Save
-3. キーは `WindVoice/openai-api-key` として **Windows 資格情報マネージャー**（汎用資格情報） または **macOS Keychain** に保存される
+または Finder で `WindVoice.app` を右クリック → "Open" → "Open" を確認 で 1 回承認しても可。
 
-### デフォルトホットキー
+### Windows x64
 
-- **Windows / macOS**: **Right Ctrl** (push-to-talk) — Settings → Hotkeys タブから打鍵で再バインド可能。
+[Releases ページ](https://github.com/mackatwentytsuru/windvoice/releases/latest) から `WindVoice-Setup-<ver>-x64.exe` を落として実行。SmartScreen は「詳細情報」→「実行」で通します。
 
-#### ホットキー選択のガイド
+---
 
-| キー | Win 推奨度 | 備考 |
+## 初回セットアップ
+
+1. **トレイ / メニューバーのアイコン** をクリック → 「設定…」
+2. **General** タブ → OpenAI API キー (`sk-...`) を貼って **Save**
+   - キーは OS の資格情報ストア (macOS Keychain / Windows 資格情報マネージャ) に保存され、ディスクには平文で書かれません
+3. **macOS のみ**: System Settings → Privacy & Security → **Accessibility** で WindVoice を有効化
+   - グローバルホットキー検知 + `Cmd+V` 送出に必須
+   - 未許可だとトレイに「⚠アクセシビリティ権限が未許可」が表示されます
+4. 初回録音時の **マイクアクセス** ダイアログを許可
+
+---
+
+## 使い方
+
+### Push-to-talk (既定)
+
+1. テキスト入力欄にカーソルを置く
+2. **Right Ctrl** を押しっぱなしにして喋る
+3. キーを離す → 数秒後にカーソル位置に転写テキストが貼り付く
+
+### Toggle モード
+
+Settings → Hotkeys でモードを `Toggle` に変更すると、1回目のキー押下で録音開始、2回目で停止できます。長文をハンズフリーで入力したい場合に便利。
+
+### ホットキー再バインド
+
+Settings → Hotkeys → 「キーを記録」をクリック → 任意のキー/組み合わせを打鍵。
+
+#### おすすめキー
+
+| キー | 推奨度 | 備考 |
 |---|---|---|
-| **Right Ctrl** | ⭐ 最推奨 | 修飾キーだが menu mode に引っかからない・streaming も実用的 |
-| F13 / Caps Lock | ⭐ 推奨 | 非修飾キーなのでレース皆無。AHK でリマップ済みの人向け |
-| **Right Alt** | ⚠️ 非推奨 | Windows の Alt menu mode に引っかかり、Notepad 等で paste がメニュー操作に化ける場合あり。modifier release を待つ実装で軽減はしているが、Alt 解放後のメニューモード残留は OS 仕様で完全には逃げきれない |
+| **Right Ctrl** | ⭐ 既定 | menu mode を踏まず streaming も安定 |
+| **F13 / Caps Lock** | ⭐ 推奨 | 非修飾キーなのでレース皆無 (AHK / Karabiner でリマップ済みの人向け) |
+| **Cmd (Meta)** | ⭐ macOS 向け | 左右どちらの Cmd でも検知される |
+| Right Alt | ⚠️ 非推奨 (Win) | Notepad 等で Alt メニューモードに引っかかる場合あり |
 | Right Shift | ⚠️ 非推奨 | 多くの IME が日本語入力切替に使う |
 | Space / Enter | ❌ NG | 通常入力と衝突 |
 
-> **実環境テスト結果**: Right Ctrl だと Notepad / Windows Terminal / ChatGPT すべてで paste が完全に動作。streaming insertion も実用的。Right Alt は Notepad で menu activation キーが overlay 表示されて paste が崩れる場合がある。
+---
 
-### macOS 初回起動
+## 機能
 
-1. **Gatekeeper（未署名 DMG）の回避**:
-   - Finder で `WindVoice.app` を右クリック → "Open" を選択 → "Open" を確認
-   - もしくはターミナルで `xattr -cr /Applications/WindVoice.app`
-2. **アクセシビリティ権限**: System Settings → Privacy & Security → Accessibility で WindVoice を有効化（グローバルホットキー検知 + `Cmd+V` 送出に必須）
-3. **マイクアクセス権限**: 初回録音時にダイアログが出る → 許可
-4. **音量ダッキング**: macOS ではデフォルトで無効（システム全体の出力音量を変えてしまうため）。明示的に有効化したい場合は環境変数 `WINDVOICE_DUCK_MAC=1` を付けて起動
-5. **自動アップデート**: 未署名ビルドではデフォルトで無効。`WINDVOICE_AUTOUPDATE_DARWIN=1` を付けると有効化
+### 転写・整形
+- **Streaming 転写**: 発話中に逐次転写 (低レイテンシ)
+- **GPT-5-mini フォーマッタ**: 句読点・スペース・大文字化を自動補正、Whisper ハルシネーション(`結結結こんにちは…`等の繰り返し)を除去
+- **辞書 (Dictionary)**: `raw → corrected` ペアでよく出る誤認識を一括置換
+- **Replacements**: テキストマクロ展開 (`@email` → 自分のメアドなど)
+- **自然言語コマンド**: 発話中の「改行」「箇条書き」「コードブロック」を構造化
+- **アクティブウィンドウ認識**: フォーマッタの文脈にアプリ名を渡す (Cursor 等向けのファイルタグも)
+- **言語自動検出 / 明示指定**: 日本語・英語・中国語・韓国語など
+
+### UI / フィードバック
+- **半透明オーバーレイ**: 録音中・処理中の状態 + 音量メーターを画面下部に
+- **トレイアイコン 6状態**: idle / connecting / listening / processing / error / unavailable
+- **音声フィードバック**: 録音開始・終了で短いトーン
+- **エラーバナー**: 設定ウィンドウに paste 失敗 / formatter 401 / clipboard 復元失敗を表示
+- **アクセシビリティ自動復旧**: 権限が後から付与されたら自動でホットキーを再有効化
+
+### 挿入方式
+- **Paste**: クリップボード退避 → `Cmd+V` (mac) / `Ctrl+V` (Win) 合成 → 元クリップボード復元 (既定)
+- **Streaming insertion**: 発話中に随時 paste (短文入力向け)
+
+### システム連携
+- **音量ダッキング**: 録音中はシステム出力音量を一時的に下げる (mac は opt-in)
+- **OS 自動起動**: ログイン時に WindVoice を自動起動
+- **自動アップデート**: GitHub Releases から差分ダウンロード (Win 既定 / mac は opt-in)
+- **クラッシュ時 clipboard 復元**: 前回 paste 中に異常終了しても次回起動で元の内容を戻す (safeStorage 暗号化)
+
+### 履歴
+- **最大 200 件** の転写履歴 (コピー / 個別削除 / 全削除)
+- **タイムスタンプ + 関連アプリ名** を併記
+- **safeStorage 暗号化** (OS Keychain 連携)
+
+### セキュリティ
+- 特権 IPC は Settings ウィンドウ送信者のみ許可 (`refuseUntrusted` ゲート)
+- CSP (`default-src 'self'`, `script-src 'self' blob:`, `worker-src blob:` ...) を全レンダラーに適用
+- shell.openExternal はスキーム allowlist 経由 (`x-apple.systempreferences:` / `https:` / `mailto:`)
+- 辞書 / customInstructions は GPT system prompt 投入前にエスケープ (prompt injection 対策)
+- electron-updater `autoDownload: false` & `autoInstallOnAppQuit: false` (未署名ビルドのサプライチェーン対策)
+
+---
+
+## トラブルシューティング
+
+### ホットキーを押しても録音が始まらない
+1. トレイに **⚠アクセシビリティ権限が未許可** が出ていないか確認
+2. System Settings → Privacy & Security → Accessibility で WindVoice をオン
+3. オンにすると 2 秒以内に自動でホットキー検知が有効化されます (再起動不要)
+
+### ペーストされない / Ctrl+V が間違って入る (Mac)
+v0.1.2 で修正済。古いビルドが残っていれば再インストールしてください。
+
+### Cmd を離しても録音中が続く (Mac)
+v0.1.3 で修正済 (streaming insertion 時の suppression race)。
+
+### 文字が崩れる / 句読点が変
+Settings → General → 「整形」を有効にし、API キーが正しく設定されているか確認。401 が出ている場合はトレイに赤い "Error" 表示+エラーバナーが出ます。
 
 ### デバッグログ
 
@@ -77,122 +157,136 @@ WINDVOICE_DEBUG_HOTKEY=1 \
 WINDVOICE_DEBUG_AUDIO=1 \
 WINDVOICE_DEBUG_REALTIME=1 \
 WINDVOICE_DEBUG_DICTATION=1 \
-npm run dev
+/Applications/WindVoice.app/Contents/MacOS/WindVoice
 ```
 
-stderr に `[hotkey]` `[audio]` `[realtime]` `[dictation]` のログが流れる。
+stderr に `[hotkey]` `[audio]` `[realtime]` `[dictation]` が流れます。
 
-### テスト
+---
+
+## ビルド (コントリビューター向け)
+
+### 前提
+- Node.js 22 以上
+- macOS Apple Silicon または Windows x64 (`uiohook-napi`/`keytar` のネイティブビルド用)
+- Mac でビルドする場合は Xcode Command Line Tools
+
+### 開発モード
 
 ```bash
-npm test               # vitest run
-npm run typecheck      # node + web の strict TS チェック
+git clone https://github.com/mackatwentytsuru/windvoice.git
+cd windvoice
+npm install        # uiohook-napi + keytar が Electron 用に rebuild される
+npm run dev        # electron-vite dev mode
 ```
 
-### インストーラ生成
+### テスト・型チェック
 
 ```bash
-npm run package:win    # Windows: → release/<ver>/WindVoice-Setup-<ver>-x64.exe (NSIS)
-npm run package:mac    # macOS:   → release/<ver>/WindVoice-<ver>-{arm64,x64}.dmg
-                       #          ※ Mac 上でしかビルドできない (codesign + dmg-license)
-npm run release        # GitHub Releases に publish (auto-updater が拾う)
+npm test           # vitest run (175 cases)
+npm run typecheck  # tsconfig.node + tsconfig.web の strict TS チェック
 ```
 
-`package:win` は署名なし(`signtoolOptions: null` + `forceCodeSigning: false`)。
-`package:mac` も署名なし（`identity: null`）。配布された DMG はユーザー側で右クリック→Open する必要があるか、`xattr -cr` で quarantine を外す必要がある。署名/公証する場合は `CSC_LINK`, `APPLE_ID`, `APPLE_APP_SPECIFIC_PASSWORD`, `APPLE_TEAM_ID` を設定して `electron-builder.yml` の `identity: null` を外す。
+### パッケージング
+
+```bash
+npm run package:mac   # release/<ver>/WindVoice-<ver>-{arm64,x64}.dmg (Mac でのみ可)
+npm run package:win   # release/<ver>/WindVoice-Setup-<ver>-x64.exe (NSIS)
+npm run release       # GitHub Releases に publish
+```
+
+未署名ビルドのため `electron-builder.yml` の `identity: null` / `signtoolOptions: null` を外し、`CSC_LINK` / `APPLE_ID` / `APPLE_APP_SPECIFIC_PASSWORD` / `APPLE_TEAM_ID` を設定すれば署名 / 公証が可能。
 
 ---
 
 ## アーキテクチャ
 
 ```
-[Right Alt / Right Ctrl] ──→ HotkeyManager (uiohook-napi)
-                       │
+[Right Ctrl / Cmd / ...] ──→ HotkeyManager (uiohook-napi)
+                       │      (safety net: modifier 物理解放を検知して force-stop)
                        ▼
               DictationOrchestrator
+              (idle → connecting → listening → processing → idle)
               ┌────────┴────────┐
               ▼                 ▼
        AudioBridge        RealtimeClient
-       (隠しレンダラー)    (永続 WebSocket)
+       (隠しレンダラー)    (永続 WebSocket + auto-reconnect)
               │                 │
        getUserMedia +     wss://api.openai.com
-       AudioWorklet       /v1/realtime
-              │           ?intent=transcription
-       24kHz PCM16               │
+       AudioWorklet       /v1/realtime?intent=transcription
+       (idle 時 suspend)         │
+              │                  │
+       24kHz PCM16        input_audio_buffer.append
        50ms chunk                ▼
-              └──────→ input_audio_buffer.append
+              └──────→  conversation.item.input_audio_transcription
+                                .delta / .completed / .done
                                  ▼
-                  conversation.item.input_audio_transcription.delta/completed
-                                 ▼
-                          PostProcessor pipeline
-                          (formatter → replacements → fileTags)
+                    PostProcessor pipeline
+                    (formatter → replacements → fileTags)
+                    GPT-5-mini, reasoning_effort: 'minimal'
                                  ▼
                           TextInjector
-                          (clipboard退避→Ctrl+V/Cmd+V→復元)
+                          clipboard 退避 → safeStorage 暗号化保存
+                                       → suppressFor(40ms)
+                                       → Cmd+V / Ctrl+V (uIOhook.keyTap)
+                                       → 元 clipboard 復元
                                  ▼
                           [カーソル位置に挿入]
                                  ▼
-                          HistoryStore に追記
+                          HistoryStore (debounced write)
 ```
 
-## ディレクトリ
+### ディレクトリ構成
 
 ```
 src/
 ├── main/
-│   ├── index.ts                    # アプリ起動・トレイ・ライフサイクル
-│   ├── audio/bridge.ts             # 隠しレンダラー管理 + prewarm
-│   ├── audio/duck.ts               # 音量ダッキング (mac はデフォルト無効)
-│   ├── autoLaunch.ts               # OS 起動時の自動起動
-│   ├── context/activeWindow.ts     # アクティブウィンドウ取得 (get-windows)
-│   ├── dictation/orchestrator.ts   # 永続WS + start/stop ライフサイクル
-│   ├── hotkey/manager.ts           # uIOhook + 修飾キー判定
-│   ├── inject/typer.ts             # clipboard退避→paste→復元
-│   ├── ipc/handlers.ts
-│   ├── overlay/window.ts           # 半透明オーバーレイ (multi-monitor / Dock-aware)
+│   ├── index.ts                    # 起動 / トレイ / IPC 登録 / CSP / アクセシビリティ回復
+│   ├── audio/bridge.ts             # 隠しレンダラー + idle suspend/resume
+│   ├── audio/duck.ts               # システム音量ダック (mac はデフォルト無効)
+│   ├── autoLaunch.ts               # OS 自動起動
+│   ├── context/activeWindow.ts     # get-windows
+│   ├── dictation/orchestrator.ts   # 永続WS + dictation cycle + state machine
+│   ├── hotkey/manager.ts           # uIOhook + safety net + event-driven modifier wait
+│   ├── inject/typer.ts             # paste + safeStorage 暗号 clipboard 退避
+│   ├── inject/streamingTyper.ts    # event-driven streaming flush
+│   ├── inject/pasteWin32.ts        # 修飾キー認識 atomic SendInput (Win) / keyTap (mac)
+│   ├── ipc/handlers.ts             # refuseUntrusted gated handlers
+│   ├── overlay/window.ts           # 半透明オーバーレイ
 │   ├── postprocess/{pipeline,formatter,replacements,fileTags}.ts
-│   ├── realtime/{client,events}.ts # OpenAI WS + Zodイベント
+│   ├── realtime/{client,events}.ts # OpenAI WS + Zod schemas (.completed/.done 両対応)
 │   ├── store/{secure,settings,history}.ts
-│   ├── tray/index.ts               # 4状態アイコン
-│   └── updater/index.ts            # electron-updater (mac はデフォルト無効)
-├── preload/index.ts                # contextBridge
+│   ├── tray/index.ts               # 6状態アイコン + accessibility 警告メニュー
+│   └── updater/index.ts            # electron-updater (gated by refuseUntrusted)
+├── preload/index.ts                # contextBridge + IPC payload runtime guard
 ├── renderer/
 │   ├── index.html + main.tsx       # 設定ウィンドウ
-│   ├── audio.html + audio.ts       # 隠しオーディオワーカー
-│   ├── audio-worklet.js            # PCM ダウンサンプラー (Blob URL)
-│   ├── overlay.html + overlay.tsx  # オーバーレイレンダラー
+│   ├── audio.html + audio.ts       # 隠しオーディオワーカー (idle suspend)
+│   ├── audio-worklet.js            # PCM ダウンサンプラー
+│   ├── overlay.html + overlay.tsx  # オーバーレイ (6状態対応)
 │   ├── App.tsx + pages/*.tsx       # General / Hotkeys / Dictionary / History
+│   │                                # + system/formatter error banner
 │   └── env.d.ts
-└── shared/{types,ipc,i18n}.ts      # IPC + Zod + 翻訳
+├── shared/{types,ipc,i18n,constants}.ts
+└── tests/                          # vitest (19 files, 175 cases)
 ```
 
-## 機能一覧
+---
 
-### Phase 1 (DONE)
-- Right Alt (Win) / Right Ctrl (mac) push-to-talk / toggle
-- 24 kHz mono PCM ストリーミング → OpenAI Realtime
-- クリップボード貼り付け (元クリップボード復元)
-- トレイ / メニューバー (4状態アイコン)
-- Settings: API キー, 言語, 挿入方式
-- 辞書 (raw → corrected ペア)
-- ホットキー設定 (push-to-talk vs toggle)
-- 履歴 (最大200件、コピー・削除・全削除、自動更新)
-- Test dictation 3秒ボタン (動作確認用)
+## 技術スタック
 
-### Phase 2 (DONE)
-- GPT-5-mini フォーマッター (ハルシ削除・句読点・辞書適用)
-- ライブオーバーレイ (発話中の半透明プレビュー + 音量メーター)
-- ホットキー再バインド UI (打鍵で登録)
-
-### Phase 3 (DONE)
-- アクティブウィンドウ認識 (`get-windows`) → アプリ別整形
-- Replacements (テキストマクロ展開)
-- ストリーミング挿入 (Settings から有効化)
-- ファイルタグ (`@main.ts` で Cursor/Windsurf 用)
-- 音声フィードバック (start/stop beep)
-- Windows/mac スタートアップ自動起動
-- electron-updater で自動更新 (Win 既定 / mac は opt-in)
-- macOS 対応
+- **Electron 42** + **TypeScript 5.6**
+- electron-vite 5 / electron-builder 26
+- **React 18** + Vite 6 (renderer)
+- **OpenAI Realtime WebSocket**: `wss://api.openai.com/v1/realtime?intent=transcription` (`gpt-realtime-whisper`)
+- **`uiohook-napi`**: グローバルホットキー + `Ctrl+V`/`Cmd+V` 送出
+- **`keytar`**: OS 資格情報ストアへの API キー保存
+- **`electron-store` + Zod**: 設定の永続化 + schema validation
+- **`safeStorage`**: clipboard 復元ファイル + 履歴の OS Keychain 暗号化
+- **`get-windows`**: アクティブウィンドウ取得
+- **`electron-updater`**: GitHub Releases 経由の差分更新
+- **`loudness`**: システム音量ダック
+- **WebAudio + AudioWorklet**: 24 kHz mono PCM16 ダウンサンプル (idle suspend 対応)
 
 ---
 
@@ -201,12 +295,12 @@ src/
 | 項目 | 単価 |
 |---|---|
 | `gpt-realtime-whisper` | $0.017 / 分 |
-| `gpt-5-mini` 整形 | < $0.001 / 回 |
+| `gpt-5-mini` 整形 (`reasoning_effort: 'minimal'`) | < $0.001 / 回 |
 
-30分/日 使用想定で **月 $15-20**。
+30 分/日 使用想定で **月 $15-20**。
 
 ---
 
-## License
+## ライセンス
 
 Copyright (c) 2026 mackatwentytsuru. MIT License (see [LICENSE](./LICENSE)).
