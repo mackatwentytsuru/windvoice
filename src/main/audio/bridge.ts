@@ -27,6 +27,7 @@ export class AudioBridge {
   private readyResolvers: Array<() => void> = [];
   private chunkListener: ((chunk: ChunkPayload | AudioChunk) => void) | null = null;
   private levelListener: ((level: number) => void) | null = null;
+  private errorListener: ((message: string) => void) | null = null;
   private lastAudioErrorAt = 0;
   private lastAudioErrorMsg = '';
 
@@ -76,6 +77,7 @@ export class AudioBridge {
       const msg = typeof message === 'string' ? message : String(message);
       this.lastAudioErrorAt = Date.now();
       this.lastAudioErrorMsg = msg;
+      this.errorListener?.(msg);
     };
 
     ipcMain.on(IPC.AUDIO_READY, this.onReadyHandler);
@@ -114,6 +116,16 @@ export class AudioBridge {
 
   setLevelListener(cb: ((level: number) => void) | null): void {
     this.levelListener = cb;
+  }
+
+  /**
+   * Register a listener that fires when the trusted audio renderer reports
+   * an error. The bridge already validates `event.sender.id` against the
+   * owned window's webContents id, so any message reaching this callback is
+   * known to be from the legitimate audio renderer.
+   */
+  setErrorListener(cb: ((message: string) => void) | null): void {
+    this.errorListener = cb;
   }
 
   /** Used by main to scope `setPermissionRequestHandler` to this window only. */

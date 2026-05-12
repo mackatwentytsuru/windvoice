@@ -24,21 +24,36 @@ describe('SettingsSchema', () => {
     expect(s.hotkeys[0]?.format).toBe(true); // default applied
   });
 
-  it('rejects an empty key list', () => {
-    expect(() =>
-      SettingsSchema.parse({ hotkeys: [{ id: 'bad', keys: [], mode: 'toggle' }] })
-    ).toThrow();
+  // v0.1.2: an invalid hotkeys array (e.g. one entry with `keys: []`) no longer
+  // throws — the schema falls back to the default RightCtrl binding via
+  // `.catch(() => defaultHotkeyBindings())`. This keeps a corrupted settings
+  // file from bricking the app on launch.
+  it('falls back to default hotkey when an entry has an empty key list', () => {
+    const parsed = SettingsSchema.parse({
+      hotkeys: [{ id: 'bad', keys: [], mode: 'toggle' }]
+    });
+    expect(parsed.hotkeys).toHaveLength(1);
+    expect(parsed.hotkeys[0]?.keys).toEqual(['RightCtrl']);
+    expect(parsed.hotkeys[0]?.mode).toBe('push-to-talk');
+    expect(parsed.hotkeys[0]?.id).toBe('primary');
   });
 
-  it('clamps audio inputGain to [0, 4]', () => {
-    expect(() => SettingsSchema.parse({ audio: { inputGain: -1 } })).toThrow();
-    expect(() => SettingsSchema.parse({ audio: { inputGain: 5 } })).toThrow();
-    expect(SettingsSchema.parse({ audio: { inputGain: 2 } }).audio.inputGain).toBe(2);
+  // v0.1.2: `audio.inputGain` was scaffolded but never wired into the
+  // AudioWorklet pipeline (#16) and has been removed from the schema. Zod
+  // ignores unknown properties unless `.strict()` is used, so existing
+  // settings files with `inputGain` still parse — the field is simply dropped.
+  it('drops the deprecated audio.inputGain field without throwing', () => {
+    const parsed = SettingsSchema.parse({ audio: { inputGain: 2, device: 'mic-1' } });
+    expect(parsed.audio.device).toBe('mic-1');
+    // `inputGain` is not in the parsed audio object.
+    expect(Object.keys(parsed.audio)).toEqual(['device']);
   });
 
-  it('rejects unknown insertion method', () => {
-    expect(() =>
-      SettingsSchema.parse({ insertion: { method: 'magic' } })
-    ).toThrow();
+  // v0.1.2: 'type' was removed as an insertion method (#6). The enum is now
+  // a single-member literal with `.catch('paste')`, so any legacy/unknown
+  // value parses to 'paste' instead of failing schema validation.
+  it('falls back to paste for unknown insertion methods', () => {
+    const parsed = SettingsSchema.parse({ insertion: { method: 'magic' } });
+    expect(parsed.insertion.method).toBe('paste');
   });
 });

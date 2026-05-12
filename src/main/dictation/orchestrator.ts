@@ -320,8 +320,11 @@ export class DictationOrchestrator {
     }
   }
 
-  private detachClientListeners(): void {
-    const client = this.client;
+  private detachClientListeners(target?: RealtimeClient | null): void {
+    // Pass `target` explicitly when cleaning up a client that is no longer
+    // `this.client` (e.g. an old instance about to be superseded by a
+    // replacement). Defaults to `this.client` for normal teardown.
+    const client = target === undefined ? this.client : target;
     if (client) {
       if (this.clientHandlers.delta) client.off('delta', this.clientHandlers.delta);
       if (this.clientHandlers.final) client.off('final', this.clientHandlers.final);
@@ -363,130 +366,149 @@ export class DictationOrchestrator {
     this.broadcast(IPC.TRANSCRIPT_DELTA, text);
   }
 
-  private async ensureConnected(): Promise<RealtimeClient> {
-    if (this.client && this.client.isOpen()) return this.client;
+  private ensureConnected(): Promise<RealtimeClient> {
+    // Fast path: an already-open client serves all callers.
+    if (this.client && this.client.isOpen()) return Promise.resolve(this.client);
+    // Coalesce concurrent callers onto the SAME in-flight connect attempt.
+    // The promise is cleared inside _doConnect's finally — never here —
+    // so a second caller cannot observe a null `connectPromise` mid-build
+    // and spawn a duplicate RealtimeClient (issue #20).
     if (this.connectPromise) return this.connectPromise;
-
-    const promise = (async (): Promise<RealtimeClient> => {
-      let apiKey: string | null;
-      try {
-        apiKey = await secureStore.getApiKey();
-      } catch (err) {
-        throw new Error(`secure storage unavailable: ${errMsg(err)}`);
-      }
-      if (!apiKey) throw new Error('OpenAI API key is not set');
-
-      const settings = settingsStore.get();
-      const client = new RealtimeClient({
-        apiKey,
-        language: settings.language === 'auto' ? undefined : settings.language,
-        prompt: dictionaryPrompt(settings.dictionary),
-        vadEnabled: false
-      });
-
-      const onDelta = (text: string): void => {
-        this.partial += text;
-        this.broadcastDelta(this.partial);
-        // Streaming insertion: flush the new tail to the streaming typer.
-        if (this.streamingActive) {
-          const tail = this.partial.slice(this.streamedPrefixLen);
-          if (tail) {
-            streamingTyper.append(tail);
-            this.streamedPrefixLen = this.partial.length;
-          }
-        }
-      };
-      const onFinal = (text: string): void => {
-        if (this.pendingFinal) this.pendingFinal(text);
-      };
-      const onError = (err: Error): void => {
-        debug('REALTIME', err.message);
-        this.broadcast(IPC.TRANSCRIPT_FINAL, `[error] ${err.message}`);
-        if (this.pendingFinal) {
-          this.pendingFinal('');
-        }
-        if (this.inFlight) {
-          this.inFlight = false;
-          this.duckedThisCycle = false;
-          this.audio.endForwarding(this.startCount);
-          this.audio.setChunkListener(null);
-          void audioDuck.restore();
-          if (this.streamingActive) {
-            void streamingTyper.end();
-            this.streamingActive = false;
-          }
-          this.updateStatus('error');
-        }
-      };
-      const onClose = (): void => {
-        // A clean close after `commit` should resolve pendingFinal, not
-        // reject — the server may have closed us right after the final.
-        if (this.pendingFinal) {
-          this.pendingFinal(this.partial);
-        }
-        const isOurClient = this.client === client;
-        if (isOurClient) this.client = null;
-        // If the WS reconnects mid-flight, do not keep state — surface the
-        // error and reset.
-        if (this.inFlight && !this.pendingFinal) {
-          this.inFlight = false;
-          this.duckedThisCycle = false;
-          this.audio.endForwarding(this.startCount);
-          this.audio.setChunkListener(null);
-          void audioDuck.restore();
-          if (this.streamingActive) {
-            void streamingTyper.end();
-            this.streamingActive = false;
-          }
-          this.updateStatus('error');
-          this.broadcast(IPC.TRANSCRIPT_FINAL, '[error] connection closed');
-        } else if (isOurClient) {
-          // H7: WS closed (likely reconnect-attempts exhausted) while no
-          // dictation was in flight. Previously the tray stayed on
-          // whatever status it had — silently, the next dictation press
-          // would also fail because the client is gone. Mark error so
-          // the tray reflects reality; the next start() reconnects.
-          this.updateStatus('error');
-        }
-      };
-
-      this.clientHandlers = {
-        delta: onDelta,
-        final: onFinal,
-        error: onError,
-        close: onClose
-      };
-      client.on('delta', onDelta);
-      client.on('final', onFinal);
-      client.on('error', onError);
-      client.on('close', onClose);
-
-      // Emit 'connecting' just before the WS handshake so the tray and
-      // overlay reflect the gap between hotkey press and 'listening' on
-      // a cold start. If the connection is already warm, ensureConnected
-      // returns early above and this branch never runs (transition is
-      // idle → listening directly).
-      this.updateStatus('connecting');
-
-      await client.connect();
-      const chunkListener = (chunk: ChunkLike): void => {
-        // Prefer the binary path; fall back to base64 for legacy/test paths.
-        if ('data' in chunk && chunk.data) client.appendAudio(chunk.data as Buffer);
-        else if ('base64' in chunk && chunk.base64) client.appendAudio(chunk.base64);
-      };
-      this.clientChunkListener = chunkListener;
-      this.audio.setChunkListener(chunkListener);
-      this.client = client;
-      return client;
-    })();
-
-    this.connectPromise = promise;
-    try {
-      const c = await promise;
-      return c;
-    } finally {
+    this.connectPromise = this._doConnect().finally(() => {
       this.connectPromise = null;
+    });
+    return this.connectPromise;
+  }
+
+  private async _doConnect(): Promise<RealtimeClient> {
+    let apiKey: string | null;
+    try {
+      apiKey = await secureStore.getApiKey();
+    } catch (err) {
+      throw new Error(`secure storage unavailable: ${errMsg(err)}`);
     }
+    if (!apiKey) throw new Error('OpenAI API key is not set');
+
+    const settings = settingsStore.get();
+    const client = new RealtimeClient({
+      apiKey,
+      language: settings.language === 'auto' ? undefined : settings.language,
+      prompt: dictionaryPrompt(settings.dictionary),
+      vadEnabled: false
+    });
+
+    const onDelta = (text: string): void => {
+      this.partial += text;
+      this.broadcastDelta(this.partial);
+      // Streaming insertion: flush the new tail to the streaming typer.
+      if (this.streamingActive) {
+        const tail = this.partial.slice(this.streamedPrefixLen);
+        if (tail) {
+          streamingTyper.append(tail);
+          this.streamedPrefixLen = this.partial.length;
+        }
+      }
+    };
+    const onFinal = (text: string): void => {
+      if (this.pendingFinal) this.pendingFinal(text);
+    };
+    const onError = (err: Error): void => {
+      debug('REALTIME', err.message);
+      this.broadcast(IPC.TRANSCRIPT_FINAL, `[error] ${err.message}`);
+      if (this.pendingFinal) {
+        this.pendingFinal('');
+      }
+      if (this.inFlight) {
+        this.inFlight = false;
+        this.duckedThisCycle = false;
+        this.audio.endForwarding(this.startCount);
+        this.audio.setChunkListener(null);
+        void audioDuck.restore();
+        if (this.streamingActive) {
+          void streamingTyper.end().catch((e) =>
+            debug(
+              'DICTATION',
+              `streamingTyper.end rejected: ${e instanceof Error ? e.message : String(e)}`
+            )
+          );
+          this.streamingActive = false;
+        }
+        this.updateStatus('error');
+      }
+    };
+    const onClose = (): void => {
+      // A clean close after `commit` should resolve pendingFinal, not
+      // reject — the server may have closed us right after the final.
+      if (this.pendingFinal) {
+        this.pendingFinal(this.partial);
+      }
+      const isOurClient = this.client === client;
+      if (isOurClient) {
+        // Detach listeners from the now-defunct client BEFORE clearing
+        // the reference. Without this, if anything (auto-reconnect,
+        // late events) caused the old EventEmitter to fire again, the
+        // stale onDelta would keep mutating `this.partial` even after
+        // a replacement client has been built (issue #21).
+        this.detachClientListeners(client);
+        this.client = null;
+      }
+      // If the WS reconnects mid-flight, do not keep state — surface the
+      // error and reset.
+      if (this.inFlight && !this.pendingFinal) {
+        this.inFlight = false;
+        this.duckedThisCycle = false;
+        this.audio.endForwarding(this.startCount);
+        this.audio.setChunkListener(null);
+        void audioDuck.restore();
+        if (this.streamingActive) {
+          void streamingTyper.end().catch((e) =>
+            debug(
+              'DICTATION',
+              `streamingTyper.end rejected: ${e instanceof Error ? e.message : String(e)}`
+            )
+          );
+          this.streamingActive = false;
+        }
+        this.updateStatus('error');
+        this.broadcast(IPC.TRANSCRIPT_FINAL, '[error] connection closed');
+      } else if (isOurClient) {
+        // H7: WS closed (likely reconnect-attempts exhausted) while no
+        // dictation was in flight. Previously the tray stayed on
+        // whatever status it had — silently, the next dictation press
+        // would also fail because the client is gone. Mark error so
+        // the tray reflects reality; the next start() reconnects.
+        this.updateStatus('error');
+      }
+    };
+
+    this.clientHandlers = {
+      delta: onDelta,
+      final: onFinal,
+      error: onError,
+      close: onClose
+    };
+    client.on('delta', onDelta);
+    client.on('final', onFinal);
+    client.on('error', onError);
+    client.on('close', onClose);
+
+    // Emit 'connecting' just before the WS handshake so the tray and
+    // overlay reflect the gap between hotkey press and 'listening' on
+    // a cold start. If the connection is already warm, ensureConnected
+    // returns early above and this branch never runs (transition is
+    // idle → listening directly).
+    this.updateStatus('connecting');
+
+    await client.connect();
+    const chunkListener = (chunk: ChunkLike): void => {
+      // Prefer the binary path; fall back to base64 for legacy/test paths.
+      if ('data' in chunk && chunk.data) client.appendAudio(chunk.data as Buffer);
+      else if ('base64' in chunk && chunk.base64) client.appendAudio(chunk.base64);
+    };
+    this.clientChunkListener = chunkListener;
+    this.audio.setChunkListener(chunkListener);
+    this.client = client;
+    return client;
   }
 }
 

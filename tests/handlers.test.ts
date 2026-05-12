@@ -159,34 +159,55 @@ beforeEach(() => {
 
 // ─── Tests ─────────────────────────────────────────────────────────────────
 
+// v0.1.2: Every mutation handler now refuses any IPC sender unless an
+// explicit trusted sender id has been registered AND the event came from
+// it (`refuseUntrusted` in handlers.ts). Tests that exercise the
+// happy-path of a privileged handler must register a trusted sender
+// first. Use TRUSTED_ID as the conventional senderId for those calls.
+const TRUSTED_ID = 1;
+
 describe('IPC handlers — HISTORY_REMOVE', () => {
   it('rejects an oversize id (>128 chars)', async () => {
+    setTrustedSettingsSender(TRUSTED_ID);
     const handler = getHandler(IPC.HISTORY_REMOVE);
-    const result = await handler(fakeEvent(), 'a'.repeat(200));
+    const result = await handler(fakeEvent(TRUSTED_ID), 'a'.repeat(200));
     expect(isFailureResult(result)).toBe(true);
     expect(hoisted.history.removed).toEqual([]);
   });
 
   it('accepts a valid string id', async () => {
+    setTrustedSettingsSender(TRUSTED_ID);
     const handler = getHandler(IPC.HISTORY_REMOVE);
-    const result = await handler(fakeEvent(), 'short-id');
+    const result = await handler(fakeEvent(TRUSTED_ID), 'short-id');
     // success returns the list (not an IpcResult shape)
     expect(isFailureResult(result)).toBe(false);
     expect(hoisted.history.removed).toContain('short-id');
+  });
+
+  it('rejects when no trusted sender is registered', async () => {
+    // setTrustedSettingsSender(null) is the beforeEach default; verify
+    // the refusal contract.
+    const handler = getHandler(IPC.HISTORY_REMOVE);
+    const result = (await handler(fakeEvent(), 'short-id')) as MaybeOk;
+    expect(result.ok).toBe(false);
+    expect(result.code).toBe('E_UNTRUSTED');
+    expect(hoisted.history.removed).toEqual([]);
   });
 });
 
 describe('IPC handlers — APIKEY_SET', () => {
   it('rejects strings shorter than 10 chars', async () => {
+    setTrustedSettingsSender(TRUSTED_ID);
     const handler = getHandler(IPC.APIKEY_SET);
-    const result = (await handler(fakeEvent(), 'sk-tiny')) as MaybeOk;
+    const result = (await handler(fakeEvent(TRUSTED_ID), 'sk-tiny')) as MaybeOk;
     expect(result.ok).toBe(false);
     expect(result.code).toBe('E_INVALID');
   });
 
   it('rejects strings longer than 512 chars', async () => {
+    setTrustedSettingsSender(TRUSTED_ID);
     const handler = getHandler(IPC.APIKEY_SET);
-    const result = (await handler(fakeEvent(), 'sk-' + 'x'.repeat(600))) as MaybeOk;
+    const result = (await handler(fakeEvent(TRUSTED_ID), 'sk-' + 'x'.repeat(600))) as MaybeOk;
     expect(result.ok).toBe(false);
     expect(result.code).toBe('E_INVALID');
   });
@@ -213,54 +234,66 @@ describe('IPC handlers — APIKEY_SET', () => {
     expect(triggers.onApiKeyChanged).toHaveBeenCalled();
   });
 
-  it('accepts from any sender when no trusted id is set', async () => {
+  // v0.1.2: when no trusted sender is registered, privileged handlers
+  // refuse ALL callers (the previous behavior of "allow any sender when
+  // no trusted id is set" was removed as part of the L1/L2 hardening).
+  it('refuses every sender when no trusted id is set', async () => {
     setTrustedSettingsSender(null);
     hoisted.secure.setApiKey = () => Promise.resolve();
     const handler = getHandler(IPC.APIKEY_SET);
     const result = (await handler(fakeEvent(7), 'sk-valid-key-1234567890')) as MaybeOk;
-    expect(result.ok).toBe(true);
+    expect(result.ok).toBe(false);
+    expect(result.code).toBe('E_UNTRUSTED');
   });
 });
 
 describe('IPC handlers — CLIPBOARD_WRITE', () => {
   it('rejects strings larger than 1MB', async () => {
+    setTrustedSettingsSender(TRUSTED_ID);
     const handler = getHandler(IPC.CLIPBOARD_WRITE);
     // 1MB threshold = 1_000_000 chars; pass slightly above.
     const big = 'x'.repeat(1_000_001);
-    const result = (await handler(fakeEvent(), big)) as MaybeOk;
+    const result = (await handler(fakeEvent(TRUSTED_ID), big)) as MaybeOk;
     expect(result.ok).toBe(false);
     expect(result.code).toBe('E_TOO_LARGE');
     expect(hoisted.clipboardWriteText.calls).toEqual([]);
   });
 
   it('accepts smaller strings and writes to clipboard', async () => {
+    setTrustedSettingsSender(TRUSTED_ID);
     const handler = getHandler(IPC.CLIPBOARD_WRITE);
-    const result = (await handler(fakeEvent(), 'hello world')) as MaybeOk;
+    const result = (await handler(fakeEvent(TRUSTED_ID), 'hello world')) as MaybeOk;
     expect(result.ok).toBe(true);
     expect(hoisted.clipboardWriteText.calls).toEqual(['hello world']);
   });
 
   it('rejects non-string payload', async () => {
+    setTrustedSettingsSender(TRUSTED_ID);
     const handler = getHandler(IPC.CLIPBOARD_WRITE);
-    const result = (await handler(fakeEvent(), 12345)) as MaybeOk;
+    const result = (await handler(fakeEvent(TRUSTED_ID), 12345)) as MaybeOk;
     expect(result.ok).toBe(false);
     expect(result.code).toBe('E_INVALID');
   });
 });
 
 describe('IPC handlers — SETTINGS_SET', () => {
-  it('returns { ok: false, error } on invalid payload and does NOT broadcast', async () => {
+  it('returns { ok: false, error } on a truly invalid payload and does NOT broadcast', async () => {
+    setTrustedSettingsSender(TRUSTED_ID);
     const handler = getHandler(IPC.SETTINGS_SET);
-    // invalid: hotkeys must be array of HotkeyBindingSchema; pass a number.
-    const result = (await handler(fakeEvent(), { hotkeys: 12345 })) as MaybeOk;
+    // v0.1.2: `hotkeys: 12345` now recovers via the schema's `.catch`
+    // fallback to the default RightCtrl binding instead of throwing.
+    // To force a real validation error we pass a payload that no `.catch`
+    // recovers (e.g. `ui.theme` not in the enum and no fallback wired).
+    const result = (await handler(fakeEvent(TRUSTED_ID), { ui: { theme: 'neon' } })) as MaybeOk;
     expect(result.ok).toBe(false);
     expect(typeof result.error).toBe('string');
     expect(triggers.onSettingsChanged).not.toHaveBeenCalled();
   });
 
   it('accepts a valid partial', async () => {
+    setTrustedSettingsSender(TRUSTED_ID);
     const handler = getHandler(IPC.SETTINGS_SET);
-    const result = await handler(fakeEvent(), { language: 'en' });
+    const result = await handler(fakeEvent(TRUSTED_ID), { language: 'en' });
     // success returns the merged Settings object (not IpcResult)
     expect(isFailureResult(result)).toBe(false);
     expect(hoisted.settings.setCalls).toHaveLength(1);

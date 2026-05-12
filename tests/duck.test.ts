@@ -1,4 +1,18 @@
-import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
+import { describe, expect, it, vi, afterAll, beforeEach, afterEach } from 'vitest';
+
+// v0.1.2: AudioDuck refuses to act on darwin unless WINDVOICE_DUCK_MAC=1
+// (#15). Force the process.platform to 'linux' at module load so the
+// generic behavior tests in the outer describe are unaffected by the
+// dev host's actual platform. The nested 'platform gating' describe
+// already manages its own platform overrides per test.
+//
+// IMPORTANT: this must happen at module scope, BEFORE the nested
+// describe blocks evaluate — `const originalPlatform = process.platform`
+// inside the nested describe captures at evaluation time, so we need
+// the platform to already read 'linux' by then or its afterEach will
+// "restore" to darwin and break tests after the gating block.
+const __originalPlatformAtLoad = process.platform;
+Object.defineProperty(process, 'platform', { value: 'linux', writable: true });
 
 const hoisted = vi.hoisted(() => ({
   state: { volume: 50 },
@@ -16,6 +30,16 @@ vi.mock('loudness', () => ({
 import { AudioDuck, onDuckError } from '../src/main/audio/duck';
 
 describe('AudioDuck', () => {
+  afterAll(() => {
+    // Restore the host's true platform after all duck tests run, in case
+    // anything later (vitest's own diagnostics, follow-up test files in
+    // the same worker) inspects process.platform.
+    Object.defineProperty(process, 'platform', {
+      value: __originalPlatformAtLoad,
+      writable: true
+    });
+  });
+
   beforeEach(() => {
     hoisted.state.volume = 50;
     hoisted.getVolume.mockReset();

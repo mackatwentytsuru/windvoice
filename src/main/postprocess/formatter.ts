@@ -85,6 +85,21 @@ function getClient(apiKey: string): OpenAI {
   return client;
 }
 
+/**
+ * Escape values interpolated into the system prompt so a malicious or
+ * accidentally-pasted dictionary entry / custom-instruction value cannot
+ * break out of the surrounding bullet-list + double-quoted-string context
+ * and inject new directives (issue #31). We do not truncate length — just
+ * neutralize the characters that could terminate a line or a quoted span.
+ */
+function sanitizePromptValue(v: string): string {
+  return v
+    .replace(/\\/g, '\\\\')
+    .replace(/"/g, '\\"')
+    .replace(/\r/g, '\\r')
+    .replace(/\n/g, '\\n');
+}
+
 export function buildSystemPrompt(settings: Readonly<Settings>): string {
   const language = settings.language || 'ja';
   const isJa = language.toLowerCase().startsWith('ja');
@@ -117,7 +132,7 @@ export function buildSystemPrompt(settings: Readonly<Settings>): string {
     lines.push('');
     lines.push('User dictionary (apply these as STRICT replacements; the left side must be replaced with the right side wherever it appears):');
     for (const entry of dictionary) {
-      lines.push(`- "${entry.from}" -> "${entry.to}"`);
+      lines.push(`- "${sanitizePromptValue(entry.from)}" -> "${sanitizePromptValue(entry.to)}"`);
     }
   }
 
@@ -125,7 +140,7 @@ export function buildSystemPrompt(settings: Readonly<Settings>): string {
   if (custom.length > 0) {
     lines.push('');
     lines.push('Additional user instructions (follow these unless they conflict with the strict rules above):');
-    lines.push(custom);
+    lines.push(sanitizePromptValue(custom));
   }
 
   return lines.join('\n');

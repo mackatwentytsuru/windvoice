@@ -7,6 +7,7 @@ import { BrowserWindow, app, ipcMain } from 'electron';
 import pkg from 'electron-updater';
 import { debug } from '@main/debug';
 import { settingsStore } from '@main/store/settings';
+import { refuseUntrusted } from '@main/ipc/handlers';
 
 const { autoUpdater } = pkg;
 
@@ -128,7 +129,9 @@ export function initAutoUpdater(): void {
     broadcast({ phase: 'error', message: err.message })
   );
 
-  ipcMain.handle(CHECK_CHANNEL, async () => {
+  ipcMain.handle(CHECK_CHANNEL, async (event) => {
+    const refusal = refuseUntrusted(event);
+    if (refusal) return refusal;
     try {
       await autoUpdater.checkForUpdates();
     } catch (err) {
@@ -138,7 +141,9 @@ export function initAutoUpdater(): void {
     return lastState;
   });
 
-  ipcMain.handle(RESTART_CHANNEL, () => {
+  ipcMain.handle(RESTART_CHANNEL, (event) => {
+    const refusal = refuseUntrusted(event);
+    if (refusal) return refusal;
     if (dictationActiveCheck && dictationActiveCheck()) {
       const version =
         lastState.phase === 'downloaded' ? lastState.version : 'pending';
@@ -149,7 +154,11 @@ export function initAutoUpdater(): void {
     autoUpdater.quitAndInstall(false, true);
     return { deferred: false };
   });
-  ipcMain.handle(LAST_STATE_CHANNEL, (): UpdaterState => lastState);
+  ipcMain.handle(LAST_STATE_CHANNEL, (event) => {
+    const refusal = refuseUntrusted(event);
+    if (refusal) return refusal;
+    return lastState;
+  });
 
   // Optional kickoff at startup if user opted in.
   if (settingsStore.get().ui.autoUpdate) {

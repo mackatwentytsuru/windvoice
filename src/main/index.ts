@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, session, shell, systemPreferences } from 'electron';
+import { app, BrowserWindow, dialog, session, shell, systemPreferences } from 'electron';
 import path from 'node:path';
 import { is } from '@main/audio/env';
 import { settingsStore } from '@main/store/settings';
@@ -172,6 +172,32 @@ app.whenReady().then(async () => {
     }
   }
 
+  // Defense-in-depth Content-Security-Policy for all renderer responses
+  // (issue #29). The hidden audio renderer runs with `sandbox: false` for
+  // AudioWorklet+blob compatibility, so a CSP is the next strongest barrier
+  // if a renderer is ever subverted. The realtime WebSocket runs in the
+  // main process, so `connect-src 'self'` is sufficient for renderer code.
+  // `blob:` worker-src and media-src are required by the AudioWorklet path.
+  session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
+    const responseHeaders = { ...(details.responseHeaders ?? {}) };
+    // `script-src` must include `blob:` because the hidden audio renderer
+    // creates the AudioWorklet module via `URL.createObjectURL(blob)` and
+    // Chromium evaluates worklet modules under script-src in addition to
+    // worker-src. Without blob: here, addModule rejects with
+    // `AbortError: Unable to load a worklet's module` and the dictation
+    // path fails before the first chunk.
+    responseHeaders['Content-Security-Policy'] = [
+      "default-src 'self'; " +
+        "script-src 'self' blob:; " +
+        "style-src 'self' 'unsafe-inline'; " +
+        "connect-src 'self'; " +
+        "img-src 'self' data:; " +
+        "media-src 'self' blob:; " +
+        "worker-src blob:"
+    ];
+    callback({ responseHeaders });
+  });
+
   // Restore clipboard if a prior session crashed mid-paste.
   recoverClipboardIfPending();
 
@@ -229,20 +255,6 @@ app.whenReady().then(async () => {
     callback(false);
   });
 
-  ipcMain.on(IPC.AUDIO_ERROR, (e, message: string) => {
-    // Only accept from the trusted hidden audio renderer.
-    const audioWcId = audio?.getWebContentsId();
-    if (audioWcId !== null && audioWcId !== undefined && e.sender.id !== audioWcId) {
-      return;
-    }
-    if (typeof message !== 'string') return;
-    lastAudioError = message;
-    process.stderr.write(`[audio] ${message}\n`);
-    for (const win of BrowserWindow.getAllWindows()) {
-      win.webContents.send(IPC.AUDIO_ERROR, message);
-    }
-  });
-
   createTray({
     openSettings: () => void createSettingsWindow(),
     quit: () => {
@@ -263,6 +275,16 @@ app.whenReady().then(async () => {
   await audio.init(PRELOAD_PATH);
   const audioWcId = audio.getWebContentsId();
   if (audioWcId !== null) trustedMicIds.add(audioWcId);
+  // Consolidated audio-error path. The bridge already validates the sender
+  // against its owned webContents id before invoking this callback, so we
+  // no longer need a parallel `ipcMain.on(AUDIO_ERROR, ...)` listener
+  // (which could otherwise be reached by any renderer before `audio` was
+  // initialized — issue #22).
+  audio.setErrorListener((message) => {
+    lastAudioError = message;
+    process.stderr.write(`[audio] ${message}\n`);
+    broadcastToUiWindows(IPC.AUDIO_ERROR, message);
+  });
 
   // Register post-processors. Order matters: formatter first (cleans
   // hallucinations + applies dictionary via prompt), then deterministic

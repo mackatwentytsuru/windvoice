@@ -39,6 +39,14 @@ vi.mock('electron', () => ({
     writeText: hoisted.writeText,
     readText: hoisted.readText,
     clear: hoisted.clearClip
+  },
+  // v0.1.2: typer.ts now persists the previous clipboard via `safeStorage`
+  // when available, falling back to plaintext. The tests exercise the
+  // plaintext path by returning `false` from `isEncryptionAvailable()`.
+  safeStorage: {
+    isEncryptionAvailable: vi.fn(() => false),
+    encryptString: vi.fn(() => Buffer.from('')),
+    decryptString: vi.fn(() => '')
   }
 }));
 
@@ -159,7 +167,10 @@ describe('recoverClipboardIfPending', () => {
       JSON.stringify({ text: 'RESTORED', savedAt: Date.now() })
     );
     recoverClipboardIfPending();
-    expect(hoisted.readFileSync).toHaveBeenCalledWith(RESTORE_PATH, 'utf8');
+    // v0.1.2: the restore file may be encrypted (safeStorage) or plaintext,
+    // so readFileSync is called with just the path; the typer decodes the
+    // buffer itself (decrypt-first, then `.toString('utf8')`).
+    expect(hoisted.readFileSync).toHaveBeenCalledWith(RESTORE_PATH);
     expect(hoisted.writeText).toHaveBeenCalledWith('RESTORED');
     expect(hoisted.unlinkSync).toHaveBeenCalledWith(RESTORE_PATH);
     expect(hoisted.fsState.files.has(RESTORE_PATH)).toBe(false);

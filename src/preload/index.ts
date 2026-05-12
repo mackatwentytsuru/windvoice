@@ -31,6 +31,46 @@ async function unwrap<T>(p: Promise<IpcResult<T>>): Promise<T> {
   throw err;
 }
 
+// ── Lightweight runtime guards for inbound IPC payloads (issue #32). ──────
+// zod is unavailable here (preload runs sandboxed without zod resolution),
+// so we use inline `typeof` / membership checks. On mismatch we log to the
+// renderer console and DROP the event rather than forward garbage upstream.
+
+const DICTATION_STATUS_VALUES: ReadonlySet<DictationStatus> = new Set<DictationStatus>([
+  'idle',
+  'connecting',
+  'listening',
+  'processing',
+  'error',
+  'unavailable'
+]);
+
+function isDictationStatus(v: unknown): v is DictationStatus {
+  return typeof v === 'string' && DICTATION_STATUS_VALUES.has(v as DictationStatus);
+}
+
+const BEEP_KIND_VALUES: ReadonlySet<BeepKind> = new Set<BeepKind>(['start', 'stop']);
+
+function isBeepKind(v: unknown): v is BeepKind {
+  return typeof v === 'string' && BEEP_KIND_VALUES.has(v as BeepKind);
+}
+
+function isOverlayState(v: unknown): v is OverlayState {
+  if (!v || typeof v !== 'object') return false;
+  const o = v as { status?: unknown; level?: unknown };
+  return isDictationStatus(o.status) && typeof o.level === 'number';
+}
+
+function isHistoryEntry(v: unknown): v is HistoryEntry {
+  if (!v || typeof v !== 'object') return false;
+  const o = v as { id?: unknown; timestamp?: unknown; transcript?: unknown };
+  return (
+    typeof o.id === 'string' &&
+    typeof o.timestamp === 'number' &&
+    typeof o.transcript === 'string'
+  );
+}
+
 const api = {
   // settings
   getSettings: (): Promise<Settings> => ipcRenderer.invoke(IPC.SETTINGS_GET),
@@ -50,7 +90,13 @@ const api = {
 
   // status / transcript subscriptions
   onStatus: (cb: (status: DictationStatus) => void): (() => void) => {
-    const handler = (_e: unknown, s: DictationStatus): void => cb(s);
+    const handler = (_e: unknown, s: unknown): void => {
+      if (!isDictationStatus(s)) {
+        console.error('[preload] dropped STATUS_CHANGED with invalid payload', s);
+        return;
+      }
+      cb(s);
+    };
     ipcRenderer.on(IPC.STATUS_CHANGED, handler);
     return () => ipcRenderer.removeListener(IPC.STATUS_CHANGED, handler);
   },
@@ -83,7 +129,13 @@ const api = {
 
   // overlay state subscription (used by overlay window only)
   onOverlayState: (cb: (s: OverlayState) => void): (() => void) => {
-    const handler = (_e: unknown, s: OverlayState): void => cb(s);
+    const handler = (_e: unknown, s: unknown): void => {
+      if (!isOverlayState(s)) {
+        console.error('[preload] dropped OVERLAY_STATE with invalid payload', s);
+        return;
+      }
+      cb(s);
+    };
     ipcRenderer.on(IPC.OVERLAY_STATE, handler);
     return () => ipcRenderer.removeListener(IPC.OVERLAY_STATE, handler);
   },
@@ -95,7 +147,13 @@ const api = {
   clearHistory: (): Promise<HistoryEntry[]> =>
     unwrap<HistoryEntry[]>(ipcRenderer.invoke(IPC.HISTORY_CLEAR)),
   onHistoryChanged: (cb: (entry: HistoryEntry) => void): (() => void) => {
-    const handler = (_e: unknown, entry: HistoryEntry): void => cb(entry);
+    const handler = (_e: unknown, entry: unknown): void => {
+      if (!isHistoryEntry(entry)) {
+        console.error('[preload] dropped HISTORY_CHANGED with invalid payload', entry);
+        return;
+      }
+      cb(entry);
+    };
     ipcRenderer.on(IPC.HISTORY_CHANGED, handler);
     return () => ipcRenderer.removeListener(IPC.HISTORY_CHANGED, handler);
   },
@@ -117,7 +175,7 @@ const audioBridge = {
   /** From hidden audio renderer → main: forward a PCM chunk (ArrayBuffer, Uint8Array, or base64). */
   sendChunk: (data: ArrayBuffer | Uint8Array | string, samples: number, level?: number): void => {
     if (typeof data === 'string') {
-      ipcRenderer.send(IPC.AUDIO_CHUNK, { base64: data, data, samples, level });
+      ipcRenderer.send(IPC.AUDIO_CHUNK, { base64: data, samples, level });
     } else {
       ipcRenderer.send(IPC.AUDIO_CHUNK, { data, samples, level });
     }
@@ -158,7 +216,13 @@ const audioBridge = {
   },
   /** Main → hidden audio renderer: play a short tone cue. */
   onBeep: (cb: (kind: BeepKind) => void): (() => void) => {
-    const handler = (_e: unknown, kind: BeepKind): void => cb(kind);
+    const handler = (_e: unknown, kind: unknown): void => {
+      if (!isBeepKind(kind)) {
+        console.error('[preload] dropped BEEP_PLAY with invalid payload', kind);
+        return;
+      }
+      cb(kind);
+    };
     ipcRenderer.on(IPC.BEEP_PLAY, handler);
     return () => ipcRenderer.removeListener(IPC.BEEP_PLAY, handler);
   }

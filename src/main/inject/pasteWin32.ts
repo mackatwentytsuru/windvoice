@@ -84,6 +84,11 @@ export function sendCtrlVAtomic(): void {
   }
   if (process.platform !== 'win32') {
     // Linux: no menu-mode quirk, use Ctrl+V.
+    // Known issue #34: uIOhook on Linux/X11 occasionally misses a `keyup`
+    // for physical Ctrl, leaving `modifierState.ctrl` stuck `true`. That
+    // makes `untilAllModifiersUp` hang until its timeout. The timeout in
+    // HotkeyManager.untilAllModifiersUp is the safety net; repeated
+    // timeouts are surfaced via stderr (see manager.ts).
     uIOhook.keyTap(UiohookKey.V, [UiohookKey.Ctrl]);
     return;
   }

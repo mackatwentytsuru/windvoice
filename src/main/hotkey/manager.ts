@@ -142,6 +142,14 @@ export class HotkeyManager extends EventEmitter {
   private modifierReleaseWaiters: Array<() => void> = [];
 
   /**
+   * Tracks recent `untilAllModifiersUp` timeouts so we can surface
+   * a stderr warning when uIOhook on Linux/X11 misses a Ctrl `keyup`
+   * (issue #34) — symptomized by repeated timeouts in a short window.
+   * Held only for Linux; other platforms keep silent debug logging.
+   */
+  private modifierTimeoutTimes: number[] = [];
+
+  /**
    * Resolve once no modifier key is physically held, or after `timeoutMs`.
    * The typer awaits this before synthesizing Ctrl+V to dodge the
    * Right-Alt-still-held → Alt+Ctrl+V → menu-activation bug.
@@ -167,10 +175,34 @@ export class HotkeyManager extends EventEmitter {
       };
       const timer = setTimeout(() => {
         debug('HOTKEY', `untilAllModifiersUp: timed out after ${timeoutMs}ms`);
+        this.recordModifierTimeout();
         finish();
       }, timeoutMs);
       this.modifierReleaseWaiters.push(finish);
     });
+  }
+
+  /**
+   * Issue #34: on Linux/X11, uIOhook can miss a `keyup` for physical Ctrl,
+   * leaving the modifier snapshot stuck `true` and `untilAllModifiersUp`
+   * hanging until its timeout fires. A single timeout can happen in
+   * normal use (user genuinely still holding modifier); repeated timeouts
+   * in a short window almost certainly mean a missed keyup. Surface a
+   * stderr warning so the user can detect the issue without enabling
+   * verbose debug logging.
+   */
+  private recordModifierTimeout(): void {
+    if (process.platform !== 'linux') return;
+    const now = Date.now();
+    const windowMs = 60_000;
+    this.modifierTimeoutTimes = this.modifierTimeoutTimes.filter((t) => now - t <= windowMs);
+    this.modifierTimeoutTimes.push(now);
+    if (this.modifierTimeoutTimes.length > 1) {
+      process.stderr.write(
+        `[windvoice] untilAllModifiersUp timed out ${this.modifierTimeoutTimes.length} times in ` +
+          `${windowMs / 1000}s — possible stuck-modifier from uIOhook missing keyup (issue #34)\n`
+      );
+    }
   }
 
   private onKey(e: UiohookKeyboardEventLike, down: boolean): void {
@@ -326,7 +358,17 @@ export class HotkeyManager extends EventEmitter {
       }
     }
     if (triggerKeys == null || triggerKeys.length === 0) return null;
-    const tuple = triggerKeys as [number, ...number[]];
+    // Explicit destructure proves to TS that there's at least one element —
+    // safer than an `as [number, ...number[]]` cast, which would silently
+    // accept an empty array on future refactors and produce a dead binding.
+    // The `first === undefined` guard reconciles the length === 0 check
+    // with `noUncheckedIndexedAccess` — under that flag, indexed reads
+    // (and destructure) widen to `T | undefined` regardless of prior
+    // length narrowing. A future refactor that removed the length check
+    // would now produce a typed `null` return instead of a runtime crash.
+    const [first, ...rest] = triggerKeys;
+    if (first === undefined) return null;
+    const tuple: readonly [number, ...number[]] = [first, ...rest];
     return { binding: b, triggerKeys: tuple, modifiers: mods, triggerProvidesModifier };
   }
 }

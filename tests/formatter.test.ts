@@ -65,13 +65,26 @@ vi.mock('openai', () => {
   return { default: FakeOpenAI };
 });
 
-import { gptFormatter, buildSystemPrompt } from '@main/postprocess/formatter';
+// v0.1.2: when no API key is provided in the context, the formatter falls
+// back to `secureStore.getApiKey()` which calls real `keytar` and can
+// hang the test environment. Stub it to always return null so the "no
+// key" branch resolves synchronously.
+vi.mock('@main/store/secure', () => ({
+  secureStore: {
+    getApiKey: vi.fn(async () => null)
+  }
+}));
+
+import { gptFormatter, buildSystemPrompt, resetFormatterFailure } from '@main/postprocess/formatter';
 
 function makeSettings(overrides: Partial<Settings> = {}): Settings {
   return {
     hotkeys: [],
     replacements: [],
-    audio: { device: 'default', inputGain: 1 },
+    // v0.1.2: `audio.inputGain` was removed from the schema (#16); only
+    // `device` remains. Older settings with `inputGain` still parse fine
+    // because Zod ignores unknown properties without `.strict()`.
+    audio: { device: 'default' },
     language: 'ja',
     formatter: { model: 'gpt-5-mini', customInstructions: '', enabled: true },
     dictionary: [],
@@ -83,7 +96,9 @@ function makeSettings(overrides: Partial<Settings> = {}): Settings {
       overlayEnabled: true,
       soundCuesEnabled: true,
       duckOtherAudio: false,
-      duckLevel: 0.3
+      duckLevel: 0.3,
+      autoLaunch: false,
+      autoUpdate: true
     },
     ...overrides
   } as Settings;
@@ -110,6 +125,10 @@ describe('gptFormatter', () => {
     hoisted.nextError = null;
     hoisted.delayMs = 0;
     hoisted.abortDelayMs = -1;
+    // v0.1.2: the formatter caches a permanent-failure marker (E_AUTH /
+    // E_NOT_FOUND) and an OpenAI client cache. Reset both so test order
+    // doesn't leak state between cases.
+    resetFormatterFailure();
   });
 
   afterEach(() => {
@@ -154,15 +173,23 @@ describe('gptFormatter', () => {
     expect(hoisted.createCalls).toHaveLength(1);
 
     const call = hoisted.createCalls[0]!;
+    // v0.1.2: `gpt-5-mini` is classified as a reasoning model in
+    // formatter.ts. Reasoning / "o-series" / GPT-5 models reject the
+    // legacy `temperature` + `max_tokens` parameters and require
+    // `max_completion_tokens` plus an explicit `reasoning_effort`.
     const args = call.args as {
       model: string;
-      temperature: number;
-      max_tokens: number;
+      temperature?: number;
+      max_tokens?: number;
+      max_completion_tokens?: number;
+      reasoning_effort?: string;
       messages: Array<{ role: string; content: string }>;
     };
     expect(args.model).toBe('gpt-5-mini');
-    expect(args.temperature).toBeCloseTo(0.1);
-    expect(args.max_tokens).toBeGreaterThanOrEqual(256);
+    expect(args.temperature).toBeUndefined();
+    expect(args.max_tokens).toBeUndefined();
+    expect(args.max_completion_tokens).toBeGreaterThanOrEqual(256);
+    expect(args.reasoning_effort).toBe('minimal');
     expect(args.messages[0]?.role).toBe('system');
     expect(args.messages[1]?.role).toBe('user');
     expect(args.messages[1]?.content).toBe('結結結こんにちはこんにちは');
@@ -180,15 +207,18 @@ describe('gptFormatter', () => {
     expect(hoisted.createCalls).toHaveLength(1);
   });
 
-  it('times out gracefully after 5s when the API hangs, returning original text', async () => {
-    hoisted.delayMs = 60_000; // longer than the formatter's 5s hard timeout
+  it('times out gracefully when the API hangs, returning original text', async () => {
+    // v0.1.2: HARD_TIMEOUT_MS is 2_000 in formatter.ts. The mocked OpenAI
+    // delay is set well past that so the formatter's AbortController has
+    // to fire for the call to resolve.
+    hoisted.delayMs = 60_000;
     vi.useFakeTimers();
 
     const ctx = makeCtx();
     const original = 'hangs forever';
     const promise = gptFormatter.process(original, ctx);
 
-    // Advance past the 5s hard timeout.
+    // Advance well past the hard timeout (2s).
     await vi.advanceTimersByTimeAsync(5_500);
 
     const out = await promise;

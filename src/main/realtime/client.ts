@@ -235,7 +235,7 @@ export class RealtimeClient extends EventEmitter {
     }
   }
 
-  private handleClose(ws: WebSocket): void {
+  private handleClose(ws: WebSocket | null): void {
     if (this.disposed) return;
     if (this.ws !== ws) return;
     this.opened = false;
@@ -269,8 +269,13 @@ export class RealtimeClient extends EventEmitter {
         })
         .catch((err) => {
           debug('REALTIME', `reconnect failed: ${(err as Error).message}`);
-          // Re-trigger close path to schedule the next attempt.
-          this.handleClose(ws);
+          // Re-trigger close path to schedule the next attempt. Pass the
+          // CURRENT `this.ws` (null after onceError clears it on failure)
+          // instead of the captured `ws`. The original captured `ws` is a
+          // stale handle from the previous close — the guard
+          // `this.ws !== ws` would otherwise silently abort the retry
+          // chain from the third attempt onward (issue #23).
+          this.handleClose(this.ws);
         });
     }, delay);
     if (typeof this.reconnectTimer.unref === 'function') this.reconnectTimer.unref();

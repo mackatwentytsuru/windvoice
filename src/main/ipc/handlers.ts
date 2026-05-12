@@ -43,7 +43,7 @@ function errMsg(err: unknown): string {
  * (SETTINGS_SET, APIKEY_SET, DICTATION_*, HISTORY_REMOVE/CLEAR,
  * CLIPBOARD_WRITE) all gate on this.
  */
-function refuseUntrusted(event: IpcMainInvokeEvent): IpcResult<never> | null {
+export function refuseUntrusted(event: IpcMainInvokeEvent): IpcResult<never> | null {
   if (
     trustedSettingsSenderId !== null &&
     event.sender.id === trustedSettingsSenderId
