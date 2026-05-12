@@ -162,27 +162,55 @@ export class HotkeyManager extends EventEmitter {
     if (isDebug('HOTKEY')) {
       debug('HOTKEY', `${down ? 'down' : 'up  '} keycode=${e.keycode} alt=${e.altKey} ctrl=${e.ctrlKey} shift=${e.shiftKey} meta=${e.metaKey}`);
     }
-    if (Date.now() < this.suppressUntil) return;
-    for (const nb of this.bindings) {
-      if (!nb.triggerKeys.includes(e.keycode)) continue;
-      if (!HotkeyManager.modsMatch(e, nb)) continue;
 
-      const id = nb.binding.id;
-      if (nb.binding.mode === 'push-to-talk') {
-        if (down && !this.heldDown.has(id)) {
-          this.heldDown.add(id);
-          this.emit('start', id);
-        } else if (!down && this.heldDown.has(id)) {
+    // Suppression window: skip the binding loop, but ALWAYS run the
+    // physical-release safety check below — otherwise a user releasing
+    // the PTT modifier inside the suppression window (e.g. mid-stream
+    // on macOS, where each streaming-paste sets suppressUntil) is lost,
+    // and the binding stays in heldDown forever — visible to the user
+    // as "录音中" stuck on after release.
+    const suppressed = Date.now() < this.suppressUntil;
+
+    if (!suppressed) {
+      for (const nb of this.bindings) {
+        if (!nb.triggerKeys.includes(e.keycode)) continue;
+        if (!HotkeyManager.modsMatch(e, nb)) continue;
+
+        const id = nb.binding.id;
+        if (nb.binding.mode === 'push-to-talk') {
+          if (down && !this.heldDown.has(id)) {
+            this.heldDown.add(id);
+            this.emit('start', id);
+          } else if (!down && this.heldDown.has(id)) {
+            this.heldDown.delete(id);
+            this.emit('stop', id);
+          }
+        } else if (nb.binding.mode === 'toggle' && down) {
+          if (this.toggleActive.has(id)) {
+            this.toggleActive.delete(id);
+            this.emit('stop', id);
+          } else {
+            this.toggleActive.add(id);
+            this.emit('start', id);
+          }
+        }
+      }
+    }
+
+    // Safety net for the "stuck listening" bug: if a push-to-talk binding
+    // is in heldDown but the modifier it depends on is no longer
+    // physically held, force-stop it. This catches user-release events
+    // that landed inside `suppressUntil` (streaming paste on macOS) and
+    // would otherwise leave the orchestrator recording forever.
+    if (this.heldDown.size > 0) {
+      for (const nb of this.bindings) {
+        const id = nb.binding.id;
+        if (!this.heldDown.has(id)) continue;
+        if (nb.triggerProvidesModifier === null) continue;
+        if (!this.modifierState[nb.triggerProvidesModifier]) {
           this.heldDown.delete(id);
           this.emit('stop', id);
-        }
-      } else if (nb.binding.mode === 'toggle' && down) {
-        if (this.toggleActive.has(id)) {
-          this.toggleActive.delete(id);
-          this.emit('stop', id);
-        } else {
-          this.toggleActive.add(id);
-          this.emit('start', id);
+          debug('HOTKEY', `force-stop ${id}: ${nb.triggerProvidesModifier} no longer held`);
         }
       }
     }

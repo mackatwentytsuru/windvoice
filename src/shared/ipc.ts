@@ -41,8 +41,26 @@ export const IPC = {
   OVERLAY_STATE: 'overlay:state',
   // utilities
   AUDIO_LAST_ERROR: 'audio:lastError',
-  CLIPBOARD_WRITE: 'clipboard:write'
+  CLIPBOARD_WRITE: 'clipboard:write',
+  // formatter / post-process errors that should surface in the UI
+  FORMATTER_ERROR: 'formatter:error',
+  // misc system errors that the Settings UI should display inline
+  // (e.g. autoLaunch refused by the OS, duck failed to restore volume)
+  SYSTEM_ERROR: 'system:error'
 } as const;
+
+export interface FormatterErrorPayload {
+  code: string;
+  message: string;
+  /** Whether subsequent dictation will continue with this failure
+   * sticky (true → user must update the API key / model to recover). */
+  permanent: boolean;
+}
+
+export interface SystemErrorPayload {
+  source: 'duck' | 'autoLaunch' | 'updater' | 'paste';
+  message: string;
+}
 
 export interface AudioInputDevice {
   deviceId: string;

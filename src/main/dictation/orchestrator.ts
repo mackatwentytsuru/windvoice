@@ -1,5 +1,6 @@
 import { BrowserWindow } from 'electron';
-import type { AudioBridge } from '@main/audio/bridge';
+import type { AudioBridge, ChunkPayload } from '@main/audio/bridge';
+import type { AudioChunk } from '@shared/types';
 import type { OverlayWindow } from '@main/overlay/window';
 import { audioDuck } from '@main/audio/duck';
 import { RealtimeClient } from '@main/realtime/client';
@@ -18,7 +19,7 @@ import { CHUNK_MS, FINAL_TIMEOUT_MS, MIN_AUDIO_MS } from '@shared/constants';
 const MIN_CHUNKS = Math.ceil(MIN_AUDIO_MS / CHUNK_MS);
 const RECENT_AUDIO_ERROR_WINDOW_MS = 3_000;
 
-type ChunkLike = { base64?: string; data?: Buffer | Uint8Array | ArrayBuffer };
+type ChunkLike = ChunkPayload | AudioChunk;
 
 /**
  * Owns the persistent OpenAI Realtime connection, runs one-at-a-time
@@ -134,7 +135,15 @@ export class DictationOrchestrator {
     if (!this.inFlight) return;
 
     if (!this.client || !this.client.isOpen()) {
+      // Stop arrived before ensureConnected resolved (user tapped the
+      // hotkey faster than the WS handshake). The connect path checks
+      // `cancelRequested` and bails. Crucially, reset `inFlight` here
+      // so the NEXT `start()` is not blocked indefinitely — without this
+      // line, the orchestrator silently refuses every subsequent
+      // dictation until app restart (issue #3).
       this.cancelRequested = true;
+      this.inFlight = false;
+      this.updateStatus('idle');
       debug('DICTATION', 'stop arrived before connect');
       return;
     }
@@ -149,7 +158,11 @@ export class DictationOrchestrator {
       this.audio.playBeep('stop');
     }
 
-    await sleep(80);
+    // Brief flush window before commit. 80ms was conservative; one
+    // extra 50ms chunk is enough to drain the in-flight buffer at the
+    // WS layer, so 20ms suffices and shaves ~60ms off the perceived
+    // latency between key-up and visible text (issue #8).
+    await sleep(20);
 
     let final = '';
     const client = this.client;
@@ -368,7 +381,8 @@ export class DictationOrchestrator {
         if (this.pendingFinal) {
           this.pendingFinal(this.partial);
         }
-        if (this.client === client) this.client = null;
+        const isOurClient = this.client === client;
+        if (isOurClient) this.client = null;
         // If the WS reconnects mid-flight, do not keep state — surface the
         // error and reset.
         if (this.inFlight && !this.pendingFinal) {
@@ -383,6 +397,13 @@ export class DictationOrchestrator {
           }
           this.updateStatus('error');
           this.broadcast(IPC.TRANSCRIPT_FINAL, '[error] connection closed');
+        } else if (isOurClient) {
+          // H7: WS closed (likely reconnect-attempts exhausted) while no
+          // dictation was in flight. Previously the tray stayed on
+          // whatever status it had — silently, the next dictation press
+          // would also fail because the client is gone. Mark error so
+          // the tray reflects reality; the next start() reconnects.
+          this.updateStatus('error');
         }
       };
 
@@ -400,11 +421,11 @@ export class DictationOrchestrator {
       await client.connect();
       const chunkListener = (chunk: ChunkLike): void => {
         // Prefer the binary path; fall back to base64 for legacy/test paths.
-        if (chunk.data) client.appendAudio(chunk.data as Buffer);
-        else if (chunk.base64) client.appendAudio(chunk.base64);
+        if ('data' in chunk && chunk.data) client.appendAudio(chunk.data as Buffer);
+        else if ('base64' in chunk && chunk.base64) client.appendAudio(chunk.base64);
       };
       this.clientChunkListener = chunkListener;
-      this.audio.setChunkListener(chunkListener as never);
+      this.audio.setChunkListener(chunkListener);
       this.client = client;
       return client;
     })();

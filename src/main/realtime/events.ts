@@ -10,8 +10,15 @@ export const TranscriptionDeltaEvent = z.object({
 });
 export type TranscriptionDeltaEvent = z.infer<typeof TranscriptionDeltaEvent>;
 
+// Server may emit either `.completed` or `.done` for the same logical
+// event depending on API version (the GA Realtime API moved to `.done`
+// in 2026/05). Accept both — otherwise `.done` payloads fail Zod parse
+// and the entire transcript is silently dropped (issue #5).
 export const TranscriptionCompletedEvent = z.object({
-  type: z.literal('conversation.item.input_audio_transcription.completed'),
+  type: z.enum([
+    'conversation.item.input_audio_transcription.completed',
+    'conversation.item.input_audio_transcription.done'
+  ]),
   transcript: z.string(),
   item_id: z.string().optional()
 });

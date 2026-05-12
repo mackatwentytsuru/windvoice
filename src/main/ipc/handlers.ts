@@ -1,4 +1,4 @@
-import { ipcMain, clipboard, BrowserWindow } from 'electron';
+import { ipcMain, clipboard, BrowserWindow, type IpcMainInvokeEvent } from 'electron';
 import { z } from 'zod';
 import { IPC, SettingsSchema, type Settings, type HistoryEntry } from '@shared/types';
 import { settingsStore } from '@main/store/settings';
@@ -13,7 +13,9 @@ interface ManualTriggers {
   onSettingsChanged: (next: Settings, prev: Settings) => void;
 }
 
-type IpcResult<T> = { ok: true; value: T } | { ok: false; error: string; code?: string };
+export type IpcResult<T> =
+  | { ok: true; value: T }
+  | { ok: false; error: string; code?: string };
 
 const HistoryRemoveSchema = z.object({ id: z.string().min(1).max(128) });
 const ApiKeySchema = z.string().min(10).max(512);
@@ -29,12 +31,36 @@ function errMsg(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
+/**
+ * Privileged-IPC sender check. Returns a refusal `IpcResult` when:
+ *   - no Settings window is open (`trustedSettingsSenderId === null`), or
+ *   - the call came from any other webContents (overlay, hidden audio
+ *     renderer, or anything else that shares the preload).
+ *
+ * Read-only handlers (SETTINGS_GET, APIKEY_HAS, HISTORY_LIST,
+ * AUDIO_LAST_ERROR) intentionally do NOT call this — every renderer needs
+ * to fetch its initial state from the main process. Mutation handlers
+ * (SETTINGS_SET, APIKEY_SET, DICTATION_*, HISTORY_REMOVE/CLEAR,
+ * CLIPBOARD_WRITE) all gate on this.
+ */
+function refuseUntrusted(event: IpcMainInvokeEvent): IpcResult<never> | null {
+  if (
+    trustedSettingsSenderId !== null &&
+    event.sender.id === trustedSettingsSenderId
+  ) {
+    return null;
+  }
+  return { ok: false, error: 'untrusted sender', code: 'E_UNTRUSTED' };
+}
+
 export function registerIpc(triggers: ManualTriggers): void {
   ipcMain.handle(IPC.SETTINGS_GET, (): Settings => settingsStore.get());
 
   ipcMain.handle(
     IPC.SETTINGS_SET,
-    (_e, partial: unknown): IpcResult<Settings> | Settings => {
+    (event, partial: unknown): IpcResult<Settings> => {
+      const refusal = refuseUntrusted(event);
+      if (refusal) return refusal;
       try {
         const parsed = SettingsSchema.partial().parse(partial);
         const prev = settingsStore.get();
@@ -47,9 +73,9 @@ export function registerIpc(triggers: ManualTriggers): void {
         for (const win of BrowserWindow.getAllWindows()) {
           win.webContents.send(IPC.SETTINGS_CHANGED, next);
         }
-        return next;
+        return { ok: true, value: next };
       } catch (err) {
-        return { ok: false, error: errMsg(err) };
+        return { ok: false, error: errMsg(err), code: 'E_INVALID' };
       }
     }
   );
@@ -69,12 +95,8 @@ export function registerIpc(triggers: ManualTriggers): void {
   ipcMain.handle(
     IPC.APIKEY_SET,
     async (event, value: unknown): Promise<IpcResult<true>> => {
-      if (
-        trustedSettingsSenderId !== null &&
-        event.sender.id !== trustedSettingsSenderId
-      ) {
-        return { ok: false, error: 'untrusted sender', code: 'E_UNTRUSTED' };
-      }
+      const refusal = refuseUntrusted(event);
+      if (refusal) return refusal;
       let parsed: string;
       try {
         parsed = ApiKeySchema.parse(value);
@@ -96,7 +118,9 @@ export function registerIpc(triggers: ManualTriggers): void {
     }
   );
 
-  ipcMain.handle(IPC.DICTATION_START, async (): Promise<IpcResult<true>> => {
+  ipcMain.handle(IPC.DICTATION_START, async (event): Promise<IpcResult<true>> => {
+    const refusal = refuseUntrusted(event);
+    if (refusal) return refusal;
     try {
       await triggers.start();
       return { ok: true, value: true };
@@ -105,7 +129,9 @@ export function registerIpc(triggers: ManualTriggers): void {
     }
   });
 
-  ipcMain.handle(IPC.DICTATION_STOP, async (): Promise<IpcResult<true>> => {
+  ipcMain.handle(IPC.DICTATION_STOP, async (event): Promise<IpcResult<true>> => {
+    const refusal = refuseUntrusted(event);
+    if (refusal) return refusal;
     try {
       await triggers.stop();
       return { ok: true, value: true };
@@ -120,28 +146,34 @@ export function registerIpc(triggers: ManualTriggers): void {
 
   ipcMain.handle(
     IPC.HISTORY_REMOVE,
-    (_e, payload: unknown): HistoryEntry[] | IpcResult<HistoryEntry[]> => {
+    (event, payload: unknown): IpcResult<HistoryEntry[]> => {
+      const refusal = refuseUntrusted(event);
+      if (refusal) return refusal;
       try {
         const id =
           typeof payload === 'string'
             ? HistoryRemoveSchema.parse({ id: payload }).id
             : HistoryRemoveSchema.parse(payload).id;
         historyStore.remove(id);
-        return historyStore.list();
+        return { ok: true, value: historyStore.list() };
       } catch (err) {
-        return { ok: false, error: errMsg(err) };
+        return { ok: false, error: errMsg(err), code: 'E_INVALID' };
       }
     }
   );
 
-  ipcMain.handle(IPC.HISTORY_CLEAR, (): HistoryEntry[] => {
+  ipcMain.handle(IPC.HISTORY_CLEAR, (event): IpcResult<HistoryEntry[]> => {
+    const refusal = refuseUntrusted(event);
+    if (refusal) return refusal;
     historyStore.clear();
-    return historyStore.list();
+    return { ok: true, value: historyStore.list() };
   });
 
   ipcMain.handle(
     IPC.CLIPBOARD_WRITE,
-    (_e, text: unknown): IpcResult<true> => {
+    (event, text: unknown): IpcResult<true> => {
+      const refusal = refuseUntrusted(event);
+      if (refusal) return refusal;
       if (typeof text !== 'string') {
         return { ok: false, error: 'expected string payload', code: 'E_INVALID' };
       }

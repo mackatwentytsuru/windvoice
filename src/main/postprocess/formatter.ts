@@ -5,15 +5,46 @@
 // Failures (timeouts, API errors, missing key) are swallowed and the original
 // transcript is returned, so this processor must never block the paste path.
 
+import crypto from 'node:crypto';
 import OpenAI from 'openai';
 import { debug } from '@main/debug';
 import type { PostProcessContext, PostProcessor } from '@main/postprocess/pipeline';
 import type { DictionaryEntry, Settings } from '@shared/types';
 
-const HARD_TIMEOUT_MS = 5_000;
+const HARD_TIMEOUT_MS = 2_000;
 const DEFAULT_MODEL = 'gpt-5-mini';
 const TEMPERATURE = 0.1;
 const MIN_OUTPUT_TOKENS = 256;
+
+/**
+ * After a hard-failure response (401 invalid key, model not found, etc.)
+ * skip subsequent formatter calls until the user re-enters their API key
+ * (`resetFormatterFailure()` is called from the APIKEY_SET handler). This
+ * prevents the post-401 case from silently sending every dictation as
+ * unformatted Whisper output forever — the user sees an error event
+ * surface in the settings UI and knows to update their key.
+ */
+let permanentFailureReason: string | null = null;
+let permanentFailureCode: string | null = null;
+
+export function resetFormatterFailure(): void {
+  permanentFailureReason = null;
+  permanentFailureCode = null;
+}
+
+export function getFormatterFailure(): { code: string; message: string } | null {
+  if (!permanentFailureReason || !permanentFailureCode) return null;
+  return { code: permanentFailureCode, message: permanentFailureReason };
+}
+
+/** Surface formatter failure to the broader app. Wired up from main/index.ts
+ * to flash the tray and emit an IPC event. */
+let onPermanentFailure: ((code: string, message: string) => void) | null = null;
+export function setFormatterFailureListener(
+  cb: ((code: string, message: string) => void) | null
+): void {
+  onPermanentFailure = cb;
+}
 
 /**
  * Reasoning / "o-series" / GPT-5 models reject the legacy `max_tokens` and
@@ -27,13 +58,23 @@ function isReasoningModel(model: string): boolean {
   return m.startsWith('gpt-5') || m.startsWith('o1') || m.startsWith('o3') || m.startsWith('o4');
 }
 
+// Cache OpenAI clients by a hash of the API key, never the raw key.
+// Keeping the raw key as a Map key would leave it in V8's heap
+// indefinitely (Map keys are strongly retained for the life of the
+// module), where heap dumps / crash reports could expose it. The hash
+// is unique per key so cache lookup is still O(1).
 const clientCache = new Map<string, OpenAI>();
 
+function hashKey(apiKey: string): string {
+  return crypto.createHash('sha256').update(apiKey).digest('hex');
+}
+
 function getClient(apiKey: string): OpenAI {
-  let client = clientCache.get(apiKey);
+  const k = hashKey(apiKey);
+  let client = clientCache.get(k);
   if (!client) {
     client = new OpenAI({ apiKey });
-    clientCache.set(apiKey, client);
+    clientCache.set(k, client);
   }
   return client;
 }
@@ -148,15 +189,56 @@ async function withTimeout<T>(
   }
 }
 
+interface OpenAIErrorLike {
+  status?: number;
+  code?: string;
+  message?: string;
+}
+
+function classifyFormatterError(err: unknown): {
+  code: 'E_AUTH' | 'E_RATE_LIMIT' | 'E_NOT_FOUND' | 'E_TIMEOUT' | 'E_NETWORK' | 'E_UNKNOWN';
+  permanent: boolean;
+  message: string;
+} {
+  const msg = err instanceof Error ? err.message : String(err);
+  if (/timed out/i.test(msg)) {
+    return { code: 'E_TIMEOUT', permanent: false, message: msg };
+  }
+  const oe = err as OpenAIErrorLike | undefined;
+  const status = typeof oe?.status === 'number' ? oe.status : 0;
+  // 401: bad / expired key → permanent until user updates the key.
+  // 404: model not found (e.g. typo or deprecated) → permanent until
+  //      user changes model selection.
+  if (status === 401 || /\bunauthorized\b|invalid_api_key/i.test(msg)) {
+    return { code: 'E_AUTH', permanent: true, message: msg };
+  }
+  if (status === 404 || /model.*not.*found|does not exist/i.test(msg)) {
+    return { code: 'E_NOT_FOUND', permanent: true, message: msg };
+  }
+  if (status === 429) {
+    return { code: 'E_RATE_LIMIT', permanent: false, message: msg };
+  }
+  if (/ENOTFOUND|ECONNREFUSED|ECONNRESET|fetch failed|network/i.test(msg)) {
+    return { code: 'E_NETWORK', permanent: false, message: msg };
+  }
+  return { code: 'E_UNKNOWN', permanent: false, message: msg };
+}
+
 export const gptFormatter: PostProcessor = {
   name: 'formatter',
 
   async process(text: string, ctx: PostProcessContext): Promise<string> {
     if (ctx.settings.formatter?.enabled === false) return text;
     if (!text || text.trim().length === 0) return text;
+    // After a known-permanent failure (bad key, missing model) the next
+    // formatter call would hit the same wall. Skip until the user
+    // explicitly updates the API key (which calls resetFormatterFailure).
+    if (permanentFailureReason !== null) return text;
 
     const ctxKey = (ctx as PostProcessContext & { apiKey?: string }).apiKey;
-    let apiKey: string | null = typeof ctxKey === 'string' && ctxKey.length > 0 ? ctxKey : null;
+    const ctxApiKey: string | null =
+      typeof ctxKey === 'string' && ctxKey.length > 0 ? ctxKey : null;
+    let apiKey: string | null = ctxApiKey;
     if (!apiKey) {
       try {
         const mod = await import('@main/store/secure');
@@ -167,6 +249,9 @@ export const gptFormatter: PostProcessor = {
     }
     if (!apiKey || apiKey.length === 0) return text;
 
+    // Capture into a const so TypeScript can narrow inside the async
+    // callback below without an `as string` cast.
+    const key = apiKey;
     const systemPrompt = buildSystemPrompt(ctx.settings);
     const model = ctx.settings.formatter?.model || DEFAULT_MODEL;
 
@@ -174,7 +259,7 @@ export const gptFormatter: PostProcessor = {
       const result = await withTimeout(
         (signal) =>
           callOpenAI({
-            apiKey: apiKey as string,
+            apiKey: key,
             model,
             systemPrompt,
             text,
@@ -189,8 +274,13 @@ export const gptFormatter: PostProcessor = {
       }
       return trimmed;
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      debug('DICTATION', `formatter failed: ${msg}`);
+      const classified = classifyFormatterError(err);
+      debug('DICTATION', `formatter failed [${classified.code}]: ${classified.message}`);
+      if (classified.permanent) {
+        permanentFailureReason = classified.message;
+        permanentFailureCode = classified.code;
+        onPermanentFailure?.(classified.code, classified.message);
+      }
       return text;
     }
   }

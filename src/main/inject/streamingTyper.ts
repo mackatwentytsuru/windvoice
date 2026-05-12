@@ -135,7 +135,12 @@ export class StreamingTyper {
         // On macOS we also mute hotkey detection during the synthesized
         // Cmd+V so uIOhook's own re-broadcast of the Meta-down does not
         // self-trigger a new dictation cycle.
-        hkm?.suppressFor(250);
+        // 40ms covers the synth Meta+V events from uIOhook.keyTap (which
+        // arrive within ~1-5ms) without swallowing real physical key
+        // releases. Each chunk re-arms this, so the safety net in
+        // HotkeyManager.onKey is the ultimate guarantee that a user
+        // release inside the window is not lost.
+        hkm?.suppressFor(40);
         try {
           sendCtrlVAtomic();
         } catch (err) {

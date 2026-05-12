@@ -12,18 +12,41 @@ import {
   type BeepKind
 } from '../shared/ipc';
 
+type IpcResult<T> =
+  | { ok: true; value: T }
+  | { ok: false; error: string; code?: string };
+
+/**
+ * Unwrap a privileged-IPC result wrapper. The main process gates mutation
+ * handlers behind a sender-trust check and a Zod parse; on refusal or
+ * validation failure it returns `{ ok: false, error, code }`. Renderer
+ * callers expect plain values, so we throw an Error here on `ok: false`
+ * (which propagates as a rejected Promise to the caller).
+ */
+async function unwrap<T>(p: Promise<IpcResult<T>>): Promise<T> {
+  const r = await p;
+  if (r.ok) return r.value;
+  const err = new Error(r.error) as Error & { code?: string };
+  if (r.code) err.code = r.code;
+  throw err;
+}
+
 const api = {
   // settings
   getSettings: (): Promise<Settings> => ipcRenderer.invoke(IPC.SETTINGS_GET),
-  setSettings: (s: Partial<Settings>): Promise<Settings> => ipcRenderer.invoke(IPC.SETTINGS_SET, s),
+  setSettings: (s: Partial<Settings>): Promise<Settings> =>
+    unwrap<Settings>(ipcRenderer.invoke(IPC.SETTINGS_SET, s)),
 
   // api key
   hasApiKey: (): Promise<boolean> => ipcRenderer.invoke(IPC.APIKEY_HAS),
-  setApiKey: (key: string): Promise<void> => ipcRenderer.invoke(IPC.APIKEY_SET, key),
+  setApiKey: (key: string): Promise<void> =>
+    unwrap<true>(ipcRenderer.invoke(IPC.APIKEY_SET, key)).then(() => undefined),
 
   // dictation control (manual trigger from UI)
-  start: (): Promise<void> => ipcRenderer.invoke(IPC.DICTATION_START),
-  stop: (): Promise<void> => ipcRenderer.invoke(IPC.DICTATION_STOP),
+  start: (): Promise<void> =>
+    unwrap<true>(ipcRenderer.invoke(IPC.DICTATION_START)).then(() => undefined),
+  stop: (): Promise<void> =>
+    unwrap<true>(ipcRenderer.invoke(IPC.DICTATION_STOP)).then(() => undefined),
 
   // status / transcript subscriptions
   onStatus: (cb: (status: DictationStatus) => void): (() => void) => {
@@ -57,15 +80,17 @@ const api = {
 
   // history
   listHistory: (): Promise<HistoryEntry[]> => ipcRenderer.invoke(IPC.HISTORY_LIST),
-  removeHistory: (id: string): Promise<HistoryEntry[]> => ipcRenderer.invoke(IPC.HISTORY_REMOVE, id),
-  clearHistory: (): Promise<HistoryEntry[]> => ipcRenderer.invoke(IPC.HISTORY_CLEAR),
+  removeHistory: (id: string): Promise<HistoryEntry[]> =>
+    unwrap<HistoryEntry[]>(ipcRenderer.invoke(IPC.HISTORY_REMOVE, id)),
+  clearHistory: (): Promise<HistoryEntry[]> =>
+    unwrap<HistoryEntry[]>(ipcRenderer.invoke(IPC.HISTORY_CLEAR)),
   onHistoryChanged: (cb: (entry: HistoryEntry) => void): (() => void) => {
     const handler = (_e: unknown, entry: HistoryEntry): void => cb(entry);
     ipcRenderer.on(IPC.HISTORY_CHANGED, handler);
     return () => ipcRenderer.removeListener(IPC.HISTORY_CHANGED, handler);
   },
   copyText: (text: string): Promise<void> =>
-    ipcRenderer.invoke(IPC.CLIPBOARD_WRITE, text).then(() => undefined),
+    unwrap<true>(ipcRenderer.invoke(IPC.CLIPBOARD_WRITE, text)).then(() => undefined),
   platform: process.platform as 'darwin' | 'win32' | 'linux' | string,
   onSettingsChanged: (cb: (settings: Settings) => void): (() => void) => {
     const handler = (_e: unknown, s: Settings): void => cb(s);

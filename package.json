@@ -32,6 +32,9 @@
   "optionalDependencies": {
     "sendinput": "^0.2.0"
   },
+  "overrides": {
+    "tar": ">=7.5.11"
+  },
   "devDependencies": {
     "@types/node": "^22.7.5",
     "@types/react": "^18.3.11",

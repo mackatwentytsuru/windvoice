@@ -1,52 +1,55 @@
-import { app, clipboard } from 'electron';
+import { app, clipboard, safeStorage } from 'electron';
 import fs from 'node:fs';
 import path from 'node:path';
-import { uIOhook, UiohookKey } from 'uiohook-napi';
+import { z } from 'zod';
 import { debug } from '@main/debug';
 import { getActiveHotkeyManager } from '@main/hotkey/manager';
 import { sendCtrlVAtomic } from '@main/inject/pasteWin32';
 
-const SETTLE_MS = 30;
-const RESTORE_DELAY_MS = 120;
+// Mac and modern Windows process Cmd/Ctrl+V within one event-loop tick
+// (~5-15ms). Earlier values (30 / 120) were conservatively chosen
+// before live timing data; tighter constants reduce key-up-to-text
+// latency by ~110ms (H8). Slow apps (rare) can be re-tuned via a
+// future setting if a real regression surfaces.
+const SETTLE_MS = 10;
+const POST_RELEASE_MS = 0;
+const RESTORE_DELAY_MS = 50;
 const RESTORE_FILE = '.clipboard-restore.json';
+/** Maximum clipboard payload we will persist for crash recovery. Larger
+ * blobs (e.g. an image accidentally on the clipboard) get dropped — the
+ * user loses crash-recovery for that single launch, never the dictated
+ * paste itself. */
+const RESTORE_MAX_BYTES = 1_000_000;
+/** Crash-recovery clipboard files older than this are considered stale
+ * and discarded without restoring — protects against an attacker who
+ * planted a file in `userData/` between sessions (issue #10). */
+const RESTORE_MAX_AGE_MS = 5 * 60 * 1000;
 
-/** macOS uses Cmd, every other platform uses Ctrl, for the paste shortcut. */
-function pasteModifier(): number {
-  return process.platform === 'darwin' ? UiohookKey.Meta : UiohookKey.Ctrl;
+const RestoreFileSchema = z.object({
+  text: z.string().max(RESTORE_MAX_BYTES),
+  savedAt: z.number().int().nonnegative()
+});
+
+let onPasteFailedCb: ((message: string) => void) | null = null;
+export function setPasteFailureListener(cb: ((message: string) => void) | null): void {
+  onPasteFailedCb = cb;
 }
-
-/**
- * If the user's hotkey is Right Alt (the WindVoice default for push-to-talk),
- * the OS may still see Alt as held when our `Ctrl+V` keyTap fires —
- * the physical keyup hasn't been processed yet. The receiving app then
- * interprets the input as `Alt+Ctrl+V` and triggers the menu (e.g. Notepad
- * shows the access-key overlay and `V` activates the View menu instead of
- * pasting).
- *
- * Workaround: explicitly release every modifier key before each Ctrl+V.
- * uIOhook's `keyToggle(_, 'up')` is a no-op if the key isn't actually held,
- * so this is safe to call unconditionally.
- */
-const MODIFIER_KEYS_TO_CLEAR: number[] = [
-  UiohookKey.Alt,
-  UiohookKey.AltRight,
-  UiohookKey.Ctrl,
-  UiohookKey.CtrlRight,
-  UiohookKey.Shift,
-  UiohookKey.ShiftRight,
-  UiohookKey.Meta,
-  UiohookKey.MetaRight
-];
-
-export function releaseStuckModifiers(): void {
-  for (const k of MODIFIER_KEYS_TO_CLEAR) {
-    try {
-      uIOhook.keyToggle(k, 'up');
-    } catch {
-      /* ignore — best-effort */
-    }
+function notifyPasteFailed(message: string): void {
+  try {
+    onPasteFailedCb?.(message);
+  } catch {
+    /* listener errors are not allowed to break the paste path */
   }
 }
+
+// Note: pasteModifier() and releaseStuckModifiers() existed here as
+// historical helpers but were removed (issue #12):
+//   - pasteModifier was never called; its behavior is now baked into
+//     sendCtrlVAtomic's platform branches.
+//   - releaseStuckModifiers fired phantom WM_KEYUP events that corrupted
+//     PSReadLine bracketed-paste state on Windows (commit 74fc45f).
+// Modifier-release is now handled by HotkeyManager.untilAllModifiersUp()
+// plus the modifier-aware SendInput batch in pasteWin32.ts.
 
 function restoreFilePath(): string | null {
   try {
@@ -59,8 +62,33 @@ function restoreFilePath(): string | null {
 function persistPreviousClipboard(text: string): void {
   const fp = restoreFilePath();
   if (!fp) return;
+  if (text.length > RESTORE_MAX_BYTES) {
+    // Don't persist huge clipboards (likely an image / binary
+    // representation). Crash recovery is best-effort — we'd rather
+    // lose recovery for a single large payload than write hundreds
+    // of MB to disk every dictation.
+    debug('DICTATION', `clipboard too large for crash-recovery (${text.length}B) — skipping persist`);
+    return;
+  }
   try {
-    fs.writeFileSync(fp, JSON.stringify({ text, savedAt: Date.now() }), 'utf8');
+    const payload = JSON.stringify({ text, savedAt: Date.now() });
+    // safeStorage encrypts with the OS-level keychain/credential manager
+    // when available. The plaintext clipboard could include password-
+    // manager copies, API keys, or PII — leaving it on disk in
+    // plaintext (issue #10) is a real exfil risk if another process
+    // running as the same user reads `userData/`.
+    if (safeStorage.isEncryptionAvailable()) {
+      const enc = safeStorage.encryptString(payload);
+      // Mark the file as binary by writing as a Buffer; recoverClipboard
+      // tries both encrypted and plaintext for backward compatibility
+      // with old restore files.
+      fs.writeFileSync(fp, enc);
+    } else {
+      // Fall back to plaintext on platforms where safeStorage is not
+      // wired up (older Linux without libsecret). Functionality first,
+      // hardening when available.
+      fs.writeFileSync(fp, payload, 'utf8');
+    }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     debug('DICTATION', `persist clipboard failed: ${msg}`);
@@ -88,12 +116,34 @@ export function recoverClipboardIfPending(): void {
   if (!fp) return;
   try {
     if (!fs.existsSync(fp)) return;
-    const raw = fs.readFileSync(fp, 'utf8');
-    const parsed = JSON.parse(raw) as { text?: unknown };
-    if (typeof parsed.text === 'string') {
-      clipboard.writeText(parsed.text);
-      debug('DICTATION', 'recovered clipboard from prior crash');
+    const buf = fs.readFileSync(fp);
+    // Try encrypted-first decode (current write path), then fall back
+    // to plaintext (legacy / non-safeStorage platforms).
+    let raw: string | null = null;
+    if (safeStorage.isEncryptionAvailable()) {
+      try {
+        raw = safeStorage.decryptString(buf);
+      } catch {
+        raw = null;
+      }
     }
+    if (raw === null) raw = buf.toString('utf8');
+    const parsed = RestoreFileSchema.safeParse(JSON.parse(raw));
+    if (!parsed.success) {
+      debug('DICTATION', `recoverClipboard: invalid schema, discarding`);
+      return;
+    }
+    // Staleness check (issue #10): a restore file older than
+    // RESTORE_MAX_AGE_MS likely means the OS killed the process days
+    // ago and someone else has filled the clipboard since — restoring
+    // would overwrite their unrelated content with stale data. It also
+    // bounds the window an attacker who planted a file could exploit.
+    if (Date.now() - parsed.data.savedAt > RESTORE_MAX_AGE_MS) {
+      debug('DICTATION', `recoverClipboard: stale (>${RESTORE_MAX_AGE_MS}ms), discarding`);
+      return;
+    }
+    clipboard.writeText(parsed.data.text);
+    debug('DICTATION', 'recovered clipboard from prior crash');
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     debug('DICTATION', `recoverClipboard failed: ${msg}`);
@@ -129,34 +179,34 @@ export async function pasteText(text: string, restoreClipboard = true): Promise<
   if (hkm) await hkm.untilAllModifiersUp(600);
 
   await sleep(SETTLE_MS);
-  // Belt-and-suspenders: even after waitForModifierRelease, send keyToggle
-  // 'up' for every modifier to clear any sticky synthesized state.
-  // NOTE: releaseStuckModifiers() removed — calling uIOhook.keyToggle('up')
-  // for keys not pressed pushes phantom WM_KEYUP events through the OS,
-  // which uIOhook's own hook then observes and re-broadcasts, and which
-  // PSReadLine's bracketed-paste state machine interprets as raw input
-  // bursts (visible as `^V` echoes and mid-stream "Enter" submissions).
-  // Modifier release is now handled exclusively by the upstream
-  // untilAllModifiersUp() wait above, plus the modifier-aware batch in
-  // sendCtrlVAtomic that skips the synth Ctrl when the user is still
-  // physically holding it (no synth Ctrl-up race with the OS's next
-  // physical scan).
-  await sleep(20);
+  // releaseStuckModifiers() / pasteModifier() were removed (see comment
+  // block near the top of this file). The remaining ordering is:
+  //   1. wait for user to physically release modifiers (untilAllModifiersUp)
+  //   2. brief SETTLE_MS for clipboard write to settle on the OS side
+  //   3. synth Cmd/Ctrl+V via sendCtrlVAtomic
+  if (POST_RELEASE_MS > 0) await sleep(POST_RELEASE_MS);
   // Suppress hotkey detection during the synthesized Cmd+V — uIOhook reports
   // our own emitted Meta-down/Meta-up back through the same listener and
   // would otherwise start a brand-new push-to-talk cycle from the paste.
-  hkm?.suppressFor(250);
+  // Window kept short (~30ms) because uIOhook delivers our synth events
+  // within one event-loop tick (~1-5ms); a longer window risks swallowing
+  // a real user release that landed in the same window — manifesting as
+  // "录音中" stuck on after the user lets go (mac streaming-paste path).
+  // The HotkeyManager safety net also covers any leaked release.
+  hkm?.suppressFor(40);
   try {
     sendCtrlVAtomic();
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     process.stderr.write(`[error] paste keyTap failed: ${msg}\n`);
+    notifyPasteFailed(msg);
     if (restoreClipboard) {
       try {
         if (previous !== null) clipboard.writeText(previous);
         else clipboard.clear();
-      } catch {
-        /* ignore */
+      } catch (restoreErr) {
+        const m = restoreErr instanceof Error ? restoreErr.message : String(restoreErr);
+        debug('DICTATION', `clipboard restore (post-paste-fail) failed: ${m}`);
       }
       clearPersistedClipboard();
     }
@@ -173,8 +223,13 @@ export async function pasteText(text: string, restoreClipboard = true): Promise<
       } else {
         clipboard.clear();
       }
-    } catch {
-      /* ignore */
+    } catch (err) {
+      const m = err instanceof Error ? err.message : String(err);
+      // M11: clipboard restore failure was previously completely
+      // silent — the user's pre-dictation clipboard would just be
+      // gone, replaced by the dictated text. Surface to debug + UI.
+      debug('DICTATION', `clipboard restore failed: ${m}`);
+      notifyPasteFailed(`clipboard restore failed: ${m}`);
     }
     clearPersistedClipboard();
   }

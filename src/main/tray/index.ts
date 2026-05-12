@@ -105,9 +105,7 @@ function refreshMenu(): void {
     template.push(
       { type: 'separator' },
       {
-        label: lang === 'ja'
-          ? '⚠ アクセシビリティ権限が未許可 — クリックして開く'
-          : '⚠ Accessibility not granted — open Settings',
+        label: t('tray.accessibilityWarning', lang),
         click: () => bindings?.openAccessibility?.()
       }
     );

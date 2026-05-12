@@ -10,13 +10,17 @@ import { DictationOrchestrator } from '@main/dictation/orchestrator';
 import { createTray, setStatus, refreshTrayLanguage, onStatusChanged, setAccessibilityWarning } from '@main/tray';
 import { registerIpc, setTrustedSettingsSender } from '@main/ipc/handlers';
 import { postProcessorPipeline } from '@main/postprocess/pipeline';
-import { gptFormatter } from '@main/postprocess/formatter';
+import {
+  gptFormatter,
+  resetFormatterFailure,
+  setFormatterFailureListener
+} from '@main/postprocess/formatter';
 import { replacementsProcessor } from '@main/postprocess/replacements';
 import { fileTagsProcessor } from '@main/postprocess/fileTags';
 import { initAutoUpdater, onCheckDictationActive, notifyDictationIdle } from '@main/updater';
 import { applyAutoLaunch, onAutoLaunchError } from '@main/autoLaunch';
 import { onDuckError } from '@main/audio/duck';
-import { recoverClipboardIfPending } from '@main/inject/typer';
+import { recoverClipboardIfPending, setPasteFailureListener } from '@main/inject/typer';
 import { flushHistory } from '@main/store/history';
 import { IPC } from '@shared/types';
 import { t } from '@shared/i18n';
@@ -147,11 +151,33 @@ app.whenReady().then(async () => {
   // that immediately calls `ipcRenderer.invoke('settings:get')`; if the handler
   // is not yet registered the call rejects with "No handler registered for
   // 'settings:get'" and the UI fails to load its initial state.
+  // Wire up formatter failure surfacing: tray flashes error, settings
+  // UI gets an IPC event with a code so it can render an inline message.
+  setFormatterFailureListener((code, message) => {
+    setStatus('error');
+    for (const win of BrowserWindow.getAllWindows()) {
+      win.webContents.send(IPC.FORMATTER_ERROR, { code, message, permanent: true });
+    }
+  });
+
+  // Surface paste failures (H6/M11) — the user has a working transcript
+  // but it never landed in their target app, AND there is now no signal
+  // to that fact without this event.
+  setPasteFailureListener((message) => {
+    setStatus('error');
+    for (const win of BrowserWindow.getAllWindows()) {
+      win.webContents.send(IPC.SYSTEM_ERROR, { source: 'paste', message });
+    }
+  });
+
   registerIpc({
     start: () => orchestrator?.start() ?? Promise.resolve(),
     stop: () => orchestrator?.stop() ?? Promise.resolve(),
     getLastAudioError: () => lastAudioError,
     onApiKeyChanged: async () => {
+      // Clear any sticky formatter failure (bad-key / model-not-found):
+      // the user just rotated the key, retry on the next dictation.
+      resetFormatterFailure();
       await orchestrator?.prewarmConnection();
     },
     onSettingsChanged: (next, prev) => {
@@ -251,8 +277,20 @@ app.whenReady().then(async () => {
 
   // Surface duck / auto-launch errors to stderr (visible in dev console).
   // A future iteration could also show a tray balloon; keep simple for now.
-  onDuckError((phase, message) => process.stderr.write(`[duck:${phase}] ${message}\n`));
-  onAutoLaunchError((message) => process.stderr.write(`[autoLaunch] ${message}\n`));
+  // Forward background errors to the Settings UI so they don't vanish
+  // into stderr (which is invisible in packaged builds — M10).
+  onDuckError((phase, message) => {
+    process.stderr.write(`[duck:${phase}] ${message}\n`);
+    for (const win of BrowserWindow.getAllWindows()) {
+      win.webContents.send(IPC.SYSTEM_ERROR, { source: 'duck', message: `${phase}: ${message}` });
+    }
+  });
+  onAutoLaunchError((message) => {
+    process.stderr.write(`[autoLaunch] ${message}\n`);
+    for (const win of BrowserWindow.getAllWindows()) {
+      win.webContents.send(IPC.SYSTEM_ERROR, { source: 'autoLaunch', message });
+    }
+  });
 
   applyAutoLaunch(settingsStore.get().ui.autoLaunch);
 
@@ -271,6 +309,14 @@ app.on('window-all-closed', () => {
 });
 
 app.on('before-quit', () => {
+  // Clear the accessibility-recovery poll first — otherwise the
+  // interval can fire after the tray has been destroyed and call
+  // systemPreferences.isTrustedAccessibilityClient on a teardown-
+  // state app (issue H3).
+  if (accessibilityPollTimer) {
+    clearInterval(accessibilityPollTimer);
+    accessibilityPollTimer = null;
+  }
   hotkeys?.stop();
   orchestrator?.dispose();
   audio?.destroy();

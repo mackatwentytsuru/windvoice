@@ -4,12 +4,15 @@ import { is } from './env';
 import { debug, isDebug } from '@main/debug';
 import { IPC, type AudioChunk, type BeepKind } from '@shared/types';
 
-interface ChunkPayload {
+export interface ChunkPayload {
   /** Either base64-encoded PCM or raw bytes (Buffer/Uint8Array/ArrayBuffer). */
   data: Buffer;
   samples: number;
   level?: number;
 }
+
+/** Public listener signature exposed by `setChunkListener`. */
+export type ChunkListener = (chunk: ChunkPayload | AudioChunk) => void;
 
 /**
  * Owns a hidden BrowserWindow that performs WebAudio capture and forwards
@@ -105,7 +108,7 @@ export class AudioBridge {
     debug('AUDIO', 'hidden window loaded');
   }
 
-  setChunkListener(cb: ((chunk: ChunkPayload | AudioChunk) => void) | null): void {
+  setChunkListener(cb: ChunkListener | null): void {
     this.chunkListener = cb;
   }
 

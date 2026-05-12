@@ -81,9 +81,24 @@ export function initAutoUpdater(): void {
   }
   initialized = true;
 
-  autoUpdater.autoDownload = true;
+  // Supply-chain hardening (issue #11): the build is unsigned on both
+  // macOS (identity: null) and Windows (signtoolOptions: null), so anyone
+  // who gains push access to the GitHub release could ship arbitrary code
+  // to existing users on next launch. Disable autoDownload entirely until
+  // signing/notarization is set up — `update-available` still broadcasts
+  // to the renderer, which can offer an explicit "Update now" button.
+  autoUpdater.autoDownload = false;
   autoUpdater.autoInstallOnAppQuit = true;
-  autoUpdater.logger = null;
+  // Route update lifecycle events to the project debug() helper instead
+  // of swallowing them via `logger = null`. Update events are security-
+  // relevant (download started, signature mismatch) and should be
+  // visible in any debug capture session (issue #11 / L7).
+  autoUpdater.logger = {
+    info: (msg: unknown) => debug('DICTATION', `[updater] ${String(msg)}`),
+    warn: (msg: unknown) => process.stderr.write(`[updater] WARN ${String(msg)}\n`),
+    error: (msg: unknown) => process.stderr.write(`[updater] ERROR ${String(msg)}\n`),
+    debug: (msg: unknown) => debug('DICTATION', `[updater] ${String(msg)}`)
+  };
 
   autoUpdater.on('checking-for-update', () => {
     // If we previously surfaced an error, reset state so the UI doesn't

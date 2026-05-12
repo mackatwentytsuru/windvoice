@@ -187,24 +187,6 @@ export function GeneralPage({ settings, update }: Props): JSX.Element {
         </select>
       </label>
 
-      <label className="field">
-        <span className="field-label">{t('general.insertion')}</span>
-        <select
-          value={settings.insertion.method}
-          onChange={(e) =>
-            void update({
-              insertion: {
-                ...settings.insertion,
-                method: e.target.value as 'paste' | 'type'
-              }
-            })
-          }
-        >
-          <option value="paste">{tPlatform('general.insertionPaste')}</option>
-          <option value="type">{t('general.insertionType')}</option>
-        </select>
-      </label>
-
       <div className="field">
         <span className="field-label">{t('general.formatter')}</span>
         <label className="row" style={{ cursor: 'pointer' }}>

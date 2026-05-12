@@ -30,6 +30,7 @@ const ja: Dict = {
   'tray.error': 'WindVoice — エラー',
   'tray.settings': '設定…',
   'tray.quit': '終了',
+  'tray.accessibilityWarning': '⚠ アクセシビリティ権限が未許可 — クリックして開く',
 
   // overlay
   'overlay.listening': '録音中',
@@ -170,6 +171,7 @@ const en: Dict = {
   'tray.error': 'WindVoice — Error',
   'tray.settings': 'Settings...',
   'tray.quit': 'Quit',
+  'tray.accessibilityWarning': '⚠ Accessibility not granted — click to open',
 
   // overlay
   'overlay.listening': 'Listening',

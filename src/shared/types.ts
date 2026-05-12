@@ -59,7 +59,15 @@ export const SettingsSchema = z.object({
   dictionary: z.array(DictionaryEntrySchema).default([]),
   insertion: z
     .object({
-      method: z.enum(['paste', 'type']).default('paste'),
+      // 'paste' is the only implemented insertion method. The 'type'
+      // option was a UI surface with no main-process handler (issue #6);
+      // the enum is kept as a single-member literal so existing
+      // settings files with `method: "type"` still parse via `.catch`
+      // below, rather than failing schema validation.
+      method: z
+        .enum(['paste'])
+        .catch('paste')
+        .default('paste'),
       restoreClipboard: z.boolean().default(true),
       /** When true, paste partial transcripts during recording instead of waiting for the final. */
       streaming: z.boolean().default(false)
