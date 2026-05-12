@@ -17,7 +17,14 @@ type Modifier = 'ctrl' | 'alt' | 'shift' | 'meta';
 
 interface NormalizedBinding {
   binding: HotkeyBinding;
-  triggerKey: number;
+  /**
+   * One or more uiohook keycodes that should fire this binding. Multiple
+   * codes are used when a single token (e.g. "Meta") corresponds to both
+   * a left and right physical key (uiohook reports `Meta` for the left
+   * Cmd/Win key and `MetaRight` for the right one), and we want either
+   * to trigger the binding.
+   */
+  triggerKeys: number[];
   modifiers: Record<Modifier, boolean>;
   /**
    * If the trigger key itself sets a modifier flag (e.g. Right Alt → altKey),
@@ -41,6 +48,14 @@ export class HotkeyManager extends EventEmitter {
   private toggleActive: Set<string> = new Set();
   private started = false;
   /**
+   * When the typer is synthesizing a paste keystroke (uIOhook.keyTap on macOS
+   * emits a fresh Meta-down/Meta-up pair), uIOhook reports those synthetic
+   * events back through this same listener. Without suppression, a paste of
+   * Cmd+V would self-trigger a brand-new push-to-talk dictation cycle. The
+   * typer flips this flag for the duration of the synthesized keystroke.
+   */
+  private suppressUntil = 0;
+  /**
    * Live snapshot of the OS modifier state, refreshed on every key event.
    * Used by the typer to wait for the user to physically release any
    * modifier (especially Right Alt as the push-to-talk hotkey) before
@@ -61,7 +76,7 @@ export class HotkeyManager extends EventEmitter {
     if (isDebug('HOTKEY')) {
       const summary = this.bindings.map((b) => ({
         id: b.binding.id,
-        triggerKey: b.triggerKey,
+        triggerKeys: b.triggerKeys,
         modifiers: b.modifiers,
         triggerProvidesModifier: b.triggerProvidesModifier
       }));
@@ -94,6 +109,16 @@ export class HotkeyManager extends EventEmitter {
    */
   isCtrlHeld(): boolean {
     return this.modifierState.ctrl;
+  }
+
+  /**
+   * Ignore all key events for the next `ms` milliseconds. Used by the typer
+   * around synthesized paste keystrokes so we don't self-trigger a new
+   * push-to-talk cycle from our own Cmd+V emission.
+   */
+  suppressFor(ms: number): void {
+    const deadline = Date.now() + ms;
+    if (deadline > this.suppressUntil) this.suppressUntil = deadline;
   }
 
   /**
@@ -137,8 +162,9 @@ export class HotkeyManager extends EventEmitter {
     if (isDebug('HOTKEY')) {
       debug('HOTKEY', `${down ? 'down' : 'up  '} keycode=${e.keycode} alt=${e.altKey} ctrl=${e.ctrlKey} shift=${e.shiftKey} meta=${e.metaKey}`);
     }
+    if (Date.now() < this.suppressUntil) return;
     for (const nb of this.bindings) {
-      if (e.keycode !== nb.triggerKey) continue;
+      if (!nb.triggerKeys.includes(e.keycode)) continue;
       if (!HotkeyManager.modsMatch(e, nb)) continue;
 
       const id = nb.binding.id;
@@ -177,7 +203,7 @@ export class HotkeyManager extends EventEmitter {
   }
 
   private static normalize(b: HotkeyBinding): NormalizedBinding | null {
-    let trigger: number | null = null;
+    let triggerKeys: number[] | null = null;
     let triggerProvidesModifier: Modifier | null = null;
     const mods: Record<Modifier, boolean> = {
       ctrl: false,
@@ -195,17 +221,35 @@ export class HotkeyManager extends EventEmitter {
         mods.shift = true;
       } else if (/^(meta|win|cmd)$/i.test(norm)) {
         mods.meta = true;
+        // Bare Meta/Cmd is allowed as a push-to-talk trigger (e.g. Cmd alone
+        // on macOS). The Hotkey rebind UI emits a single "Meta" token regardless
+        // of which physical Cmd key was pressed, so we must accept BOTH the
+        // left (`UiohookKey.Meta`) and the right (`UiohookKey.MetaRight`)
+        // keycodes — otherwise pressing the wrong Cmd silently does nothing.
+        if (triggerKeys == null) {
+          triggerKeys = metaKeyCodes();
+          triggerProvidesModifier = 'meta';
+        }
       } else {
         const looked = lookupKey(norm);
         if (looked != null) {
-          trigger = looked.code;
+          triggerKeys = [looked.code];
           triggerProvidesModifier = looked.modifier;
         }
       }
     }
-    if (trigger == null) return null;
-    return { binding: b, triggerKey: trigger, modifiers: mods, triggerProvidesModifier };
+    if (triggerKeys == null) return null;
+    return { binding: b, triggerKeys, modifiers: mods, triggerProvidesModifier };
   }
+}
+
+function metaKeyCodes(): number[] {
+  const codes: number[] = [];
+  const left = UiohookKey.Meta;
+  if (typeof left === 'number') codes.push(left);
+  const right = (UiohookKey as Record<string, number | undefined>).MetaRight;
+  if (typeof right === 'number' && right !== left) codes.push(right);
+  return codes;
 }
 
 /**
