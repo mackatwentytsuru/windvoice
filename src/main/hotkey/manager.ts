@@ -308,16 +308,14 @@ export class HotkeyManager extends EventEmitter {
   }
 
   private static modsMatch(e: UiohookKeyboardEventLike, nb: NormalizedBinding): boolean {
-    const checks: Array<[Modifier, boolean]> = [
-      ['ctrl', e.ctrlKey],
-      ['alt', e.altKey],
-      ['shift', e.shiftKey],
-      ['meta', e.metaKey]
-    ];
-    for (const [name, actual] of checks) {
-      if (nb.triggerProvidesModifier === name) continue;
-      if (actual !== nb.modifiers[name]) return false;
-    }
+    // Hot path: runs on every system-wide keystroke. Previously this
+    // allocated a 4-element `[Modifier, boolean][]` array literal per
+    // call (issue #39). Explicit per-modifier checks are zero-allocation
+    // and identical in semantics.
+    if (nb.triggerProvidesModifier !== 'ctrl' && e.ctrlKey !== nb.modifiers.ctrl) return false;
+    if (nb.triggerProvidesModifier !== 'alt' && e.altKey !== nb.modifiers.alt) return false;
+    if (nb.triggerProvidesModifier !== 'shift' && e.shiftKey !== nb.modifiers.shift) return false;
+    if (nb.triggerProvidesModifier !== 'meta' && e.metaKey !== nb.modifiers.meta) return false;
     return true;
   }
 

@@ -91,8 +91,12 @@ function getClient(apiKey: string): OpenAI {
  * break out of the surrounding bullet-list + double-quoted-string context
  * and inject new directives (issue #31). We do not truncate length — just
  * neutralize the characters that could terminate a line or a quoted span.
+ *
+ * Exported so any other code path that interpolates external/system-derived
+ * strings (e.g. active-window titles, OS-derived process names) into LLM
+ * prompts can apply the same escape rules — see issue #35.
  */
-function sanitizePromptValue(v: string): string {
+export function sanitizePromptValue(v: string): string {
   return v
     .replace(/\\/g, '\\\\')
     .replace(/"/g, '\\"')

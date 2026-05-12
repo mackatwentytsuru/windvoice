@@ -1,4 +1,4 @@
-import { BrowserWindow } from 'electron';
+import { BrowserWindow, type WebContents } from 'electron';
 import type { AudioBridge, ChunkPayload } from '@main/audio/bridge';
 import type { AudioChunk } from '@shared/types';
 import type { OverlayWindow } from '@main/overlay/window';
@@ -51,6 +51,15 @@ export class DictationOrchestrator {
     error?: (err: Error) => void;
     close?: () => void;
   } = {};
+  /**
+   * Snapshot of UI-window webContents to receive TRANSCRIPT_DELTA events,
+   * captured once per cycle in `start()` and reused for the lifetime of
+   * the cycle (issue #37). Previously each delta walked
+   * `BrowserWindow.getAllWindows()` and enumerated 20+ times per second
+   * during streaming. The audio renderer is filtered out via its
+   * webContents id at capture time so deltas never leak to it.
+   */
+  private deltaTargets: WebContents[] = [];
 
   constructor(private audio: AudioBridge, overlay?: OverlayWindow) {
     this.overlay = overlay ?? null;
@@ -171,7 +180,24 @@ export class DictationOrchestrator {
 
     const { startCount } = this.audio.beginForwarding();
     this.startCount = startCount;
+    // Snapshot UI windows for delta broadcasts now, so the per-delta hot
+    // path does not enumerate BrowserWindow.getAllWindows() 20+ times per
+    // second (issue #37). The audio renderer is excluded explicitly via
+    // its webContents id — it has no business receiving transcript text.
+    this.refreshDeltaTargets();
     this.updateStatus('listening');
+  }
+
+  private refreshDeltaTargets(): void {
+    const audioWcId = this.audio.getWebContentsId();
+    const targets: WebContents[] = [];
+    for (const win of BrowserWindow.getAllWindows()) {
+      if (win.isDestroyed()) continue;
+      const wc = win.webContents;
+      if (audioWcId !== null && audioWcId !== undefined && wc.id === audioWcId) continue;
+      targets.push(wc);
+    }
+    this.deltaTargets = targets;
   }
 
   async stop(): Promise<void> {
@@ -277,6 +303,20 @@ export class DictationOrchestrator {
 
     // Active window context (best-effort, cached). Used by the formatter
     // for app-aware behavior and by history for the `app` field.
+    //
+    // Issue #35 — threat model: the `title` and `app` strings returned by
+    // get-windows are OS-derived and effectively attacker-controlled at the
+    // edges (the foreground window can be ANY application, and an adversary
+    // who can rename a window title can plant arbitrary content). Today
+    // neither value flows into any LLM prompt — `app` is stored in history
+    // and `title` is passed via `activeWindowTitle` on the pipeline context
+    // but no registered processor (formatter/replacements/fileTags)
+    // interpolates it into a prompt sent to OpenAI. If a future processor
+    // or formatter change wires the active-window title (or process name)
+    // into a system/user prompt, it MUST escape the value first using
+    // `sanitizePromptValue()` from `@main/postprocess/formatter` —
+    // otherwise a window title containing newlines or quotes could inject
+    // arbitrary directives into the formatter prompt.
     const active = await getActiveWindow();
 
     // Post-processing pipeline: formatter (if enabled) → replacements →
@@ -363,7 +403,12 @@ export class DictationOrchestrator {
   }
 
   private broadcastDelta(text: string): void {
-    this.broadcast(IPC.TRANSCRIPT_DELTA, text);
+    // Hot path: 20+ calls/sec during streaming. Use the per-cycle snapshot
+    // (issue #37) instead of enumerating BrowserWindow.getAllWindows().
+    for (const wc of this.deltaTargets) {
+      if (wc.isDestroyed()) continue;
+      wc.send(IPC.TRANSCRIPT_DELTA, text);
+    }
   }
 
   private ensureConnected(): Promise<RealtimeClient> {

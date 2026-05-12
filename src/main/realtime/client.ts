@@ -86,7 +86,13 @@ export class RealtimeClient extends EventEmitter {
         this.emit('open');
         ws.on('message', (data) => this.onMessage(data));
         ws.on('close', () => this.handleClose(ws));
-        ws.on('error', (err) => this.emit('error', err as Error));
+        ws.on('error', (err) => {
+          // ws emits `Error` per its typings, but downstream consumers
+          // (and we ourselves) can't trust unverified casts (issue #45).
+          // Narrow safely and re-wrap unknown values.
+          const wrapped = err instanceof Error ? err : new Error(String(err));
+          this.emit('error', wrapped);
+        });
         this.startPing();
         resolve();
       };
@@ -268,7 +274,8 @@ export class RealtimeClient extends EventEmitter {
           this.emit('reconnect');
         })
         .catch((err) => {
-          debug('REALTIME', `reconnect failed: ${(err as Error).message}`);
+          const message = err instanceof Error ? err.message : String(err);
+          debug('REALTIME', `reconnect failed: ${message}`);
           // Re-trigger close path to schedule the next attempt. Pass the
           // CURRENT `this.ws` (null after onceError clears it on failure)
           // instead of the captured `ws`. The original captured `ws` is a

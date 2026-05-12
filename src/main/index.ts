@@ -27,6 +27,44 @@ import { t } from '@shared/i18n';
 
 const PRELOAD_PATH = path.join(__dirname, '../preload/index.js');
 
+/**
+ * Issue #46: guard `shell.openExternal` behind a small, explicit scheme
+ * allowlist. Today the single call site uses a compile-time-known
+ * `x-apple.systempreferences:` URL, so this is purely defense-in-depth:
+ * any future code path that pipes a user/network-derived URL into this
+ * helper (e.g. a deep-link from settings, an HTTP redirect target) is
+ * limited to schemes we have explicitly vetted. Anything else logs a
+ * warning to stderr and returns without invoking the shell — preventing
+ * abuse of openExternal to launch arbitrary handlers (file:, vbscript:,
+ * smb:, etc.).
+ */
+const ALLOWED_EXTERNAL_SCHEMES = new Set([
+  'x-apple.systempreferences:',
+  'https:',
+  'mailto:'
+]);
+
+async function openExternalSafe(url: string): Promise<void> {
+  const lower = url.toLowerCase();
+  let allowed = false;
+  for (const scheme of ALLOWED_EXTERNAL_SCHEMES) {
+    if (lower.startsWith(scheme)) {
+      allowed = true;
+      break;
+    }
+  }
+  if (!allowed) {
+    process.stderr.write(`[security] openExternal blocked disallowed scheme: ${url}\n`);
+    return;
+  }
+  try {
+    await shell.openExternal(url);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    process.stderr.write(`[security] openExternal failed: ${message}\n`);
+  }
+}
+
 let settingsWindow: BrowserWindow | null = null;
 let audio: AudioBridge | null = null;
 let overlay: OverlayWindow | null = null;
@@ -263,7 +301,7 @@ app.whenReady().then(async () => {
     openAccessibility:
       process.platform === 'darwin'
         ? () => {
-            void shell.openExternal(
+            void openExternalSafe(
               'x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility'
             );
           }
