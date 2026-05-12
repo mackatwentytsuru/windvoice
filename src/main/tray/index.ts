@@ -6,6 +6,7 @@ import { settingsStore } from '@main/store/settings';
 
 let tray: Tray | null = null;
 let bindings: TrayBindings | null = null;
+let accessibilityWarning = false;
 
 const iconPath = (name: string): string => {
   if (app.isPackaged) {
@@ -33,6 +34,16 @@ let currentStatus: DictationStatus = 'idle';
 export interface TrayBindings {
   openSettings: () => void;
   quit: () => void;
+  openAccessibility?: () => void;
+}
+
+export function setAccessibilityWarning(needsGrant: boolean): void {
+  if (accessibilityWarning === needsGrant) return;
+  accessibilityWarning = needsGrant;
+  if (tray) {
+    tray.setToolTip(statusLabel(currentStatus));
+    refreshMenu();
+  }
 }
 
 export function createTray(b: TrayBindings): void {
@@ -87,14 +98,27 @@ function statusLabel(status: DictationStatus): string {
 function refreshMenu(): void {
   if (!tray || !bindings) return;
   const lang = settingsStore.get().ui.uiLanguage;
-  const menu = Menu.buildFromTemplate([
-    { label: statusLabel(currentStatus), enabled: false },
+  const template: Electron.MenuItemConstructorOptions[] = [
+    { label: statusLabel(currentStatus), enabled: false }
+  ];
+  if (accessibilityWarning && bindings.openAccessibility) {
+    template.push(
+      { type: 'separator' },
+      {
+        label: lang === 'ja'
+          ? '⚠ アクセシビリティ権限が未許可 — クリックして開く'
+          : '⚠ Accessibility not granted — open Settings',
+        click: () => bindings?.openAccessibility?.()
+      }
+    );
+  }
+  template.push(
     { type: 'separator' },
     { label: t('tray.settings', lang), click: () => bindings?.openSettings() },
     { type: 'separator' },
     { label: t('tray.quit', lang), click: () => bindings?.quit() }
-  ]);
-  tray.setContextMenu(menu);
+  );
+  tray.setContextMenu(Menu.buildFromTemplate(template));
 }
 
 function loadIcon(name: string): Electron.NativeImage {

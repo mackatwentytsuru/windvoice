@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, session, systemPreferences } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, session, shell, systemPreferences } from 'electron';
 import path from 'node:path';
 import { is } from '@main/audio/env';
 import { settingsStore } from '@main/store/settings';
@@ -7,7 +7,7 @@ import { HotkeyManager, setActiveHotkeyManager } from '@main/hotkey/manager';
 import { AudioBridge } from '@main/audio/bridge';
 import { OverlayWindow } from '@main/overlay/window';
 import { DictationOrchestrator } from '@main/dictation/orchestrator';
-import { createTray, setStatus, refreshTrayLanguage, onStatusChanged } from '@main/tray';
+import { createTray, setStatus, refreshTrayLanguage, onStatusChanged, setAccessibilityWarning } from '@main/tray';
 import { registerIpc, setTrustedSettingsSender } from '@main/ipc/handlers';
 import { postProcessorPipeline } from '@main/postprocess/pipeline';
 import { gptFormatter } from '@main/postprocess/formatter';
@@ -78,6 +78,37 @@ async function createSettingsWindow(): Promise<BrowserWindow> {
   return win;
 }
 
+let accessibilityPollTimer: NodeJS.Timeout | null = null;
+
+function startHotkeysWithAccessibilityRecovery(): void {
+  if (!hotkeys) return;
+  try {
+    hotkeys.start();
+    setAccessibilityWarning(false);
+    if (accessibilityPollTimer) {
+      clearInterval(accessibilityPollTimer);
+      accessibilityPollTimer = null;
+    }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    process.stderr.write(
+      `[hotkey] start failed (likely missing Accessibility permission): ${message}\n`
+    );
+    if (process.platform !== 'darwin') return;
+    setAccessibilityWarning(true);
+    if (accessibilityPollTimer) return;
+    accessibilityPollTimer = setInterval(() => {
+      try {
+        if (systemPreferences.isTrustedAccessibilityClient(false)) {
+          startHotkeysWithAccessibilityRecovery();
+        }
+      } catch {
+        /* ignore */
+      }
+    }, 2000);
+  }
+}
+
 async function ensureApiKey(): Promise<void> {
   if (await secureStore.hasApiKey()) return;
   const lang = settingsStore.get().ui.uiLanguage;
@@ -111,6 +142,37 @@ app.whenReady().then(async () => {
   // Restore clipboard if a prior session crashed mid-paste.
   recoverClipboardIfPending();
 
+  // Register IPC handlers BEFORE any BrowserWindow is created. The hidden audio
+  // renderer, the overlay window, and the settings window all run preload code
+  // that immediately calls `ipcRenderer.invoke('settings:get')`; if the handler
+  // is not yet registered the call rejects with "No handler registered for
+  // 'settings:get'" and the UI fails to load its initial state.
+  registerIpc({
+    start: () => orchestrator?.start() ?? Promise.resolve(),
+    stop: () => orchestrator?.stop() ?? Promise.resolve(),
+    getLastAudioError: () => lastAudioError,
+    onApiKeyChanged: async () => {
+      await orchestrator?.prewarmConnection();
+    },
+    onSettingsChanged: (next, prev) => {
+      if (next.audio.device !== prev.audio.device) {
+        audio?.changeDevice(next.audio.device);
+      }
+      if (next.hotkeys !== prev.hotkeys) {
+        hotkeys?.setBindings(next.hotkeys);
+      }
+      if (!next.ui.overlayEnabled) {
+        overlay?.setEnabled(false);
+      }
+      if (next.ui.uiLanguage !== prev.ui.uiLanguage) {
+        refreshTrayLanguage();
+      }
+      if (next.ui.autoLaunch !== prev.ui.autoLaunch) {
+        applyAutoLaunch(next.ui.autoLaunch);
+      }
+    }
+  });
+
   session.defaultSession.setPermissionRequestHandler((wc, permission, callback) => {
     if (permission === 'media') return callback(trustedMicIds.has(wc.id));
     callback(false);
@@ -134,7 +196,15 @@ app.whenReady().then(async () => {
     openSettings: () => void createSettingsWindow(),
     quit: () => {
       app.quit();
-    }
+    },
+    openAccessibility:
+      process.platform === 'darwin'
+        ? () => {
+            void shell.openExternal(
+              'x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility'
+            );
+          }
+        : undefined
   });
   setStatus('idle');
 
@@ -166,33 +236,12 @@ app.whenReady().then(async () => {
   hotkeys.on('stop', () => {
     void orchestrator?.stop().catch((err) => process.stderr.write(`[hotkey] stop: ${err}\n`));
   });
-  hotkeys.start();
 
-  registerIpc({
-    start: () => orchestrator?.start() ?? Promise.resolve(),
-    stop: () => orchestrator?.stop() ?? Promise.resolve(),
-    getLastAudioError: () => lastAudioError,
-    onApiKeyChanged: async () => {
-      await orchestrator?.prewarmConnection();
-    },
-    onSettingsChanged: (next, prev) => {
-      if (next.audio.device !== prev.audio.device) {
-        audio?.changeDevice(next.audio.device);
-      }
-      if (next.hotkeys !== prev.hotkeys) {
-        hotkeys?.setBindings(next.hotkeys);
-      }
-      if (!next.ui.overlayEnabled) {
-        overlay?.setEnabled(false);
-      }
-      if (next.ui.uiLanguage !== prev.ui.uiLanguage) {
-        refreshTrayLanguage();
-      }
-      if (next.ui.autoLaunch !== prev.ui.autoLaunch) {
-        applyAutoLaunch(next.ui.autoLaunch);
-      }
-    }
-  });
+  // Start global hotkey hook. uIOhook.start() throws on macOS when Accessibility
+  // permission has not been granted; we recover by polling permissions and
+  // retrying once the user grants access, plus a tray menu item that opens the
+  // relevant System Settings pane.
+  startHotkeysWithAccessibilityRecovery();
 
   await audio.prewarm(settingsStore.get().audio.device);
 
