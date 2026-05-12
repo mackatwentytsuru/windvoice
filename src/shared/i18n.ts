@@ -105,6 +105,8 @@ const ja: Dict = {
   'hotkeys.helper': 'バインドを記録するには「新しいショートカットを記録」を押してから希望のキーを押してください。',
   'hotkeys.duplicate': '別の binding と同じキーが指定されています。',
   'hotkeys.recordHint': '実行したいキー組み合わせを押してください (修飾キーだけでは確定しません)',
+  'hotkeys.useFn': 'Fn (地球儀) キーを使う',
+  'hotkeys.useFnHint': 'macOS の Fn / 地球儀キーをホットキーに設定します (キャプチャ不要)',
 
   // dictionary page
   'dictionary.title': '辞書',
@@ -251,6 +253,8 @@ const en: Dict = {
     'Click "Record new shortcut" then press the desired key combination.',
   'hotkeys.duplicate': 'This key combo is already assigned to another binding.',
   'hotkeys.recordHint': "Press the desired key combo (modifiers alone won't commit)",
+  'hotkeys.useFn': 'Use Fn (Globe) key',
+  'hotkeys.useFnHint': 'Bind the macOS Fn / Globe key as the hotkey (no key capture required)',
 
   // dictionary page
   'dictionary.title': 'Dictionary',

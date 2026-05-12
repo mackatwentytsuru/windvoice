@@ -188,6 +188,20 @@ function HotkeyRow({ binding, index, canRemove, duplicate, onPatch, onRemove }: 
     setRecording(true);
   };
 
+  // Direct one-click binder for the macOS Fn (Globe) key. We can't rely on
+  // capturing Fn through `keydown` — Chromium routes Fn through the macOS
+  // text-input system rather than as a normal key event, so the user would
+  // press the key during recording and nothing would commit. The explicit
+  // button bypasses the capture path entirely and writes the binding
+  // directly. Backed at runtime by the fnwatcher sidecar (CGEventTap) that
+  // injects FN keycodes into the hotkey manager.
+  const bindFnKey = useCallback((): void => {
+    setError(null);
+    setRecording(false);
+    const ok = onPatch(binding.id, { keys: ['Fn'] });
+    if (!ok) setError(t('hotkeys.duplicate'));
+  }, [binding.id, onPatch, t]);
+
   return (
     <div className="field" style={{ borderBottom: '1px solid var(--border)', paddingBottom: 16 }}>
       <div className="row" style={{ marginBottom: 8 }}>
@@ -208,9 +222,20 @@ function HotkeyRow({ binding, index, canRemove, duplicate, onPatch, onRemove }: 
             {t('hotkeys.recordingPrompt')}
           </span>
         ) : (
-          <button type="button" className="button-secondary" onClick={startRecording}>
-            {t('hotkeys.record')}
-          </button>
+          <>
+            <button type="button" className="button-secondary" onClick={startRecording}>
+              {t('hotkeys.record')}
+            </button>
+            <button
+              type="button"
+              className="button-secondary"
+              onClick={bindFnKey}
+              style={{ marginLeft: 8 }}
+              title={t('hotkeys.useFnHint')}
+            >
+              {t('hotkeys.useFn')}
+            </button>
+          </>
         )}
         <button
           type="button"

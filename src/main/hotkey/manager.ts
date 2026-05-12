@@ -1,6 +1,7 @@
 import { uIOhook, UiohookKey } from 'uiohook-napi';
 import { EventEmitter } from 'node:events';
 import { debug, isDebug } from '@main/debug';
+import { FN_KEYCODE } from '@main/hotkey/keycodes';
 import type { HotkeyBinding } from '@shared/types';
 
 export interface HotkeyEvents {
@@ -104,6 +105,29 @@ export class HotkeyManager extends EventEmitter {
     } catch {
       /* ignore */
     }
+  }
+
+  /**
+   * Inject a synthetic key event for a keycode that uiohook does not emit.
+   * The current use case is the macOS Fn (Globe) key, which uiohook silently
+   * drops on Darwin (libuiohook only handles Shift/Ctrl/Option/Cmd in its
+   * FlagsChanged path). A small Swift sidecar (`fnwatcher`) detects Fn edges
+   * via `CGEventTap` and calls this method to drive the same binding logic
+   * that real keyboard events use.
+   *
+   * The synthetic event reuses the live OS modifier state — we never want a
+   * Fn press to falsely clear `modifierState.ctrl` or trigger the
+   * `untilAllModifiersUp` waiter chain.
+   */
+  injectKey(keycode: number, down: boolean): void {
+    const synthetic: UiohookKeyboardEventLike = {
+      keycode,
+      ctrlKey: this.modifierState.ctrl,
+      altKey: this.modifierState.alt,
+      shiftKey: this.modifierState.shift,
+      metaKey: this.modifierState.meta
+    };
+    this.onKey(synthetic, down);
   }
 
   /**
@@ -423,6 +447,14 @@ interface KeyLookup {
 }
 
 function lookupKey(name: string): KeyLookup | null {
+  // Fn (Globe) lives outside uiohook entirely — bypass the UiohookKey
+  // lookup table and use the sentinel keycode the fnwatcher sidecar feeds
+  // into HotkeyManager.injectKey. Fn does not set any standard modifier
+  // mask, so `modifier: null` is correct here.
+  const lower = name.toLowerCase();
+  if (lower === 'fn' || lower === 'globe') {
+    return { code: FN_KEYCODE, modifier: null };
+  }
   const map: Record<string, { key: keyof typeof UiohookKey; modifier: Modifier | null }> = {
     space: { key: 'Space', modifier: null },
     enter: { key: 'Enter', modifier: null },
@@ -452,7 +484,7 @@ function lookupKey(name: string): KeyLookup | null {
     f14: { key: 'F14', modifier: null },
     f15: { key: 'F15', modifier: null }
   };
-  const entry = map[name.toLowerCase()];
+  const entry = map[lower];
   if (entry && UiohookKey[entry.key] !== undefined) {
     return { code: UiohookKey[entry.key] as number, modifier: entry.modifier };
   }

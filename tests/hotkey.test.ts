@@ -76,3 +76,71 @@ describe('HotkeyManager modifier-self-match', () => {
     expect(started).toEqual([]);
   });
 });
+
+describe('HotkeyManager Fn (Globe) key support', () => {
+  let mgr: HotkeyManager;
+  let started: string[] = [];
+  let stopped: string[] = [];
+
+  beforeEach(() => {
+    mgr = new HotkeyManager();
+    started = [];
+    stopped = [];
+    mgr.on('start', (id) => started.push(id));
+    mgr.on('stop', (id) => stopped.push(id));
+  });
+
+  // FN_KEYCODE sentinel — kept in lockstep with src/main/hotkey/keycodes.ts.
+  // Hard-coded here on purpose: if the production constant moves, this test
+  // forces an explicit update rather than silently coupling to it.
+  const FN = 0xfd01;
+
+  it('normalizes a single "Fn" token into the sentinel keycode', () => {
+    mgr.setBindings([{ id: 'fn-binding', keys: ['Fn'], mode: 'push-to-talk', format: true }]);
+    // injectKey is the public surface fnwatcher uses.
+    mgr.injectKey(FN, true);
+    expect(started).toEqual(['fn-binding']);
+    mgr.injectKey(FN, false);
+    expect(stopped).toEqual(['fn-binding']);
+  });
+
+  it('case-insensitive token: lowercase "fn" also binds', () => {
+    mgr.setBindings([{ id: 'lc', keys: ['fn'], mode: 'push-to-talk', format: true }]);
+    mgr.injectKey(FN, true);
+    mgr.injectKey(FN, false);
+    expect(started).toEqual(['lc']);
+    expect(stopped).toEqual(['lc']);
+  });
+
+  it('toggle mode: alternates on successive Fn presses', () => {
+    mgr.setBindings([{ id: 'tg', keys: ['Fn'], mode: 'toggle', format: true }]);
+    mgr.injectKey(FN, true);
+    mgr.injectKey(FN, false);
+    expect(started).toEqual(['tg']);
+    mgr.injectKey(FN, true);
+    expect(stopped).toEqual(['tg']);
+  });
+
+  it('Fn binding does not fire on a real keystroke at the same numeric code', () => {
+    // Defense-in-depth: even if some future uiohook release decided to
+    // emit a synthetic code that happened to overlap, the binding still
+    // only fires through injectKey because that's the only path that
+    // produces the FN_KEYCODE. A real uiohook event with a totally
+    // unrelated keycode must NOT fire it.
+    mgr.setBindings([{ id: 'fn2', keys: ['Fn'], mode: 'push-to-talk', format: true }]);
+    dispatch(mgr, { keycode: 0x1234, altKey: false, ctrlKey: false, shiftKey: false, metaKey: false }, true);
+    expect(started).toEqual([]);
+  });
+
+  it('Fn injection preserves live modifier state (does not clear ctrl)', () => {
+    mgr.setBindings([{ id: 'fn3', keys: ['Fn'], mode: 'push-to-talk', format: true }]);
+    // First, simulate user pressing Ctrl — populates the manager's snapshot.
+    dispatch(mgr, { keycode: 29, altKey: false, ctrlKey: true, shiftKey: false, metaKey: false }, true);
+    expect(mgr.isCtrlHeld()).toBe(true);
+    // Then inject Fn — should not clear the cached ctrl state.
+    mgr.injectKey(FN, true);
+    expect(mgr.isCtrlHeld()).toBe(true);
+    mgr.injectKey(FN, false);
+    expect(mgr.isCtrlHeld()).toBe(true);
+  });
+});

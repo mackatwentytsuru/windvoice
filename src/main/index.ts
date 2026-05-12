@@ -4,6 +4,7 @@ import { is } from '@main/audio/env';
 import { settingsStore } from '@main/store/settings';
 import { secureStore } from '@main/store/secure';
 import { HotkeyManager, setActiveHotkeyManager } from '@main/hotkey/manager';
+import { FnWatcher, FN_KEYCODE } from '@main/hotkey/fnwatcher';
 import { AudioBridge } from '@main/audio/bridge';
 import { OverlayWindow } from '@main/overlay/window';
 import { DictationOrchestrator } from '@main/dictation/orchestrator';
@@ -69,6 +70,7 @@ let settingsWindow: BrowserWindow | null = null;
 let audio: AudioBridge | null = null;
 let overlay: OverlayWindow | null = null;
 let hotkeys: HotkeyManager | null = null;
+let fnWatcher: FnWatcher | null = null;
 let orchestrator: DictationOrchestrator | null = null;
 let lastAudioError: string | null = null;
 
@@ -354,6 +356,20 @@ app.whenReady().then(async () => {
   // relevant System Settings pane.
   startHotkeysWithAccessibilityRecovery();
 
+  // macOS-only: spawn the Fn (Globe) key sidecar. uiohook does not surface
+  // Fn — it lives on a `kCGEventFlagsChanged` path that libuiohook's macOS
+  // handler explicitly ignores (only Shift/Ctrl/Option/Cmd are wired). The
+  // fnwatcher sidecar taps CGEventTap directly and pipes FN_DOWN / FN_UP
+  // lines back to us, which we then inject into HotkeyManager as if they
+  // were uiohook events.
+  if (process.platform === 'darwin') {
+    fnWatcher = new FnWatcher();
+    fnWatcher.on('down', () => hotkeys?.injectKey(FN_KEYCODE, true));
+    fnWatcher.on('up', () => hotkeys?.injectKey(FN_KEYCODE, false));
+    fnWatcher.on('error', (msg) => process.stderr.write(`[fnwatcher] ${msg}\n`));
+    fnWatcher.start();
+  }
+
   await audio.prewarm(settingsStore.get().audio.device);
 
   if (await secureStore.hasApiKey()) {
@@ -399,6 +415,7 @@ app.on('before-quit', () => {
     accessibilityPollTimer = null;
   }
   hotkeys?.stop();
+  fnWatcher?.stop();
   orchestrator?.dispose();
   audio?.destroy();
   overlay?.destroy();
