@@ -15,6 +15,18 @@ const DEFAULT_MODEL = 'gpt-5-mini';
 const TEMPERATURE = 0.1;
 const MIN_OUTPUT_TOKENS = 256;
 
+/**
+ * Reasoning / "o-series" / GPT-5 models reject the legacy `max_tokens` and
+ * `temperature: <non-default>` parameters and require `max_completion_tokens`
+ * with the default sampling temperature. Treat the gpt-5 family and the
+ * o1/o3/o4 reasoning families as belonging to this group; everything else
+ * (gpt-4, gpt-4o, gpt-3.5, etc.) still accepts the legacy params.
+ */
+function isReasoningModel(model: string): boolean {
+  const m = model.toLowerCase();
+  return m.startsWith('gpt-5') || m.startsWith('o1') || m.startsWith('o3') || m.startsWith('o4');
+}
+
 const clientCache = new Map<string, OpenAI>();
 
 function getClient(apiKey: string): OpenAI {
@@ -83,19 +95,32 @@ interface FormatterCallParams {
 async function callOpenAI(params: FormatterCallParams): Promise<string> {
   const client = getClient(params.apiKey);
   const maxTokens = Math.max(MIN_OUTPUT_TOKENS, params.text.length * 2);
+  const reasoning = isReasoningModel(params.model);
 
-  const response = await client.chat.completions.create(
-    {
-      model: params.model,
-      temperature: TEMPERATURE,
-      max_tokens: maxTokens,
-      messages: [
-        { role: 'system', content: params.systemPrompt },
-        { role: 'user', content: params.text }
-      ]
-    },
-    { signal: params.signal }
-  );
+  const request: OpenAI.Chat.ChatCompletionCreateParamsNonStreaming = {
+    model: params.model,
+    stream: false,
+    messages: [
+      { role: 'system', content: params.systemPrompt },
+      { role: 'user', content: params.text }
+    ],
+    ...(reasoning
+      ? {
+          // GPT-5 / reasoning models consume tokens for an internal reasoning
+          // pass before emitting visible output. For a deterministic
+          // formatting task this reasoning is wasted budget — and at the
+          // default effort level the model often spends the entire
+          // max_completion_tokens cap on reasoning and returns an empty
+          // completion. `reasoning_effort: 'minimal'` skips that phase.
+          // We also generously over-budget completion tokens so even very
+          // long transcripts (with the reasoning floor on top) fit.
+          max_completion_tokens: Math.max(maxTokens, 1024) + 512,
+          reasoning_effort: 'minimal'
+        }
+      : { temperature: TEMPERATURE, max_tokens: maxTokens })
+  };
+
+  const response = await client.chat.completions.create(request, { signal: params.signal });
 
   const choice = response.choices?.[0];
   const content = choice?.message?.content;
