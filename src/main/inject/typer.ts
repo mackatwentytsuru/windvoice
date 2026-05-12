@@ -42,6 +42,13 @@ function notifyPasteFailed(message: string): void {
   }
 }
 
+/**
+ * Rate-limit the "clipboard restore stored unencrypted" warning to a single
+ * surfacing per process. Without this, every dictation on a Linux box
+ * without libsecret would re-fire the same notification.
+ */
+let warnedUnencryptedClipboard = false;
+
 // Note: pasteModifier() and releaseStuckModifiers() existed here as
 // historical helpers but were removed (issue #12):
 //   - pasteModifier was never called; its behavior is now baked into
@@ -86,7 +93,14 @@ function persistPreviousClipboard(text: string): void {
     } else {
       // Fall back to plaintext on platforms where safeStorage is not
       // wired up (older Linux without libsecret). Functionality first,
-      // hardening when available.
+      // hardening when available. Surface a one-shot warning to the UI
+      // so the user knows their clipboard backup is on disk in the
+      // clear — but skip the notify when text.length === 0 (the empty
+      // payload is harmless and just a no-op restore on next launch).
+      if (!warnedUnencryptedClipboard && text.length > 0) {
+        warnedUnencryptedClipboard = true;
+        notifyPasteFailed('Clipboard restore will be stored unencrypted (system keyring unavailable)');
+      }
       fs.writeFileSync(fp, payload, 'utf8');
     }
   } catch (err) {
@@ -131,6 +145,11 @@ export function recoverClipboardIfPending(): void {
     const parsed = RestoreFileSchema.safeParse(JSON.parse(raw));
     if (!parsed.success) {
       debug('DICTATION', `recoverClipboard: invalid schema, discarding`);
+      // Surface the recovery failure to the UI BEFORE the finally
+      // block deletes the restore file. The user's pre-crash
+      // clipboard is unrecoverable; without this notify the loss
+      // would be completely silent.
+      notifyPasteFailed('Clipboard recovery failed: restore file could not be decoded');
       return;
     }
     // Staleness check (issue #10): a restore file older than

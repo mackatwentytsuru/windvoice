@@ -35,6 +35,24 @@ let orchestrator: DictationOrchestrator | null = null;
 let lastAudioError: string | null = null;
 
 /**
+ * Broadcast an IPC message to every UI BrowserWindow, skipping the hidden
+ * audio renderer (which has no business receiving UI-state events and can
+ * also be torn down/recreated independently of the windows). If `audio` is
+ * not yet initialized at the time of the call, fall back to broadcasting to
+ * all windows — acceptable degradation since the audio renderer simply
+ * ignores channels it has not subscribed to.
+ */
+function broadcastToUiWindows(channel: string, payload: unknown): void {
+  const audioWcId = audio?.getWebContentsId();
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (audioWcId !== null && audioWcId !== undefined && win.webContents.id === audioWcId) {
+      continue;
+    }
+    win.webContents.send(channel, payload);
+  }
+}
+
+/**
  * webContents IDs that are allowed to receive a `media` (microphone) grant.
  * Lazily populated as windows are created. The overlay window is NEVER added
  * because it has no business calling getUserMedia.
@@ -101,13 +119,24 @@ function startHotkeysWithAccessibilityRecovery(): void {
     if (process.platform !== 'darwin') return;
     setAccessibilityWarning(true);
     if (accessibilityPollTimer) return;
+    let consecutiveErrors = 0;
     accessibilityPollTimer = setInterval(() => {
       try {
         if (systemPreferences.isTrustedAccessibilityClient(false)) {
           startHotkeysWithAccessibilityRecovery();
         }
+        consecutiveErrors = 0;
       } catch {
-        /* ignore */
+        consecutiveErrors += 1;
+        if (consecutiveErrors >= 10) {
+          if (accessibilityPollTimer) {
+            clearInterval(accessibilityPollTimer);
+            accessibilityPollTimer = null;
+          }
+          process.stderr.write(
+            '[hotkey] accessibility recovery poll disabled after 10 consecutive errors — re-grant Accessibility permission and restart WindVoice\n'
+          );
+        }
       }
     }, 2000);
   }
@@ -146,18 +175,11 @@ app.whenReady().then(async () => {
   // Restore clipboard if a prior session crashed mid-paste.
   recoverClipboardIfPending();
 
-  // Register IPC handlers BEFORE any BrowserWindow is created. The hidden audio
-  // renderer, the overlay window, and the settings window all run preload code
-  // that immediately calls `ipcRenderer.invoke('settings:get')`; if the handler
-  // is not yet registered the call rejects with "No handler registered for
-  // 'settings:get'" and the UI fails to load its initial state.
   // Wire up formatter failure surfacing: tray flashes error, settings
   // UI gets an IPC event with a code so it can render an inline message.
   setFormatterFailureListener((code, message) => {
     setStatus('error');
-    for (const win of BrowserWindow.getAllWindows()) {
-      win.webContents.send(IPC.FORMATTER_ERROR, { code, message, permanent: true });
-    }
+    broadcastToUiWindows(IPC.FORMATTER_ERROR, { code, message, permanent: true });
   });
 
   // Surface paste failures (H6/M11) — the user has a working transcript
@@ -165,11 +187,14 @@ app.whenReady().then(async () => {
   // to that fact without this event.
   setPasteFailureListener((message) => {
     setStatus('error');
-    for (const win of BrowserWindow.getAllWindows()) {
-      win.webContents.send(IPC.SYSTEM_ERROR, { source: 'paste', message });
-    }
+    broadcastToUiWindows(IPC.SYSTEM_ERROR, { source: 'paste', message });
   });
 
+  // Register IPC handlers BEFORE any BrowserWindow is created. The hidden audio
+  // renderer, the overlay window, and the settings window all run preload code
+  // that immediately calls `ipcRenderer.invoke('settings:get')`; if the handler
+  // is not yet registered the call rejects with "No handler registered for
+  // 'settings:get'" and the UI fails to load its initial state.
   registerIpc({
     start: () => orchestrator?.start() ?? Promise.resolve(),
     stop: () => orchestrator?.stop() ?? Promise.resolve(),
@@ -281,15 +306,11 @@ app.whenReady().then(async () => {
   // into stderr (which is invisible in packaged builds — M10).
   onDuckError((phase, message) => {
     process.stderr.write(`[duck:${phase}] ${message}\n`);
-    for (const win of BrowserWindow.getAllWindows()) {
-      win.webContents.send(IPC.SYSTEM_ERROR, { source: 'duck', message: `${phase}: ${message}` });
-    }
+    broadcastToUiWindows(IPC.SYSTEM_ERROR, { source: 'duck', message: `${phase}: ${message}` });
   });
   onAutoLaunchError((message) => {
     process.stderr.write(`[autoLaunch] ${message}\n`);
-    for (const win of BrowserWindow.getAllWindows()) {
-      win.webContents.send(IPC.SYSTEM_ERROR, { source: 'autoLaunch', message });
-    }
+    broadcastToUiWindows(IPC.SYSTEM_ERROR, { source: 'autoLaunch', message });
   });
 
   applyAutoLaunch(settingsStore.get().ui.autoLaunch);

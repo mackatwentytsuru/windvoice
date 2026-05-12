@@ -184,15 +184,21 @@ export class HotkeyManager extends EventEmitter {
 
     // Wake up any `untilAllModifiersUp` waiters the instant all
     // modifiers transition to released — replaces the 8ms busy-poll.
+    // Dispatched via queueMicrotask so a waiter that re-enters
+    // HotkeyManager (e.g. via paste path) does not recurse into this
+    // onKey invocation. The `untilAllModifiersUp` Promise still resolves
+    // within the same microtask tick.
     if (wasAnyHeld && !this.isAnyModifierHeld() && this.modifierReleaseWaiters.length > 0) {
       const waiters = this.modifierReleaseWaiters.slice();
       this.modifierReleaseWaiters.length = 0;
       for (const w of waiters) {
-        try {
-          w();
-        } catch {
-          /* ignore — waiter throw must not break onKey */
-        }
+        queueMicrotask(() => {
+          try {
+            w();
+          } catch {
+            /* ignore — waiter throw must not break onKey */
+          }
+        });
       }
     }
 
@@ -243,11 +249,27 @@ export class HotkeyManager extends EventEmitter {
       for (const nb of this.bindings) {
         const id = nb.binding.id;
         if (!this.heldDown.has(id)) continue;
-        if (nb.triggerProvidesModifier === null) continue;
-        if (!this.modifierState[nb.triggerProvidesModifier]) {
+        // Path A: trigger has a modifier flag, and that modifier has
+        // physically transitioned to up. Catches Right-Alt / Right-Cmd /
+        // etc. release lost inside suppressUntil.
+        if (nb.triggerProvidesModifier !== null) {
+          if (!this.modifierState[nb.triggerProvidesModifier]) {
+            this.heldDown.delete(id);
+            this.emit('stop', id);
+            debug('HOTKEY', `force-stop ${id}: ${nb.triggerProvidesModifier} no longer held`);
+          }
+          continue;
+        }
+        // Path B: non-modifier trigger (F13, Space, etc.). A real keyup
+        // event for the trigger key must always clear heldDown, even
+        // when the binding loop above was skipped due to suppressUntil.
+        // The suppression window only protects against spurious starts
+        // from synthesized events; a genuine trigger keyup is not
+        // ambiguous and would otherwise leave the binding stuck.
+        if (!down && nb.triggerKeys.includes(e.keycode)) {
           this.heldDown.delete(id);
           this.emit('stop', id);
-          debug('HOTKEY', `force-stop ${id}: ${nb.triggerProvidesModifier} no longer held`);
+          debug('HOTKEY', `force-stop ${id}: trigger keyup observed (non-modifier path)`);
         }
       }
     }

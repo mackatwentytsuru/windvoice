@@ -69,6 +69,16 @@ const api = {
     ipcRenderer.on(IPC.AUDIO_ERROR, handler);
     return () => ipcRenderer.removeListener(IPC.AUDIO_ERROR, handler);
   },
+  onSystemError: (cb: (payload: { source: string; message: string }) => void): (() => void) => {
+    const handler = (_e: unknown, p: { source: string; message: string }): void => cb(p);
+    ipcRenderer.on(IPC.SYSTEM_ERROR, handler);
+    return () => ipcRenderer.removeListener(IPC.SYSTEM_ERROR, handler);
+  },
+  onFormatterError: (cb: (payload: { code: string; message: string; permanent: boolean }) => void): (() => void) => {
+    const handler = (_e: unknown, p: { code: string; message: string; permanent: boolean }): void => cb(p);
+    ipcRenderer.on(IPC.FORMATTER_ERROR, handler);
+    return () => ipcRenderer.removeListener(IPC.FORMATTER_ERROR, handler);
+  },
   getLastAudioError: (): Promise<string | null> => ipcRenderer.invoke(IPC.AUDIO_LAST_ERROR),
 
   // overlay state subscription (used by overlay window only)

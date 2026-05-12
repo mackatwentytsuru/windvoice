@@ -26,13 +26,17 @@ declare global {
       onTranscriptDelta(cb: (text: string) => void): () => void;
       onTranscriptFinal(cb: (text: string) => void): () => void;
       onAudioError(cb: (msg: string) => void): () => void;
+      onSystemError(cb: (payload: { source: string; message: string }) => void): () => void;
+      onFormatterError(
+        cb: (payload: { code: string; message: string; permanent: boolean }) => void
+      ): () => void;
       getLastAudioError(): Promise<string | null>;
       onOverlayState(cb: (s: OverlayState) => void): () => void;
       listHistory(): Promise<HistoryEntry[]>;
       removeHistory(id: string): Promise<HistoryEntry[]>;
       clearHistory(): Promise<HistoryEntry[]>;
       onHistoryChanged(cb: (entry: HistoryEntry) => void): () => void;
-      copyText(text: string): void;
+      copyText(text: string): Promise<void>;
       onSettingsChanged(cb: (s: Settings) => void): () => void;
     };
     audio: {

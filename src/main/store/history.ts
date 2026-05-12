@@ -1,8 +1,9 @@
 import Store from 'electron-store';
-import { safeStorage } from 'electron';
+import { BrowserWindow, safeStorage } from 'electron';
 import { randomUUID } from 'node:crypto';
 import { HistoryEntrySchema, type HistoryEntry } from '@shared/types';
 import { MAX_HISTORY } from '@shared/constants';
+import { IPC } from '@shared/ipc';
 import { debug } from '@main/debug';
 
 const MAX_TEXT_LEN = 64 * 1024;
@@ -31,11 +32,22 @@ function encryptionAvailable(): boolean {
   }
 }
 
+function broadcastSystemError(message: string): void {
+  try {
+    for (const win of BrowserWindow.getAllWindows()) {
+      win.webContents.send(IPC.SYSTEM_ERROR, { source: 'storage', message });
+    }
+  } catch {
+    /* broadcast must never break the storage path */
+  }
+}
+
 function maybeEncrypt(value: string): string {
   if (!encryptionAvailable()) {
     if (!warnedNoEncryption) {
       warnedNoEncryption = true;
       debug('DICTATION', 'safeStorage encryption unavailable; storing history in plaintext');
+      broadcastSystemError('History is being stored unencrypted (system keyring unavailable)');
     }
     return value;
   }
@@ -143,7 +155,6 @@ class HistoryStore {
 
   private flushSync(): void {
     if (!this.dirty) return;
-    this.dirty = false;
     const persisted: PersistedEntry[] = this.cache.map((e) => ({
       id: e.id,
       timestamp: e.timestamp,
@@ -153,6 +164,11 @@ class HistoryStore {
     }));
     try {
       this.store.set('entries', persisted);
+      // Clear `dirty` only after a successful write. If the write throws
+      // we leave it set so the next scheduleFlush retries — otherwise the
+      // in-memory cache would diverge from disk permanently (next add /
+      // remove sets dirty=true but the failed entry is also dirty=false).
+      this.dirty = false;
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       debug('DICTATION', `history flush failed: ${msg}`);

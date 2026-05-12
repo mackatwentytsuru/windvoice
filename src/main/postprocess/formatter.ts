@@ -30,6 +30,12 @@ let permanentFailureCode: string | null = null;
 export function resetFormatterFailure(): void {
   permanentFailureReason = null;
   permanentFailureCode = null;
+  // Purge cached OpenAI clients so a rotated API key actually takes
+  // effect. Each cached client retains its constructor `apiKey` string
+  // internally; without this clear, a 401 → key-rotation flow would
+  // keep using the stale client and the new key would never reach the
+  // heap on subsequent calls.
+  clientCache.clear();
 }
 
 export function getFormatterFailure(): { code: string; message: string } | null {

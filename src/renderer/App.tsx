@@ -11,12 +11,21 @@ type Tab = 'general' | 'hotkeys' | 'dictionary' | 'replacements' | 'history';
 
 const TABS: readonly Tab[] = ['general', 'hotkeys', 'dictionary', 'replacements', 'history'] as const;
 
+const BANNER_AUTO_DISMISS_MS = 8000;
+
+interface ErrorBanner {
+  message: string;
+  permanent: boolean;
+}
+
 export function App(): JSX.Element {
   const { t } = useI18n();
   const [tab, setTab] = useState<Tab>('general');
   const [status, setStatus] = useState<DictationStatus>('idle');
   const [settings, setSettings] = useState<Settings | null>(null);
+  const [banner, setBanner] = useState<ErrorBanner | null>(null);
   const tabRefs = useRef<Map<Tab, HTMLButtonElement | null>>(new Map());
+  const dismissTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     // Guard against the async settings load resolving after the
@@ -27,12 +36,50 @@ export function App(): JSX.Element {
     void window.windvoice.getSettings().then((s) => {
       if (!cancelled) setSettings(s);
     });
-    const offStatus = window.windvoice.onStatus(setStatus);
+    const showBanner = (next: ErrorBanner): void => {
+      if (dismissTimerRef.current != null) {
+        clearTimeout(dismissTimerRef.current);
+        dismissTimerRef.current = null;
+      }
+      setBanner(next);
+      if (!next.permanent) {
+        dismissTimerRef.current = setTimeout(() => {
+          setBanner(null);
+          dismissTimerRef.current = null;
+        }, BANNER_AUTO_DISMISS_MS);
+      }
+    };
+    const offStatus = window.windvoice.onStatus((s) => {
+      setStatus(s);
+      // Permanent formatter errors clear on the next status transition,
+      // signalling the system has moved on from the failed cycle.
+      setBanner((prev) => (prev?.permanent ? null : prev));
+    });
+    const offSystem = window.windvoice.onSystemError((p) => {
+      showBanner({ message: `${p.source}: ${p.message}`, permanent: false });
+    });
+    const offFormatter = window.windvoice.onFormatterError((p) => {
+      showBanner({ message: p.message, permanent: p.permanent });
+    });
     return () => {
       cancelled = true;
       offStatus();
+      offSystem();
+      offFormatter();
+      if (dismissTimerRef.current != null) {
+        clearTimeout(dismissTimerRef.current);
+        dismissTimerRef.current = null;
+      }
     };
   }, []);
+
+  function dismissBanner(): void {
+    if (dismissTimerRef.current != null) {
+      clearTimeout(dismissTimerRef.current);
+      dismissTimerRef.current = null;
+    }
+    setBanner(null);
+  }
 
   async function update(partial: Partial<Settings>): Promise<void> {
     const next = await window.windvoice.setSettings(partial);
@@ -109,6 +156,44 @@ export function App(): JSX.Element {
         </nav>
       </aside>
       <main className="main" role="tabpanel" aria-label={tabLabels[tab]}>
+        {banner && (
+          <div
+            role="alert"
+            style={{
+              display: 'flex',
+              alignItems: 'flex-start',
+              justifyContent: 'space-between',
+              gap: 12,
+              padding: '10px 12px',
+              marginBottom: 16,
+              border: '1px solid var(--error)',
+              borderRadius: 6,
+              background: 'color-mix(in oklab, var(--error) 12%, transparent)',
+              color: 'var(--error)',
+              fontSize: 13,
+              lineHeight: 1.4
+            }}
+          >
+            <span style={{ flex: 1, wordBreak: 'break-word' }}>{banner.message}</span>
+            <button
+              type="button"
+              onClick={dismissBanner}
+              aria-label={t('aria.delete')}
+              title={t('aria.delete')}
+              style={{
+                background: 'transparent',
+                border: 'none',
+                color: 'var(--error)',
+                cursor: 'pointer',
+                padding: '0 4px',
+                fontSize: 16,
+                lineHeight: 1
+              }}
+            >
+              ×
+            </button>
+          </div>
+        )}
         {settings && tab === 'general' && (
           <GeneralPage settings={settings} update={update} />
         )}

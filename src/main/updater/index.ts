@@ -87,8 +87,16 @@ export function initAutoUpdater(): void {
   // to existing users on next launch. Disable autoDownload entirely until
   // signing/notarization is set up — `update-available` still broadcasts
   // to the renderer, which can offer an explicit "Update now" button.
+  //
+  // autoInstallOnAppQuit MUST also stay false: otherwise the renderer-side
+  // "Update now" path could download a binary and electron-updater would
+  // silently install it during the next graceful quit, defeating the
+  // explicit-consent model. Until we have code signing and notarization
+  // wired up, the user must opt in to every install via an explicit
+  // restart action driven by the renderer "Update now" UI (deferred —
+  // not implemented in this change set).
   autoUpdater.autoDownload = false;
-  autoUpdater.autoInstallOnAppQuit = true;
+  autoUpdater.autoInstallOnAppQuit = false;
   // Route update lifecycle events to the project debug() helper instead
   // of swallowing them via `logger = null`. Update events are security-
   // relevant (download started, signature mismatch) and should be

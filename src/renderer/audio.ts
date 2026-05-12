@@ -62,11 +62,11 @@ async function startCapture(deviceId?: string): Promise<void> {
     // next `beginForwarding()` on main will fire AUDIO_RESUME_CMD,
     // which resumes in ~5-15ms — well within perceptual start-recording
     // latency. This stops the 20Hz IPC + Buffer churn during idle.
-    try {
-      await audioCtx.suspend();
-    } catch {
-      /* best-effort */
-    }
+    audioCtx.suspend().catch((e: unknown) => {
+      window.audio.reportError(
+        `audioCtx.suspend failed: ${e instanceof Error ? e.message : String(e)}`
+      );
+    });
   } catch (err) {
     const msg = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
     window.audio.reportError(msg);
@@ -161,12 +161,20 @@ window.audio.onDeviceChange((deviceId: string) => {
 // pipeline when the user is not dictating (issue #7).
 window.audio.onSuspend?.(() => {
   if (audioCtx && audioCtx.state === 'running') {
-    void audioCtx.suspend();
+    audioCtx.suspend().catch((e: unknown) => {
+      window.audio.reportError(
+        `audioCtx.suspend failed: ${e instanceof Error ? e.message : String(e)}`
+      );
+    });
   }
 });
 window.audio.onResume?.(() => {
   if (audioCtx && audioCtx.state === 'suspended') {
-    void audioCtx.resume();
+    audioCtx.resume().catch((e: unknown) => {
+      window.audio.reportError(
+        `audioCtx.resume failed: ${e instanceof Error ? e.message : String(e)}`
+      );
+    });
   }
 });
 window.audio.onBeep((kind: 'start' | 'stop') => {

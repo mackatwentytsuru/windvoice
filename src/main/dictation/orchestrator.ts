@@ -63,8 +63,31 @@ export class DictationOrchestrator {
   async prewarmConnection(): Promise<void> {
     try {
       await this.ensureConnected();
+      // Reset the tray/overlay back to 'idle' after a successful prewarm.
+      // Two paths land here:
+      //   1) Startup: status was 'idle' (no-op).
+      //   2) onApiKeyChanged: status was 'unavailable' (the user just
+      //      pasted a key); transition back to a usable state.
+      // Guard with !inFlight so we never clobber a live cycle's
+      // 'listening' or 'processing' state from a stray prewarm.
+      if (!this.inFlight) {
+        this.updateStatus('idle');
+      }
     } catch (err) {
       debug('DICTATION', `prewarm failed: ${errMsg(err)}`);
+      if (this.inFlight) return;
+      if (isMissingApiKeyError(err)) {
+        // No API key configured: 'unavailable' (setup needed). The
+        // onApiKeyChanged hook in main/index.ts re-invokes prewarm once
+        // the user pastes a key, which resolves and transitions to idle.
+        this.updateStatus('unavailable');
+      } else {
+        // Any other failure (WS handshake rejected, secure storage
+        // error, etc.). Without this branch the status would stay
+        // stuck on 'connecting' — the emit happens just before
+        // `await client.connect()` in ensureConnected.
+        this.updateStatus('error');
+      }
     }
   }
 
@@ -87,6 +110,26 @@ export class DictationOrchestrator {
       this.updateStatus('error');
       this.inFlight = false;
       this.broadcast(IPC.TRANSCRIPT_FINAL, `[error] ${recentErr}`);
+      return;
+    }
+
+    // Short-circuit: if the user never set an API key (or it has been
+    // cleared), the tray must reflect 'unavailable' (setup needed) rather
+    // than 'error' (transient runtime failure). The onApiKeyChanged hook
+    // in main/index.ts will call prewarmConnection() once the user pastes
+    // a key, which transitions the tray back to 'idle'.
+    let apiKey: string | null = null;
+    try {
+      apiKey = await secureStore.getApiKey();
+    } catch (err) {
+      this.updateStatus('error');
+      this.inFlight = false;
+      this.broadcast(IPC.TRANSCRIPT_FINAL, `[error] secure storage unavailable: ${errMsg(err)}`);
+      return;
+    }
+    if (!apiKey) {
+      this.updateStatus('unavailable');
+      this.inFlight = false;
       return;
     }
 
@@ -418,6 +461,13 @@ export class DictationOrchestrator {
       client.on('error', onError);
       client.on('close', onClose);
 
+      // Emit 'connecting' just before the WS handshake so the tray and
+      // overlay reflect the gap between hotkey press and 'listening' on
+      // a cold start. If the connection is already warm, ensureConnected
+      // returns early above and this branch never runs (transition is
+      // idle → listening directly).
+      this.updateStatus('connecting');
+
       await client.connect();
       const chunkListener = (chunk: ChunkLike): void => {
         // Prefer the binary path; fall back to base64 for legacy/test paths.
@@ -452,4 +502,14 @@ function dictionaryPrompt(entries: { from: string; to: string }[]): string | und
 
 function errMsg(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
+}
+
+/**
+ * True when the error originates from the no-API-key branch inside
+ * ensureConnected. Used by prewarmConnection to surface 'unavailable'
+ * (setup needed) instead of leaving the tray on its previous status.
+ */
+function isMissingApiKeyError(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  return err.message === 'OpenAI API key is not set';
 }
