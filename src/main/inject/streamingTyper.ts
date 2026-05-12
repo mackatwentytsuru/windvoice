@@ -1,7 +1,7 @@
 import { clipboard } from 'electron';
 import { debug } from '@main/debug';
 import { sendCtrlVAtomic } from '@main/inject/pasteWin32';
-import { releaseStuckModifiers } from './typer';
+// releaseStuckModifiers no longer used — see note in typer.ts.
 import { getActiveHotkeyManager } from '@main/hotkey/manager';
 
 const PASTE_INTERVAL_MS = 60;
@@ -129,8 +129,9 @@ export class StreamingTyper {
         const hkm = getActiveHotkeyManager();
         if (hkm) await hkm.untilAllModifiersUp(400);
         if (seq !== this.flushSeq) continue;
-        // Belt-and-suspenders modifier release for any synthesized state.
-        releaseStuckModifiers();
+        // No phantom modifier release. sendCtrlVAtomic detects a held
+        // physical Ctrl (the user's PTT key) and omits the synth Ctrl
+        // press/release so the user's own Ctrl provides the modifier.
         try {
           sendCtrlVAtomic();
         } catch (err) {

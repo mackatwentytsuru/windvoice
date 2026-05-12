@@ -131,7 +131,16 @@ export async function pasteText(text: string, restoreClipboard = true): Promise<
   await sleep(SETTLE_MS);
   // Belt-and-suspenders: even after waitForModifierRelease, send keyToggle
   // 'up' for every modifier to clear any sticky synthesized state.
-  releaseStuckModifiers();
+  // NOTE: releaseStuckModifiers() removed — calling uIOhook.keyToggle('up')
+  // for keys not pressed pushes phantom WM_KEYUP events through the OS,
+  // which uIOhook's own hook then observes and re-broadcasts, and which
+  // PSReadLine's bracketed-paste state machine interprets as raw input
+  // bursts (visible as `^V` echoes and mid-stream "Enter" submissions).
+  // Modifier release is now handled exclusively by the upstream
+  // untilAllModifiersUp() wait above, plus the modifier-aware batch in
+  // sendCtrlVAtomic that skips the synth Ctrl when the user is still
+  // physically holding it (no synth Ctrl-up race with the OS's next
+  // physical scan).
   await sleep(20);
   try {
     sendCtrlVAtomic();

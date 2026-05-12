@@ -88,6 +88,15 @@ export class HotkeyManager extends EventEmitter {
   }
 
   /**
+   * Specifically: is Ctrl physically held right now? Used by the
+   * paste-injection path to decide whether to synth Ctrl-down/up around
+   * the V keystroke or rely on the user's own held Ctrl as the modifier.
+   */
+  isCtrlHeld(): boolean {
+    return this.modifierState.ctrl;
+  }
+
+  /**
    * Returns true if any modifier (Alt/Ctrl/Shift/Meta) is currently
    * physically held by the user, per the latest uIOhook event.
    */

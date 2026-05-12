@@ -20,6 +20,7 @@
 
 import { uIOhook, UiohookKey } from 'uiohook-napi';
 import { debug } from '@main/debug';
+import { getActiveHotkeyManager } from '@main/hotkey/manager';
 
 // Windows Virtual-Key codes (winuser.h). All values are platform-stable.
 const VK = {
@@ -84,23 +85,34 @@ export function sendCtrlVAtomic(): void {
     uIOhook.keyTap(UiohookKey.V, [UiohookKey.Ctrl]);
     return;
   }
-  // Plain atomic Ctrl+V. Earlier iterations of this code prepended
-  // phantom key-up events for Alt/Shift/Win (to defend against
-  // Right-Alt-PTT menu-mode), but those key-ups fire WM_KEYUP messages
-  // even when the key wasn't pressed, which confuses PSReadLine's
-  // bracketed-paste state machine and produced both `^V` echoes and
-  // mid-dictation Enter submissions in Windows Terminal.
+  // Modifier-aware atomic batch. Critical for push-to-talk hotkeys
+  // bound to Ctrl (Right Ctrl is the WindVoice default): while the user
+  // is mid-streaming, they are still physically holding Right Ctrl, so
+  // the OS already has Ctrl asserted. If we then SendInput a synth
+  // Ctrl-down → V → Ctrl-up, the synth Ctrl-up tells the OS Ctrl is
+  // released, but the user's physical Ctrl is still pressed; the next
+  // physical keyboard scan re-asserts Ctrl and the receiving terminal
+  // sees a Ctrl-up → Ctrl-down spasm that PSReadLine interprets as
+  // bracketed-paste-state corruption (manifests as `^V` echoes and
+  // mid-stream Enter submissions).
   //
-  // Modifier-released-before-paste is now handled upstream by
-  // HotkeyManager.untilAllModifiersUp() in typer.ts / streamingTyper.ts,
-  // which waits for the user's physical modifier to release before
-  // dispatching this batch. No phantom releases needed here.
-  const batch: KBDInput[] = [
-    { up: false, val: VK.LCONTROL, type: 0 },
-    { up: false, val: VK.V, type: 0 },
-    { up: true, val: VK.V, type: 0 },
-    { up: true, val: VK.LCONTROL, type: 0 }
-  ];
+  // Fix: if the user is physically holding Ctrl right now, skip the
+  // synth Ctrl press/release and only synth the V keystroke. The user's
+  // own Ctrl provides the modifier for the duration of the paste.
+  const hkm = getActiveHotkeyManager();
+  const ctrlAlreadyHeld = hkm?.isCtrlHeld() === true;
+
+  const batch: KBDInput[] = ctrlAlreadyHeld
+    ? [
+        { up: false, val: VK.V, type: 0 },
+        { up: true, val: VK.V, type: 0 }
+      ]
+    : [
+        { up: false, val: VK.LCONTROL, type: 0 },
+        { up: false, val: VK.V, type: 0 },
+        { up: true, val: VK.V, type: 0 },
+        { up: true, val: VK.LCONTROL, type: 0 }
+      ];
   try {
     mod.SendInput(batch);
   } catch (err) {
