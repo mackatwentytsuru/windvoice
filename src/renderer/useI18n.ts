@@ -5,6 +5,10 @@ import type { Settings } from '../shared/types';
 let cachedLang: UiLang = 'ja';
 const subscribers = new Set<(lang: UiLang) => void>();
 let initialized = false;
+/** Off-handle from the preload-exposed `onSettingsChanged` subscription.
+ * Stored so a re-init (e.g. Vite HMR) can clean up the previous
+ * listener instead of stacking duplicates on the main process (#17). */
+let offSettingsChanged: (() => void) | null = null;
 
 function setCached(next: UiLang): void {
   if (next === cachedLang) return;
@@ -18,7 +22,28 @@ function ensureInitialized(): void {
   // Defensive: window.windvoice is attached by preload; only call when present.
   if (typeof window === 'undefined' || !window.windvoice) return;
   void window.windvoice.getSettings().then((s: Settings) => setCached(s.ui.uiLanguage));
-  window.windvoice.onSettingsChanged((s: Settings) => setCached(s.ui.uiLanguage));
+  // Tear down any previous subscription before installing a fresh one.
+  // In production this never matters (`initialized` short-circuits), but
+  // under Vite HMR the renderer module reloads while the preload-side
+  // `ipcRenderer.on` registration persists — without this dispose path,
+  // listeners would accumulate across reloads.
+  offSettingsChanged?.();
+  offSettingsChanged = window.windvoice.onSettingsChanged((s: Settings) =>
+    setCached(s.ui.uiLanguage)
+  );
+}
+
+// Vite HMR hook: dispose the settings-change listener before the module
+// reloads so the next ensureInitialized starts from a clean slate.
+if (typeof import.meta !== 'undefined' && (import.meta as { hot?: unknown }).hot) {
+  (import.meta as unknown as {
+    hot: { dispose: (cb: () => void) => void };
+  }).hot.dispose(() => {
+    offSettingsChanged?.();
+    offSettingsChanged = null;
+    initialized = false;
+    subscribers.clear();
+  });
 }
 
 /**

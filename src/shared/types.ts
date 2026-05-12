@@ -52,8 +52,14 @@ export const SettingsSchema = z.object({
   replacements: z.array(ReplacementEntrySchema).default([]),
   audio: z
     .object({
-      device: z.string().default('default'),
-      inputGain: z.number().min(0).max(4).default(1.0)
+      device: z.string().default('default')
+      // inputGain was scaffolded as `z.number().min(0).max(4)` but never
+      // wired into the AudioWorklet pipeline (#16). OS-level microphone
+      // gain (System Settings → Sound → Input on macOS, Privacy &
+      // Security → Microphone on Windows) is the right surface; the
+      // field is removed here to stop suggesting a behavior the app
+      // didn't have. Existing settings files with `inputGain` parse
+      // fine — Zod ignores unknown properties unless `.strict()`.
     })
     .default({}),
   language: z.string().default('ja'),
