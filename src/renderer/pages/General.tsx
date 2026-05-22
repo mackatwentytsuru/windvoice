@@ -260,6 +260,26 @@ export function GeneralPage({ settings, update }: Props): JSX.Element {
         </label>
         <div className="helper" style={{ marginBottom: 8 }}>{t('general.duckAudioHelper')}</div>
 
+        <label className="field-label" htmlFor="insertion-method">
+          {t('general.insertion')}
+        </label>
+        <select
+          id="insertion-method"
+          value={settings.insertion.method}
+          onChange={(e) =>
+            void update({
+              insertion: {
+                ...settings.insertion,
+                method: e.target.value as 'paste' | 'type'
+              }
+            })
+          }
+        >
+          <option value="paste">{tPlatform('general.insertionPaste')}</option>
+          <option value="type">{t('general.insertionType')}</option>
+        </select>
+        <div className="helper" style={{ marginBottom: 8 }}>{t('general.insertionTypeHelper')}</div>
+
         <label className="row" style={{ cursor: 'pointer' }}>
           <input
             type="checkbox"

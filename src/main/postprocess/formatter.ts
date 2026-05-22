@@ -104,7 +104,31 @@ export function sanitizePromptValue(v: string): string {
     .replace(/\n/g, '\\n');
 }
 
-export function buildSystemPrompt(settings: Readonly<Settings>): string {
+/**
+ * Find the first per-app formatter profile whose `match` is a
+ * case-insensitive substring of the foreground app name. Matching is
+ * done against the app name only (never the window title — titles can
+ * carry PII; see context/activeWindow.ts).
+ */
+function matchAppProfile(
+  settings: Readonly<Settings>,
+  appName: string | undefined
+): { match: string; instructions: string } | null {
+  const profiles = settings.formatter?.appProfiles;
+  if (!profiles || profiles.length === 0) return null;
+  const app = (appName ?? '').toLowerCase();
+  if (!app) return null;
+  for (const p of profiles) {
+    const m = p.match.trim().toLowerCase();
+    if (m && app.includes(m)) return p;
+  }
+  return null;
+}
+
+export function buildSystemPrompt(
+  settings: Readonly<Settings>,
+  activeWindowApp?: string
+): string {
   const language = settings.language || 'ja';
   const isJa = language.toLowerCase().startsWith('ja');
 
@@ -145,6 +169,16 @@ export function buildSystemPrompt(settings: Readonly<Settings>): string {
     lines.push('');
     lines.push('Additional user instructions (follow these unless they conflict with the strict rules above):');
     lines.push(sanitizePromptValue(custom));
+  }
+
+  const profile = matchAppProfile(settings, activeWindowApp);
+  const profileInstructions = profile?.instructions.trim() ?? '';
+  if (profileInstructions.length > 0) {
+    lines.push('');
+    lines.push(
+      'App-specific instructions for the application the user is currently dictating into (follow these unless they conflict with the strict rules above):'
+    );
+    lines.push(sanitizePromptValue(profileInstructions));
   }
 
   return lines.join('\n');
@@ -277,7 +311,7 @@ export const gptFormatter: PostProcessor = {
     // Capture into a const so TypeScript can narrow inside the async
     // callback below without an `as string` cast.
     const key = apiKey;
-    const systemPrompt = buildSystemPrompt(ctx.settings);
+    const systemPrompt = buildSystemPrompt(ctx.settings, ctx.activeWindowApp);
     const model = ctx.settings.formatter?.model || DEFAULT_MODEL;
 
     try {

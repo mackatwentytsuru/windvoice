@@ -5,6 +5,7 @@ import type { OverlayWindow } from '@main/overlay/window';
 import { audioDuck } from '@main/audio/duck';
 import { RealtimeClient } from '@main/realtime/client';
 import { pasteText } from '@main/inject/typer';
+import { typeTextDirect } from '@main/inject/typeText';
 import { streamingTyper } from '@main/inject/streamingTyper';
 import { secureStore } from '@main/store/secure';
 import { settingsStore } from '@main/store/settings';
@@ -173,7 +174,10 @@ export class DictationOrchestrator {
       this.audio.playBeep('start');
     }
 
-    if (settings.insertion.streaming) {
+    // Streaming insertion is clipboard-paste based; it does not apply to
+    // the keystroke-based 'type' method, which always inserts the final
+    // transcript in one pass.
+    if (settings.insertion.streaming && settings.insertion.method === 'paste') {
       streamingTyper.begin(
         settings.insertion.restoreClipboard,
         settings.insertion.pasteCompatibility,
@@ -328,19 +332,28 @@ export class DictationOrchestrator {
     // The formatter resolves the API key lazily from secureStore.
     const processed = await postProcessorPipeline.run(final, {
       settings,
-      activeWindowTitle: active?.title
+      activeWindowTitle: active?.title,
+      activeWindowApp: active?.app
     });
 
     this.broadcast(IPC.TRANSCRIPT_FINAL, processed);
     try {
-      await pasteText(
-        processed,
-        settings.insertion.restoreClipboard,
-        settings.insertion.pasteCompatibility,
-        settings.insertion.excludeFromClipboardHistory
-      );
+      const ins = settings.insertion;
+      // 'type' mode synthesizes keystrokes (Windows). typeTextDirect
+      // returns false when nothing was injected (non-Windows / module
+      // missing) — only then is it safe to fall back to a paste, since a
+      // partial type must not be followed by a full paste.
+      const typed = ins.method === 'type' && (await typeTextDirect(processed));
+      if (!typed) {
+        await pasteText(
+          processed,
+          ins.restoreClipboard,
+          ins.pasteCompatibility,
+          ins.excludeFromClipboardHistory
+        );
+      }
     } catch (err) {
-      debug('DICTATION', `paste failed: ${errMsg(err)}`);
+      debug('DICTATION', `insert failed: ${errMsg(err)}`);
     }
     this.tryAddHistory(processed, delivered, active?.app);
   }

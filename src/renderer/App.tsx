@@ -5,12 +5,20 @@ import { GeneralPage } from './pages/General';
 import { HotkeysPage } from './pages/Hotkeys';
 import { DictionaryPage } from './pages/Dictionary';
 import { ReplacementsPage } from './pages/Replacements';
+import { AppModesPage } from './pages/AppModes';
 import { HistoryPage } from './pages/History';
 import { UpdaterBanner } from './UpdaterBanner';
 
-type Tab = 'general' | 'hotkeys' | 'dictionary' | 'replacements' | 'history';
+type Tab = 'general' | 'hotkeys' | 'dictionary' | 'replacements' | 'appModes' | 'history';
 
-const TABS: readonly Tab[] = ['general', 'hotkeys', 'dictionary', 'replacements', 'history'] as const;
+const TABS: readonly Tab[] = [
+  'general',
+  'hotkeys',
+  'dictionary',
+  'replacements',
+  'appModes',
+  'history'
+] as const;
 
 const BANNER_AUTO_DISMISS_MS = 8000;
 
@@ -122,6 +130,7 @@ export function App(): JSX.Element {
     hotkeys: t('tab.hotkeys'),
     dictionary: t('tab.dictionary'),
     replacements: t('tab.replacements'),
+    appModes: t('tab.appModes'),
     history: t('tab.history')
   };
 
@@ -207,6 +216,9 @@ export function App(): JSX.Element {
         )}
         {settings && tab === 'replacements' && (
           <ReplacementsPage settings={settings} update={update} />
+        )}
+        {settings && tab === 'appModes' && (
+          <AppModesPage settings={settings} update={update} />
         )}
         {tab === 'history' && <HistoryPage />}
       </main>

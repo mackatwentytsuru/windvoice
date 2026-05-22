@@ -39,6 +39,18 @@ export const ReplacementEntrySchema = z.object({
 });
 export type ReplacementEntry = z.infer<typeof ReplacementEntrySchema>;
 
+/**
+ * Per-application formatter profile. When the foreground app's name
+ * contains `match` (case-insensitive substring), `instructions` are
+ * appended to the formatter prompt — e.g. "terse, no markdown" for a
+ * terminal, "casual tone" for a chat app.
+ */
+export const AppProfileSchema = z.object({
+  match: z.string().min(1),
+  instructions: z.string()
+});
+export type AppProfile = z.infer<typeof AppProfileSchema>;
+
 export const SettingsSchema = z.object({
   // `.min(1)` makes "no hotkeys configured" an invalid state at the
   // schema boundary (L2). An empty array would leave the orchestrator
@@ -67,19 +79,21 @@ export const SettingsSchema = z.object({
     .object({
       model: z.string().default('gpt-5-mini'),
       customInstructions: z.string().default(''),
-      enabled: z.boolean().default(true)
+      enabled: z.boolean().default(true),
+      /** Per-app formatter profiles, matched against the foreground app name. */
+      appProfiles: z.array(AppProfileSchema).default([])
     })
     .default({}),
   dictionary: z.array(DictionaryEntrySchema).default([]),
   insertion: z
     .object({
-      // 'paste' is the only implemented insertion method. The 'type'
-      // option was a UI surface with no main-process handler (issue #6);
-      // the enum is kept as a single-member literal so existing
-      // settings files with `method: "type"` still parse via `.catch`
-      // below, rather than failing schema validation.
+      // 'paste' = clipboard + Ctrl/Cmd+V (default, all platforms).
+      // 'type'  = synthesize the text as individual keystrokes, for apps
+      //           that mangle or refuse a paste. Implemented on Windows
+      //           via the `sendinput` Unicode path; on macOS / Linux it
+      //           transparently falls back to 'paste'.
       method: z
-        .enum(['paste'])
+        .enum(['paste', 'type'])
         .catch('paste')
         .default('paste'),
       restoreClipboard: z.boolean().default(true),

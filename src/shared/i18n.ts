@@ -62,6 +62,8 @@ const ja: Dict = {
   'general.insertionPaste.darwin': 'Cmd+V (貼り付け)',
   'general.insertionPaste.win32': 'Ctrl+V (貼り付け)',
   'general.insertionType': '1文字ずつ入力',
+  'general.insertionTypeHelper':
+    '貼り付けを受け付けない/加工してしまうアプリ向けに、転写を1文字ずつキー入力します(Windows のみ。macOS / Linux では貼り付けに自動フォールバック)。',
   'general.formatter': '整形',
   'general.formatterEnable': 'GPT 後処理を有効化 (Phase 2)',
   'general.formatterHelper': '句読点補正・辞書適用・自然言語フォーマット指示を解釈します。',
@@ -139,6 +141,15 @@ const ja: Dict = {
   'replacements.add': '追加',
   'replacements.empty': '登録がありません。',
   'replacements.wordBoundary': '単語境界で一致',
+  'tab.appModes': 'アプリ別',
+  'appModes.title': 'アプリ別モード',
+  'appModes.helper':
+    'アプリごとに整形の指示を切り替えます。前面アプリ名に一致したプロファイルの指示が整形プロンプトに追加されます。例: ターミナルには「簡潔に、記号や Markdown を使わない」。整形(GPT 後処理)が有効なときのみ働きます。',
+  'appModes.matchPlaceholder': 'アプリ名(部分一致)',
+  'appModes.instructionsPlaceholder': '整形指示(例: 簡潔に、Markdown 不可)',
+  'appModes.add': '追加',
+  'appModes.empty': '登録がありません。',
+  'appModes.noInstructions': '(指示なし)',
 
   // history page
   'history.title': '履歴',
@@ -221,6 +232,8 @@ const en: Dict = {
   'general.insertionPaste.darwin': 'Cmd+V (paste)',
   'general.insertionPaste.win32': 'Ctrl+V (paste)',
   'general.insertionType': 'Type per character',
+  'general.insertionTypeHelper':
+    'For apps that mangle or block a paste — sends the transcript as individual keystrokes (Windows only; falls back to paste on macOS / Linux).',
   'general.formatter': 'Formatter',
   'general.formatterEnable': 'Enable GPT post-processing (Phase 2)',
   'general.formatterHelper':
@@ -302,6 +315,15 @@ const en: Dict = {
   'replacements.add': 'Add',
   'replacements.empty': 'No entries yet.',
   'replacements.wordBoundary': 'Match on word boundaries',
+  'tab.appModes': 'App modes',
+  'appModes.title': 'Per-app modes',
+  'appModes.helper':
+    'Switch formatting per application. When the foreground app name matches a profile, its instructions are added to the formatter prompt — e.g. "terse, no markdown" for a terminal. Only takes effect while GPT formatting is enabled.',
+  'appModes.matchPlaceholder': 'App name (substring)',
+  'appModes.instructionsPlaceholder': 'Formatter instructions (e.g. terse, no markdown)',
+  'appModes.add': 'Add',
+  'appModes.empty': 'No entries yet.',
+  'appModes.noInstructions': '(no instructions)',
 
   // history page
   'history.title': 'History',

@@ -9,6 +9,12 @@ export interface PostProcessContext {
   settings: Settings;
   /** Active window title, if known (Phase 3 enhancement). */
   activeWindowTitle?: string;
+  /**
+   * Foreground application name, if known. Unlike the title this is
+   * considered safe to use for app-aware behavior (per-app formatter
+   * profiles); see `ActiveWindowPromptInfo` in context/activeWindow.ts.
+   */
+  activeWindowApp?: string;
 }
 
 export interface PostProcessor {
