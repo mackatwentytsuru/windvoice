@@ -11,7 +11,7 @@ Notepad / Chrome / VS Code / Slack / Word / ChatGPT など、任意のテキス�
 
 | 項目 | 内容 |
 |---|---|
-| 最新リリース | **v0.1.6** ([releases/tag/v0.1.6](https://github.com/mackatwentytsuru/windvoice/releases/tag/v0.1.6)) |
+| 最新リリース | **v0.1.7** ([releases/tag/v0.1.7](https://github.com/mackatwentytsuru/windvoice/releases/tag/v0.1.7)) |
 | 対応プラットフォーム | macOS (Apple Silicon arm64) / Windows x64 |
 | ビルド署名 | 未署名 (Gatekeeper / SmartScreen 回避手順あり) |
 | 自動更新 | macOS は opt-in / Windows は既定で有効 |
@@ -29,12 +29,12 @@ Notepad / Chrome / VS Code / Slack / Word / ChatGPT など、任意のテキス�
 ```bash
 # 1. DMG をダウンロード
 curl -L -o WindVoice.dmg \
-  https://github.com/mackatwentytsuru/windvoice/releases/download/v0.1.6/WindVoice-0.1.6-arm64.dmg
+  https://github.com/mackatwentytsuru/windvoice/releases/download/v0.1.7/WindVoice-0.1.7-arm64.dmg
 
 # 2. マウントして /Applications にドラッグ (もしくは Finder から)
 hdiutil attach WindVoice.dmg
-cp -R "/Volumes/WindVoice 0.1.6-arm64/WindVoice.app" /Applications/
-hdiutil detach "/Volumes/WindVoice 0.1.6-arm64"
+cp -R "/Volumes/WindVoice 0.1.7-arm64/WindVoice.app" /Applications/
+hdiutil detach "/Volumes/WindVoice 0.1.7-arm64"
 
 # 3. 未署名なので quarantine 属性を除去
 xattr -cr /Applications/WindVoice.app

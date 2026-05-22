@@ -109,14 +109,20 @@ async function createSettingsWindow(): Promise<BrowserWindow> {
     }
   });
   settingsWindow = win;
+  // Cache the webContents id BEFORE the window has any chance to be
+  // destroyed. By the time `closed` fires, `win.webContents` is destroyed
+  // and any property access on it (including `.id`) throws "Object has
+  // been destroyed", which Electron then re-raises as an Uncaught
+  // Exception dialog. Caching the primitive here is the canonical fix.
+  const winWebContentsId = win.webContents.id;
   // Settings page calls getUserMedia to enumerate microphones with labels.
-  trustedMicIds.add(win.webContents.id);
+  trustedMicIds.add(winWebContentsId);
   // Restrict privileged IPCs (APIKEY_SET, CLIPBOARD_WRITE) to this sender.
-  setTrustedSettingsSender(win.webContents.id);
+  setTrustedSettingsSender(winWebContentsId);
 
   win.on('ready-to-show', () => win.show());
   win.on('closed', () => {
-    if (settingsWindow) trustedMicIds.delete(settingsWindow.webContents.id);
+    trustedMicIds.delete(winWebContentsId);
     settingsWindow = null;
     setTrustedSettingsSender(null);
   });
