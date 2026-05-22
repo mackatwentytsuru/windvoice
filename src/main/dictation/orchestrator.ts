@@ -373,6 +373,30 @@ export class DictationOrchestrator {
       this.client = null;
     }
     this.audio.setChunkListener(null);
+    // HIGH-2: when dispose() lands mid-cycle (e.g. on `before-quit`),
+    // release everything else we may have grabbed for the dictation:
+    //   - audio duck (otherwise the user's system volume stays low)
+    //   - streaming typer (otherwise its debounce timer + clipboard
+    //     save linger past app quit)
+    //   - audio forwarding (otherwise the audio renderer keeps
+    //     piping samples to a dead consumer)
+    // All three are fire-and-forget — we cannot await in dispose().
+    this.inFlight = false;
+    this.streamingActive = false;
+    if (this.duckedThisCycle) {
+      this.duckedThisCycle = false;
+      void audioDuck.restore().catch(() => {
+        /* best-effort on shutdown */
+      });
+    }
+    void streamingTyper.end().catch(() => {
+      /* best-effort on shutdown */
+    });
+    try {
+      this.audio.endForwarding(this.startCount);
+    } catch {
+      /* best-effort on shutdown */
+    }
   }
 
   private clearPendingFinalTimer(): void {
