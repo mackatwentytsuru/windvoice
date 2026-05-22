@@ -22,6 +22,7 @@ import { initAutoUpdater, onCheckDictationActive, notifyDictationIdle } from '@m
 import { applyAutoLaunch, onAutoLaunchError } from '@main/autoLaunch';
 import { onDuckError } from '@main/audio/duck';
 import { recoverClipboardIfPending, setPasteFailureListener } from '@main/inject/typer';
+import { setAudioBackpressureListener } from '@main/realtime/client';
 import { flushHistory } from '@main/store/history';
 import { broadcastToUiWindows, setAudioWebContentsId } from '@main/broadcast';
 import { IPC } from '@shared/types';
@@ -263,6 +264,19 @@ app.whenReady().then(async () => {
   setPasteFailureListener((message) => {
     setStatus('error');
     broadcastToUiWindows(IPC.SYSTEM_ERROR, { source: 'paste', message });
+  });
+
+  // MEDIUM-4: surface sustained audio backpressure (drops > threshold in a
+  // 5s window). Until this listener existed the drops were debug-only, so
+  // the user observed "the transcript missed words" with no signal that
+  // the network was the cause. The realtime client cools down its own
+  // notifications, so this fires at most every few seconds.
+  setAudioBackpressureListener(() => {
+    broadcastToUiWindows(IPC.SYSTEM_ERROR, {
+      source: 'audio-backpressure',
+      message:
+        'Network is slow — audio chunks are being dropped. Some words may be missing from the transcript.'
+    });
   });
 
   // Register IPC handlers BEFORE any BrowserWindow is created. The hidden audio

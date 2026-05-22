@@ -15,6 +15,25 @@ const RECONNECT_MAX_MS = 5_000;
 const RECONNECT_MAX_ATTEMPTS = 5;
 const IDLE_PING_MS = 20_000;
 const AUDIO_BACKPRESSURE_BYTES = 256 * 1024;
+// MEDIUM-4: sustained backpressure surfacing threshold. With ~50 ms PCM
+// chunks, 10 drops within a 5-second window ≈ 500 ms of lost audio —
+// the floor for "the transcript is going to have noticeable gaps".
+const BACKPRESSURE_NOTIFY_THRESHOLD = 10;
+const BACKPRESSURE_WINDOW_MS = 5_000;
+// Cooldown so we don't re-fire the listener every chunk while bufferedAmount
+// stays high — once notified, wait this long before reporting again.
+const BACKPRESSURE_NOTIFY_COOLDOWN_MS = 5_000;
+
+let onAudioBackpressureCb: (() => void) | null = null;
+/**
+ * Register a single listener fired when sustained audio backpressure is
+ * detected (drops exceeding BACKPRESSURE_NOTIFY_THRESHOLD inside a
+ * BACKPRESSURE_WINDOW_MS window). Pass `null` to clear. Process-wide;
+ * there is one orchestrator at any time, so a single listener is enough.
+ */
+export function setAudioBackpressureListener(cb: (() => void) | null): void {
+  onAudioBackpressureCb = cb;
+}
 
 export interface RealtimeClientOptions {
   apiKey: string;
@@ -51,6 +70,12 @@ export class RealtimeClient extends EventEmitter {
   private reconnectTimer: NodeJS.Timeout | null = null;
   private pingTimer: NodeJS.Timeout | null = null;
   private cleanClose = false;
+  // MEDIUM-4: sliding window of recent backpressure drops (timestamps in ms).
+  // Kept short — only the last BACKPRESSURE_WINDOW_MS worth — so old drops
+  // age out and a brief network blip does not stay "armed" forever.
+  private dropTimestamps: number[] = [];
+  private consecutiveDrops = 0;
+  private lastBackpressureNotifyAt = 0;
 
   constructor(opts: RealtimeClientOptions) {
     super();
@@ -157,13 +182,45 @@ export class RealtimeClient extends EventEmitter {
     this.send({ type: 'session.update', session });
   }
 
+  private recordBackpressureDrop(): void {
+    const now = Date.now();
+    this.consecutiveDrops++;
+    this.dropTimestamps.push(now);
+    // Age out drops outside the sliding window.
+    const cutoff = now - BACKPRESSURE_WINDOW_MS;
+    while (this.dropTimestamps.length > 0 && this.dropTimestamps[0]! < cutoff) {
+      this.dropTimestamps.shift();
+    }
+    if (
+      this.dropTimestamps.length >= BACKPRESSURE_NOTIFY_THRESHOLD &&
+      now - this.lastBackpressureNotifyAt >= BACKPRESSURE_NOTIFY_COOLDOWN_MS
+    ) {
+      this.lastBackpressureNotifyAt = now;
+      try {
+        onAudioBackpressureCb?.();
+      } catch (err) {
+        debug('REALTIME', `backpressure listener threw: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+  }
+
   /** Append a PCM chunk. Accepts a Buffer/Uint8Array/ArrayBuffer or pre-encoded base64 string. */
   appendAudio(buf: Buffer | Uint8Array | ArrayBuffer | string): void {
     if (!this.opened || !this.ws) return;
     if (this.ws.bufferedAmount > AUDIO_BACKPRESSURE_BYTES) {
       debug('REALTIME', 'audio backpressure drop');
+      // MEDIUM-4: silent drop was previously invisible to the user. At
+      // 24 kHz mono PCM16 with ~50 ms chunks each drop ≈ 50 ms of audio,
+      // so 10 drops in a 5 s window means roughly half a second has been
+      // tossed — enough that the resulting transcript will miss words.
+      // Surface that to the UI banner so the user knows their network is
+      // the reason, not WindVoice. The counter resets on every healthy
+      // (non-dropping) call so a one-off blip does not trigger.
+      this.recordBackpressureDrop();
       return;
     }
+    // Reset the run when we successfully send — backpressure has cleared.
+    this.consecutiveDrops = 0;
     let base64: string;
     if (typeof buf === 'string') {
       base64 = buf;
