@@ -1,4 +1,5 @@
 import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest';
+import path from 'node:path';
 
 const hoisted = vi.hoisted(() => {
   const fsState = {
@@ -55,6 +56,21 @@ vi.mock('electron', () => ({
   }
 }));
 
+// On Windows, the production sendCtrlVAtomic() uses native SendInput
+// (sendinput.node) for atomic modifier-safe Ctrl+V and only falls back
+// to uIOhook.keyTap when the native module fails. These tests assert
+// against uIOhook.keyTap, which is the right level — replace the whole
+// helper with a uIOhook.keyTap call so the tests run identically on
+// every host platform.
+vi.mock('@main/inject/pasteWin32', async () => {
+  const { uIOhook, UiohookKey } = await import('uiohook-napi');
+  return {
+    sendCtrlVAtomic: () => {
+      uIOhook.keyTap(UiohookKey.V, [UiohookKey.Ctrl]);
+    }
+  };
+});
+
 vi.mock('uiohook-napi', () => ({
   uIOhook: {
     keyTap: hoisted.keyTap
@@ -78,7 +94,10 @@ vi.mock('node:fs', () => {
 
 import { pasteText, recoverClipboardIfPending } from '../src/main/inject/typer';
 
-const RESTORE_PATH = '/tmp/test-userdata/.clipboard-restore.json';
+// path.join so this matches the platform-normalized output of
+// `path.join(app.getPath('userData'), '.clipboard-restore.json')` in typer.ts
+// — otherwise Windows assertions fail on the slash direction.
+const RESTORE_PATH = path.join('/tmp/test-userdata', '.clipboard-restore.json');
 
 describe('pasteText', () => {
   beforeEach(() => {

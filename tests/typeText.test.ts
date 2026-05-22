@@ -8,12 +8,16 @@ import { typeTextDirect, __test } from '@main/inject/typeText';
 const { inputsForCodeUnit, isHighSurrogate } = __test;
 
 describe('typeTextDirect', () => {
-  it('returns false off-Windows so the caller falls back to paste', async () => {
-    // The keystroke path is Windows-only; on macOS / Linux the orchestrator
-    // must be told nothing was typed so it pastes instead.
-    expect(process.platform).not.toBe('win32');
-    await expect(typeTextDirect('hello world')).resolves.toBe(false);
-  });
+  // The keystroke path is Windows-only; on macOS / Linux the orchestrator
+  // must be told nothing was typed so it pastes instead. This expectation
+  // is meaningless on Windows where the function does the actual typing,
+  // so we skip rather than force a false `process.platform` assertion.
+  it.skipIf(process.platform === 'win32')(
+    'returns false off-Windows so the caller falls back to paste',
+    async () => {
+      await expect(typeTextDirect('hello world')).resolves.toBe(false);
+    }
+  );
 
   it('returns false for empty text', async () => {
     await expect(typeTextDirect('')).resolves.toBe(false);
