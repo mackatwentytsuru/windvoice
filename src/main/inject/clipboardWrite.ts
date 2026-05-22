@@ -37,21 +37,58 @@ const EXCLUDE_FORMAT = 'ExcludeClipboardContentFromMonitorProcessing';
  */
 let cachedExcludeFormatId: number | null = null;
 
+/** Opaque handle type for Win32 pointer returns from koffi. koffi
+ * normalises NULL pointers to JavaScript `null`, but we still keep
+ * `unknown` here and route every check through `isNullHandle` so a
+ * future koffi version that switches to an opaque NULL wrapper does
+ * not silently turn a failed alloc into a "valid" handle (HIGH-3). */
+type Handle = unknown;
+
+interface KoffiModule {
+  load: (lib: string) => { func: (proto: string) => (...args: never[]) => unknown };
+  /** koffi 3.x: returns the underlying pointer address as a bigint;
+   * 0n for NULL. Older or alternate ports may not provide this. */
+  address?: (ptr: unknown) => bigint;
+}
+
 interface Win32 {
-  OpenClipboard: (hwnd: unknown) => number;
+  OpenClipboard: (hwnd: Handle) => number;
   EmptyClipboard: () => number;
-  SetClipboardData: (fmt: number, handle: unknown) => unknown;
+  SetClipboardData: (fmt: number, handle: Handle) => Handle;
   CloseClipboard: () => number;
   RegisterClipboardFormatW: (name: string) => number;
-  GlobalAlloc: (flags: number, bytes: number) => unknown;
-  GlobalLock: (h: unknown) => unknown;
-  GlobalUnlock: (h: unknown) => number;
-  GlobalFree: (h: unknown) => unknown;
-  RtlMoveMemory: (dest: unknown, src: Buffer, len: number) => void;
+  GlobalAlloc: (flags: number, bytes: number) => Handle;
+  GlobalLock: (h: Handle) => Handle;
+  GlobalUnlock: (h: Handle) => number;
+  GlobalFree: (h: Handle) => Handle;
+  RtlMoveMemory: (dest: Handle, src: Buffer, len: number) => void;
 }
 
 let win32: Win32 | null = null;
+let koffiRef: KoffiModule | null = null;
 let loadAttempted = false;
+
+/**
+ * Defensive NULL-handle check that works across koffi releases. koffi
+ * 3.x returns `null` for a NULL pointer, but using `!h` would also be
+ * true for `0n` or `0` if a future version exposed raw addresses, and
+ * a truthy non-null object would slip through. Going through the
+ * documented `koffi.address(h) === 0n` route fixes both directions —
+ * a freed/never-allocated handle reads back as 0n, a real allocation
+ * reads back as a non-zero address. Falls back to a loose JS check
+ * when `address` is unavailable.
+ */
+function isNullHandle(h: Handle): boolean {
+  if (h === null || h === undefined) return true;
+  if (koffiRef?.address) {
+    try {
+      return koffiRef.address(h) === 0n;
+    } catch {
+      /* fall through */
+    }
+  }
+  return !h;
+}
 
 function loadWin32(): Win32 | null {
   if (loadAttempted) return win32;
@@ -59,9 +96,8 @@ function loadWin32(): Win32 | null {
   if (process.platform !== 'win32') return null;
   try {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const koffi = require('koffi') as {
-      load: (lib: string) => { func: (proto: string) => (...args: never[]) => unknown };
-    };
+    const koffi = require('koffi') as KoffiModule;
+    koffiRef = koffi;
     const user32 = koffi.load('user32.dll');
     const kernel32 = koffi.load('kernel32.dll');
     win32 = {
@@ -87,6 +123,7 @@ function loadWin32(): Win32 | null {
   } catch (err) {
     debug('DICTATION', `koffi clipboard FFI unavailable: ${err instanceof Error ? err.message : String(err)}`);
     win32 = null;
+    koffiRef = null;
   }
   return win32;
 }
@@ -94,11 +131,11 @@ function loadWin32(): Win32 | null {
 /** Copy `data` into a fresh GMEM_MOVEABLE HGLOBAL. Returns the handle, or
  *  null on failure (caller must not free a handle once SetClipboardData
  *  has accepted it — the system takes ownership). */
-function allocGlobal(w: Win32, data: Buffer): unknown | null {
+function allocGlobal(w: Win32, data: Buffer): Handle | null {
   const h = w.GlobalAlloc(GMEM_MOVEABLE, data.length);
-  if (!h) return null;
+  if (isNullHandle(h)) return null;
   const ptr = w.GlobalLock(h);
-  if (!ptr) {
+  if (isNullHandle(ptr)) {
     w.GlobalFree(h);
     return null;
   }
@@ -113,17 +150,24 @@ function allocGlobal(w: Win32, data: Buffer): unknown | null {
 /**
  * Write `text` to the Windows clipboard with the history-exclusion
  * marker. Returns true only if the whole Win32 sequence succeeded.
+ *
+ * Ownership semantics (HIGH-3): SetClipboardData(fmt, h) takes ownership
+ * of `h` on success — the OS is responsible for freeing it via
+ * subsequent EmptyClipboard / CloseClipboard. The caller must NOT call
+ * GlobalFree(h) after a successful SetClipboardData; doing so causes a
+ * heap double-free. We enforce this by setting our local handle ref to
+ * `null` immediately on a successful call, and the finally block only
+ * frees handles that are still non-null (i.e. ownership was never
+ * transferred). isNullHandle() is used everywhere instead of `!h` so
+ * a future koffi release that returns an opaque object for NULL cannot
+ * silently regress this invariant.
  */
 function writeExcludedWin32(text: string): boolean {
   const w = loadWin32();
   if (!w) return false;
   let opened = false;
-  // Handles we allocated but the OS has not yet taken ownership of. Each
-  // is nulled the moment SetClipboardData accepts it; the finally block
-  // frees whatever is left, so an alloc failure or a rejected/thrown
-  // SetClipboardData on this per-dictation hot path cannot leak.
-  let hText: unknown = null;
-  let hMark: unknown = null;
+  let hText: Handle | null = null;
+  let hMark: Handle | null = null;
   try {
     if (!w.OpenClipboard(null)) return false;
     opened = true;
@@ -131,9 +175,10 @@ function writeExcludedWin32(text: string): boolean {
 
     // CF_UNICODETEXT expects UTF-16LE terminated by a null wchar.
     hText = allocGlobal(w, Buffer.from(text + '\0', 'utf16le'));
-    if (!hText) return false;
-    if (!w.SetClipboardData(CF_UNICODETEXT, hText)) return false;
-    hText = null; // ownership transferred to the OS
+    if (hText === null) return false;
+    const setRes = w.SetClipboardData(CF_UNICODETEXT, hText);
+    if (isNullHandle(setRes)) return false; // SetClipboardData failed; finally will free hText
+    hText = null; // success: OS owns the handle now
 
     // The exclusion marker: only its presence matters, not its content.
     // LOW-7: cache the format ID; RegisterClipboardFormatW returns the
@@ -145,21 +190,24 @@ function writeExcludedWin32(text: string): boolean {
     const fmt = cachedExcludeFormatId;
     if (fmt) {
       hMark = allocGlobal(w, Buffer.from([0]));
-      if (hMark && w.SetClipboardData(fmt, hMark)) hMark = null;
+      if (hMark !== null) {
+        const markRes = w.SetClipboardData(fmt, hMark);
+        if (!isNullHandle(markRes)) hMark = null; // OS owns the marker too
+      }
     }
     return true;
   } catch (err) {
     debug('DICTATION', `excluded clipboard write failed: ${err instanceof Error ? err.message : String(err)}`);
     return false;
   } finally {
-    if (hText) {
+    if (hText !== null && !isNullHandle(hText)) {
       try {
         w.GlobalFree(hText);
       } catch {
         /* ignore */
       }
     }
-    if (hMark) {
+    if (hMark !== null && !isNullHandle(hMark)) {
       try {
         w.GlobalFree(hMark);
       } catch {
@@ -193,3 +241,21 @@ export function writeClipboardText(text: string, excludeFromHistory: boolean): v
   }
   clipboard.writeText(text);
 }
+
+/** Test-only handles for verifying HIGH-3 ownership semantics. Not part
+ *  of the public surface; consumers should call writeClipboardText. */
+export const __test = {
+  writeExcludedWin32,
+  isNullHandle,
+  resetState(): void {
+    win32 = null;
+    koffiRef = null;
+    loadAttempted = false;
+    cachedExcludeFormatId = null;
+  },
+  injectWin32(w: Win32 | null, koffi: KoffiModule | null = null): void {
+    win32 = w;
+    koffiRef = koffi;
+    loadAttempted = true;
+  }
+};
