@@ -174,7 +174,10 @@ export class DictationOrchestrator {
     }
 
     if (settings.insertion.streaming) {
-      streamingTyper.begin(settings.insertion.restoreClipboard);
+      streamingTyper.begin(
+        settings.insertion.restoreClipboard,
+        settings.insertion.pasteCompatibility
+      );
       this.streamingActive = true;
     }
 
@@ -329,7 +332,11 @@ export class DictationOrchestrator {
 
     this.broadcast(IPC.TRANSCRIPT_FINAL, processed);
     try {
-      await pasteText(processed, settings.insertion.restoreClipboard);
+      await pasteText(
+        processed,
+        settings.insertion.restoreClipboard,
+        settings.insertion.pasteCompatibility
+      );
     } catch (err) {
       debug('DICTATION', `paste failed: ${errMsg(err)}`);
     }

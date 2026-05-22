@@ -5,15 +5,15 @@ import { z } from 'zod';
 import { debug } from '@main/debug';
 import { getActiveHotkeyManager } from '@main/hotkey/manager';
 import { sendCtrlVAtomic } from '@main/inject/pasteWin32';
+import { pasteTiming, type PasteCompatibility } from '@main/inject/pasteTiming';
 
-// Mac and modern Windows process Cmd/Ctrl+V within one event-loop tick
-// (~5-15ms). Earlier values (30 / 120) were conservatively chosen
-// before live timing data; tighter constants reduce key-up-to-text
-// latency by ~110ms (H8). Slow apps (rare) can be re-tuned via a
-// future setting if a real regression surfaces.
-const SETTLE_MS = 10;
+// SETTLE / RESTORE delays are no longer fixed constants — they come from
+// the user-selectable timing profile in `pasteTiming.ts`. A previous
+// revision hard-coded an aggressive 10/50ms pair to shave latency; that
+// raced on slow targets (terminals, RDP/VM, busy apps) and pasted the
+// user's previously-copied clipboard instead of the transcript. The
+// profile lets the user pick reliability vs. latency per their setup.
 const POST_RELEASE_MS = 0;
-const RESTORE_DELAY_MS = 50;
 const RESTORE_FILE = '.clipboard-restore.json';
 /** Maximum clipboard payload we will persist for crash recovery. Larger
  * blobs (e.g. an image accidentally on the clipboard) get dropped — the
@@ -180,9 +180,14 @@ export function recoverClipboardIfPending(): void {
  *
  * Compared to per-character typing, this is faster and IME-safe.
  */
-export async function pasteText(text: string, restoreClipboard = true): Promise<void> {
+export async function pasteText(
+  text: string,
+  restoreClipboard = true,
+  compatibility: PasteCompatibility = 'balanced'
+): Promise<void> {
   if (!text) return;
 
+  const timing = pasteTiming(compatibility);
   const previous = restoreClipboard ? clipboard.readText() : null;
   if (restoreClipboard && previous !== null) {
     persistPreviousClipboard(previous);
@@ -197,7 +202,7 @@ export async function pasteText(text: string, restoreClipboard = true): Promise<
   const hkm = getActiveHotkeyManager();
   if (hkm) await hkm.untilAllModifiersUp(600);
 
-  await sleep(SETTLE_MS);
+  await sleep(timing.settleMs);
   // releaseStuckModifiers() / pasteModifier() were removed (see comment
   // block near the top of this file). The remaining ordering is:
   //   1. wait for user to physically release modifiers (untilAllModifiersUp)
@@ -234,8 +239,10 @@ export async function pasteText(text: string, restoreClipboard = true): Promise<
 
   if (restoreClipboard) {
     // Wait long enough for the receiving app to consume the paste before
-    // we put the old clipboard back.
-    await sleep(RESTORE_DELAY_MS);
+    // we put the old clipboard back. Too short here and a slow target
+    // (terminal, RDP/VM, busy app) reads the restored old clipboard —
+    // the user sees their previously-copied content pasted instead.
+    await sleep(timing.restoreDelayMs);
     try {
       if (previous !== null) {
         clipboard.writeText(previous);

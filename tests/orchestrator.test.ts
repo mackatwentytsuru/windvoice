@@ -78,7 +78,12 @@ vi.mock('@main/store/settings', () => ({
       language: 'ja',
       formatter: { model: 'gpt-5-mini', customInstructions: '', enabled: true },
       dictionary: [],
-      insertion: { method: 'paste', restoreClipboard: true },
+      insertion: {
+        method: 'paste',
+        restoreClipboard: true,
+        streaming: false,
+        pasteCompatibility: 'balanced'
+      },
       ui: {
         startMinimized: true,
         theme: 'system',
@@ -214,7 +219,7 @@ describe('DictationOrchestrator', () => {
 
     await stopP;
     expect(hoisted.instances[0]?.committed).toBe(true);
-    expect(pasteText).toHaveBeenCalledWith('hello world', true);
+    expect(pasteText).toHaveBeenCalledWith('hello world', true, 'balanced');
     expect(historyStore.add).toHaveBeenCalledWith({
       transcript: 'hello world',
       durationMs: 500
@@ -246,8 +251,8 @@ describe('DictationOrchestrator', () => {
     await stop2;
 
     expect(hoisted.instances).toHaveLength(1);
-    expect(pasteText).toHaveBeenNthCalledWith(1, 'first', true);
-    expect(pasteText).toHaveBeenNthCalledWith(2, 'second', true);
+    expect(pasteText).toHaveBeenNthCalledWith(1, 'first', true, 'balanced');
+    expect(pasteText).toHaveBeenNthCalledWith(2, 'second', true, 'balanced');
   });
 
   it('surfaces connect failures without throwing', async () => {
@@ -309,7 +314,7 @@ describe('DictationOrchestrator', () => {
     // Orchestrator returns to idle.
     expect(orch.isActive()).toBe(false);
     // The partial was used as the resolved final and pasted.
-    expect(pasteText).toHaveBeenCalledWith('partial-text', true);
+    expect(pasteText).toHaveBeenCalledWith('partial-text', true, 'balanced');
   });
 
   it('dispose() detaches all client listeners and chunk listener', async () => {
@@ -390,6 +395,6 @@ describe('DictationOrchestrator', () => {
     hoisted.instances[hoisted.instances.length - 1]!.emit('final', 'recovered');
     await stop;
 
-    expect(pasteText).toHaveBeenCalledWith('recovered', true);
+    expect(pasteText).toHaveBeenCalledWith('recovered', true, 'balanced');
   });
 });

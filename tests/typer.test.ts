@@ -96,8 +96,8 @@ describe('pasteText', () => {
 
   it('writes to clipboard, simulates paste, restores original', async () => {
     const p = pasteText('hello', true);
-    await vi.advanceTimersByTimeAsync(50); // SETTLE_MS = 30
-    await vi.advanceTimersByTimeAsync(200); // RESTORE_DELAY_MS = 120
+    await vi.advanceTimersByTimeAsync(50); // settleMs (balanced) = 25
+    await vi.advanceTimersByTimeAsync(200); // restoreDelayMs (balanced) = 180
     await p;
 
     // First write was the new text.

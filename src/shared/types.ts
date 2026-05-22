@@ -84,7 +84,15 @@ export const SettingsSchema = z.object({
         .default('paste'),
       restoreClipboard: z.boolean().default(true),
       /** When true, paste partial transcripts during recording instead of waiting for the final. */
-      streaming: z.boolean().default(false)
+      streaming: z.boolean().default(false),
+      /**
+       * Paste timing profile. Controls how long WindVoice waits for the
+       * target app to consume the synthesized Ctrl/Cmd+V before restoring
+       * the user's original clipboard. 'fast' is lowest-latency but can
+       * race on slow targets (terminals, RDP/VM, busy apps) and paste the
+       * previously-copied content instead; 'safe' maximizes reliability.
+       */
+      pasteCompatibility: z.enum(['fast', 'balanced', 'safe']).catch('balanced').default('balanced')
     })
     .default({}),
   ui: z

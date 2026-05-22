@@ -254,7 +254,28 @@ export function GeneralPage({ settings, update }: Props): JSX.Element {
           />
           <span>{t('general.streaming')}</span>
         </label>
-        <div className="helper">{t('general.streamingHelper')}</div>
+        <div className="helper" style={{ marginBottom: 8 }}>{t('general.streamingHelper')}</div>
+
+        <label className="field-label" htmlFor="paste-compat">
+          {t('general.pasteCompat')}
+        </label>
+        <select
+          id="paste-compat"
+          value={settings.insertion.pasteCompatibility}
+          onChange={(e) =>
+            void update({
+              insertion: {
+                ...settings.insertion,
+                pasteCompatibility: e.target.value as 'fast' | 'balanced' | 'safe'
+              }
+            })
+          }
+        >
+          <option value="fast">{t('general.pasteCompatFast')}</option>
+          <option value="balanced">{t('general.pasteCompatBalanced')}</option>
+          <option value="safe">{t('general.pasteCompatSafe')}</option>
+        </select>
+        <div className="helper">{t('general.pasteCompatHelper')}</div>
       </div>
 
       <div className="field" style={{ paddingTop: 12, borderTop: '1px solid var(--border)' }}>

@@ -3,9 +3,8 @@ import { debug } from '@main/debug';
 import { sendCtrlVAtomic } from '@main/inject/pasteWin32';
 // releaseStuckModifiers no longer used — see note in typer.ts.
 import { getActiveHotkeyManager } from '@main/hotkey/manager';
+import { pasteTiming, type PasteCompatibility, type PasteTiming } from '@main/inject/pasteTiming';
 
-const PASTE_INTERVAL_MS = 60;
-const SETTLE_MS = 12;
 const DEBOUNCE_MS = 80;
 const COALESCE_MAX_CHARS = 200;
 const END_MAX_WAIT_MS = 2_000;
@@ -40,9 +39,10 @@ export class StreamingTyper {
    */
   private idlePromise: Promise<void> | null = null;
   private resolveIdle: (() => void) | null = null;
+  private timing: PasteTiming = pasteTiming('balanced');
 
   /** Begin a streaming session; saves the user's current clipboard. */
-  begin(restoreClipboard: boolean): void {
+  begin(restoreClipboard: boolean, compatibility: PasteCompatibility = 'balanced'): void {
     if (this.active) {
       debug('DICTATION', 'streamingTyper.begin re-entry; ignoring');
       return;
@@ -52,6 +52,7 @@ export class StreamingTyper {
     this.flushSeq = 0;
     this.idlePromise = null;
     this.resolveIdle = null;
+    this.timing = pasteTiming(compatibility);
     this.originalClipboard = restoreClipboard ? clipboard.readText() : null;
   }
 
@@ -136,6 +137,13 @@ export class StreamingTyper {
       }
     }
     if (this.originalClipboard !== null) {
+      // Wait for the target app to consume the final chunk's paste before
+      // restoring the original clipboard. Without this margin a slow
+      // target (terminal, RDP/VM, busy app) reads the restored clipboard
+      // and the last words of the dictation are lost / replaced by the
+      // user's previously-copied content. Only needed when something was
+      // actually pasted (flushSeq > 0).
+      if (this.flushSeq > 0) await sleep(this.timing.streamRestoreDelayMs);
       try {
         clipboard.writeText(this.originalClipboard);
       } catch {
@@ -184,7 +192,7 @@ export class StreamingTyper {
           debug('DICTATION', `streaming clipboard.writeText failed: ${msg}`);
           continue;
         }
-        await sleep(SETTLE_MS);
+        await sleep(this.timing.streamSettleMs);
         // Bail if a later seq has already started; prevents stale callbacks
         // from mutating state of the next paste.
         if (seq !== this.flushSeq) continue;
@@ -212,7 +220,7 @@ export class StreamingTyper {
           const msg = err instanceof Error ? err.message : String(err);
           debug('DICTATION', `streaming paste failed: ${msg}`);
         }
-        await sleep(PASTE_INTERVAL_MS);
+        await sleep(this.timing.streamIntervalMs);
       }
     } finally {
       this.flushing = false;
