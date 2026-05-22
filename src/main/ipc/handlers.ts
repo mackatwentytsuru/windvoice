@@ -1,10 +1,11 @@
-import { ipcMain, clipboard, BrowserWindow, type IpcMainInvokeEvent } from 'electron';
+import { ipcMain, clipboard, type IpcMainInvokeEvent } from 'electron';
 import { z } from 'zod';
 import { IPC, SettingsSchema, type Settings, type HistoryEntry } from '@shared/types';
 import { API_KEY_MIN_LENGTH, API_KEY_MAX_LENGTH } from '@shared/apiKey';
 import { settingsStore } from '@main/store/settings';
 import { secureStore, SecureStoreUnavailableError } from '@main/store/secure';
 import { historyStore } from '@main/store/history';
+import { broadcastToUiWindows } from '@main/broadcast';
 
 interface ManualTriggers {
   start: () => Promise<void> | void;
@@ -75,9 +76,11 @@ export function registerIpc(triggers: ManualTriggers): void {
         } catch (err) {
           process.stderr.write(`[settings] onSettingsChanged threw: ${errMsg(err)}\n`);
         }
-        for (const win of BrowserWindow.getAllWindows()) {
-          win.webContents.send(IPC.SETTINGS_CHANGED, next);
-        }
+        // MEDIUM-6: use the shared `broadcastToUiWindows` so SETTINGS_CHANGED
+        // skips the hidden audio renderer like every other UI event does.
+        // The audio renderer has no settings UI; receiving the broadcast
+        // was pure noise (and a forced IPC payload roundtrip on each save).
+        broadcastToUiWindows(IPC.SETTINGS_CHANGED, next);
         return { ok: true, value: next };
       } catch (err) {
         return { ok: false, error: errMsg(err), code: 'E_INVALID' };

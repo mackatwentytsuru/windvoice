@@ -23,6 +23,7 @@ import { applyAutoLaunch, onAutoLaunchError } from '@main/autoLaunch';
 import { onDuckError } from '@main/audio/duck';
 import { recoverClipboardIfPending, setPasteFailureListener } from '@main/inject/typer';
 import { flushHistory } from '@main/store/history';
+import { broadcastToUiWindows, setAudioWebContentsId } from '@main/broadcast';
 import { IPC } from '@shared/types';
 import { t } from '@shared/i18n';
 
@@ -74,23 +75,10 @@ let fnWatcher: FnWatcher | null = null;
 let orchestrator: DictationOrchestrator | null = null;
 let lastAudioError: string | null = null;
 
-/**
- * Broadcast an IPC message to every UI BrowserWindow, skipping the hidden
- * audio renderer (which has no business receiving UI-state events and can
- * also be torn down/recreated independently of the windows). If `audio` is
- * not yet initialized at the time of the call, fall back to broadcasting to
- * all windows — acceptable degradation since the audio renderer simply
- * ignores channels it has not subscribed to.
- */
-function broadcastToUiWindows(channel: string, payload: unknown): void {
-  const audioWcId = audio?.getWebContentsId();
-  for (const win of BrowserWindow.getAllWindows()) {
-    if (audioWcId !== null && audioWcId !== undefined && win.webContents.id === audioWcId) {
-      continue;
-    }
-    win.webContents.send(channel, payload);
-  }
-}
+// `broadcastToUiWindows` now lives in `@main/broadcast` and is shared with
+// `@main/ipc/handlers` so SETTINGS_CHANGED skips the hidden audio renderer
+// too (MEDIUM-6). Audio's webContents id is registered once AudioBridge is
+// up (see `setAudioWebContentsId` call below).
 
 /**
  * webContents IDs that are allowed to receive a `media` (microphone) grant.
@@ -336,6 +324,10 @@ app.whenReady().then(async () => {
   await audio.init(PRELOAD_PATH);
   const audioWcId = audio.getWebContentsId();
   if (audioWcId !== null) trustedMicIds.add(audioWcId);
+  // Register the audio renderer with the shared broadcaster so every
+  // UI-bound event (including SETTINGS_CHANGED, MEDIUM-6) skips the
+  // hidden audio renderer uniformly.
+  setAudioWebContentsId(audioWcId);
   // Consolidated audio-error path. The bridge already validates the sender
   // against its owned webContents id before invoking this callback, so we
   // no longer need a parallel `ipcMain.on(AUDIO_ERROR, ...)` listener
