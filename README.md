@@ -11,11 +11,11 @@ Notepad / Chrome / VS Code / Slack / Word / ChatGPT など、任意のテキス�
 
 | 項目 | 内容 |
 |---|---|
-| 最新リリース | **v0.1.4** ([releases/tag/v0.1.4](https://github.com/mackatwentytsuru/windvoice/releases/tag/v0.1.4)) |
+| 最新リリース | **v0.1.5.1** ([releases/tag/v0.1.5.1](https://github.com/mackatwentytsuru/windvoice/releases/tag/v0.1.5.1)) |
 | 対応プラットフォーム | macOS (Apple Silicon arm64) / Windows x64 |
 | ビルド署名 | 未署名 (Gatekeeper / SmartScreen 回避手順あり) |
 | 自動更新 | macOS は opt-in / Windows は既定で有効 |
-| Unit test | 175 / 175 passed (19 files) |
+| Unit test | 203 passed / 2 skipped (23 files, 205 cases) |
 | ライセンス | MIT |
 
 セッションで解決した GitHub Issue 累計: **35件** (Closed: #2–#12, #16–#35, #37, #39, #45, #46)
@@ -29,12 +29,12 @@ Notepad / Chrome / VS Code / Slack / Word / ChatGPT など、任意のテキス�
 ```bash
 # 1. DMG をダウンロード
 curl -L -o WindVoice.dmg \
-  https://github.com/mackatwentytsuru/windvoice/releases/download/v0.1.4/WindVoice-0.1.4-arm64.dmg
+  https://github.com/mackatwentytsuru/windvoice/releases/download/v0.1.5.1/WindVoice-0.1.5.1-arm64.dmg
 
 # 2. マウントして /Applications にドラッグ (もしくは Finder から)
 hdiutil attach WindVoice.dmg
-cp -R "/Volumes/WindVoice 0.1.4-arm64/WindVoice.app" /Applications/
-hdiutil detach "/Volumes/WindVoice 0.1.4-arm64"
+cp -R "/Volumes/WindVoice 0.1.5.1-arm64/WindVoice.app" /Applications/
+hdiutil detach "/Volumes/WindVoice 0.1.5.1-arm64"
 
 # 3. 未署名なので quarantine 属性を除去
 xattr -cr /Applications/WindVoice.app
@@ -183,7 +183,7 @@ npm run dev        # electron-vite dev mode
 ### テスト・型チェック
 
 ```bash
-npm test           # vitest run (175 cases)
+npm test           # vitest run (205 cases — 203 passed, 2 skipped on Windows)
 npm run typecheck  # tsconfig.node + tsconfig.web の strict TS チェック
 ```
 
@@ -268,7 +268,7 @@ src/
 │   │                                # + system/formatter error banner
 │   └── env.d.ts
 ├── shared/{types,ipc,i18n,constants}.ts
-└── tests/                          # vitest (19 files, 175 cases)
+└── tests/                          # vitest (23 files, 205 cases)
 ```
 
 ---
