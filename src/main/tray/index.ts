@@ -187,14 +187,23 @@ function chunk(type: string, data: Buffer): Buffer {
   return Buffer.concat([len, t, data, crc]);
 }
 
-function crc32(buf: Buffer): number {
-  const table: number[] = [];
+// Module-level CRC32 lookup table — computed once at load. Previously this
+// table was rebuilt on every crc32() call (which itself only runs for the
+// fallback PNG-icon path), but keeping the construction inside the function
+// allocated 256 numbers on every chunk write. Hoisting is a strict
+// efficiency win with no behavior change.
+const CRC32_TABLE: readonly number[] = (() => {
+  const table: number[] = new Array(256);
   for (let n = 0; n < 256; n++) {
     let c = n;
     for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
     table[n] = c >>> 0;
   }
+  return table;
+})();
+
+function crc32(buf: Buffer): number {
   let crc = 0xffffffff;
-  for (let i = 0; i < buf.length; i++) crc = (table[(crc ^ buf[i]!) & 0xff]! ^ (crc >>> 8)) >>> 0;
+  for (let i = 0; i < buf.length; i++) crc = (CRC32_TABLE[(crc ^ buf[i]!) & 0xff]! ^ (crc >>> 8)) >>> 0;
   return (crc ^ 0xffffffff) >>> 0;
 }
