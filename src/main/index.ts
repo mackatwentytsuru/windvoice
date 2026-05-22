@@ -195,7 +195,28 @@ async function ensureApiKey(): Promise<void> {
   await createSettingsWindow();
 }
 
+// Single-instance guard. WindVoice is a tray app started at login; a
+// double-click on the shortcut — or the OS auto-start firing while a copy
+// is already running — must not spin up a duplicate process. A second
+// process would install its own global hotkey hook and a second tray
+// icon. The first instance holds the lock; any later launch fails the
+// lock, asks the primary to surface its settings window via the
+// 'second-instance' event, and quits immediately.
+const gotInstanceLock = app.requestSingleInstanceLock();
+if (!gotInstanceLock) {
+  app.quit();
+} else {
+  app.on('second-instance', () => {
+    void createSettingsWindow();
+  });
+}
+
 app.whenReady().then(async () => {
+  // A losing second instance can still reach here briefly before its
+  // app.quit() settles — bail so it never touches the tray, hotkeys,
+  // audio devices, or the clipboard-recovery file.
+  if (!gotInstanceLock) return;
+
   // macOS: hide the Dock icon — WindVoice is a tray-only app.
   if (process.platform === 'darwin' && app.dock) {
     app.dock.hide();

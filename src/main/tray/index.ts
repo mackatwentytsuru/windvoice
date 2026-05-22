@@ -8,12 +8,24 @@ let tray: Tray | null = null;
 let bindings: TrayBindings | null = null;
 let accessibilityWarning = false;
 
-const iconPath = (name: string): string => {
-  if (app.isPackaged) {
-    return path.join(process.resourcesPath, 'resources', name);
-  }
-  return path.join(app.getAppPath(), 'resources', name);
-};
+/**
+ * Candidate on-disk locations for a bundled resource icon.
+ *
+ * `resources/**` is listed under electron-builder `files`, so in a
+ * packaged build the icons live INSIDE `app.asar` — reachable via
+ * `app.getAppPath()` (asar-aware), NOT under `process.resourcesPath`.
+ * The previous code looked only under `process.resourcesPath/resources`
+ * when packaged, always missed, and fell back to a plain colored square
+ * (the "green square" users saw in the Windows tray). Try every
+ * plausible location and use the first that loads.
+ */
+function iconCandidates(name: string): string[] {
+  return [
+    path.join(app.getAppPath(), 'resources', name),
+    path.join(process.resourcesPath, 'resources', name),
+    path.join(process.resourcesPath, name)
+  ];
+}
 
 const STATUS_ICON: Record<DictationStatus, string> = {
   idle: 'tray-idle.png',
@@ -132,8 +144,12 @@ function refreshMenu(): void {
 }
 
 function loadIcon(name: string): Electron.NativeImage {
-  const fromFile = nativeImage.createFromPath(iconPath(name));
-  if (!fromFile.isEmpty()) return fromFile;
+  for (const candidate of iconCandidates(name)) {
+    const img = nativeImage.createFromPath(candidate);
+    if (!img.isEmpty()) return img;
+  }
+  // Last resort only — should be unreachable now that the packaged path
+  // is correct. Keeps the tray functional rather than crashing.
   return nativeImage.createFromBuffer(buildSolidPng(16, 16, 92, 200, 168));
 }
 
