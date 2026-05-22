@@ -189,7 +189,14 @@ export class StreamingTyper {
     this.armIdlePromise();
     try {
       while (this.buffer.length > 0) {
-        const seq = ++this.flushSeq;
+        // `flushSeq` is bumped per iteration so `end()` can tell whether
+        // any paste actually fired this dictation cycle (see the
+        // `if (this.flushSeq > 0)` check before the restore delay).
+        // MEDIUM-3: the previous `if (seq !== this.flushSeq) continue`
+        // guards after each await were dead — only this loop increments
+        // `flushSeq` and `flushing=true` blocks re-entry from
+        // append()'s COALESCE branch, so `seq` can never lag behind.
+        this.flushSeq++;
         const chunk = this.buffer;
         this.buffer = '';
         try {
@@ -200,15 +207,11 @@ export class StreamingTyper {
           continue;
         }
         await sleep(this.timing.streamSettleMs);
-        // Bail if a later seq has already started; prevents stale callbacks
-        // from mutating state of the next paste.
-        if (seq !== this.flushSeq) continue;
         // Wait for any user-held modifier to release. Critical when the
         // hotkey is Right Alt and the user is mid-dictation — we don't want
         // a streaming paste to fire while Alt is still being held.
         const hkm = getActiveHotkeyManager();
         if (hkm) await hkm.untilAllModifiersUp(400);
-        if (seq !== this.flushSeq) continue;
         // No phantom modifier release. sendCtrlVAtomic detects a held
         // physical Ctrl (the user's PTT key) and omits the synth Ctrl
         // press/release so the user's own Ctrl provides the modifier.
