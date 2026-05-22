@@ -75,6 +75,14 @@ export function isReasoningModel(model: string): boolean {
 // indefinitely (Map keys are strongly retained for the life of the
 // module), where heap dumps / crash reports could expose it. The hash
 // is unique per key so cache lookup is still O(1).
+//
+// MEDIUM-1: bound the cache with a small FIFO cap. The realistic usage
+// is one (current) + at most one stale key after a rotation; without a
+// cap, an unattended long-running process that rotated keys repeatedly
+// would accumulate one client + buffered HTTP keepalive sockets per
+// rotation. Map iteration order is insertion order in JS, so the oldest
+// entry is `keys().next().value`.
+const CLIENT_CACHE_MAX = 4;
 const clientCache = new Map<string, OpenAI>();
 
 function hashKey(apiKey: string): string {
@@ -85,6 +93,10 @@ function getClient(apiKey: string): OpenAI {
   const k = hashKey(apiKey);
   let client = clientCache.get(k);
   if (!client) {
+    if (clientCache.size >= CLIENT_CACHE_MAX) {
+      const oldest = clientCache.keys().next().value;
+      if (typeof oldest === 'string') clientCache.delete(oldest);
+    }
     client = new OpenAI({ apiKey });
     clientCache.set(k, client);
   }
