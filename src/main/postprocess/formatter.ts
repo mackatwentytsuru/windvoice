@@ -200,7 +200,17 @@ interface FormatterCallParams {
 
 async function callOpenAI(params: FormatterCallParams): Promise<string> {
   const client = getClient(params.apiKey);
-  const maxTokens = Math.max(MIN_OUTPUT_TOKENS, params.text.length * 2);
+  // LOW-6: the non-reasoning branch previously used `text.length * 2`,
+  // which can fall below the punctuated/expanded output budget when the
+  // input is short (e.g. a single katakana word that the formatter
+  // expands with a sentence-final 。). Add a Math.ceil(len * 1.5) + 128
+  // safety pad on top of the MIN_OUTPUT_TOKENS floor so the cap can
+  // never be smaller than the worst plausible expansion.
+  const maxTokens = Math.max(
+    MIN_OUTPUT_TOKENS,
+    params.text.length * 2,
+    Math.ceil(params.text.length * 1.5) + 128
+  );
   const reasoning = isReasoningModel(params.model);
 
   const request: OpenAI.Chat.ChatCompletionCreateParamsNonStreaming = {
