@@ -27,6 +27,16 @@ const CF_UNICODETEXT = 13;
 const GMEM_MOVEABLE = 0x0002;
 const EXCLUDE_FORMAT = 'ExcludeClipboardContentFromMonitorProcessing';
 
+/**
+ * Cached return value from `RegisterClipboardFormatW(EXCLUDE_FORMAT)`. The
+ * format ID is system-wide and stable for the life of the session, so we
+ * only need to register once. A zero value means "registration failed";
+ * we never retry (LOW-7) — a failure here is a Win32 problem that won't
+ * fix itself between dictation cycles, and re-issuing the call on every
+ * paste would just rebuild the same lookup over and over.
+ */
+let cachedExcludeFormatId: number | null = null;
+
 interface Win32 {
   OpenClipboard: (hwnd: unknown) => number;
   EmptyClipboard: () => number;
@@ -126,7 +136,13 @@ function writeExcludedWin32(text: string): boolean {
     hText = null; // ownership transferred to the OS
 
     // The exclusion marker: only its presence matters, not its content.
-    const fmt = w.RegisterClipboardFormatW(EXCLUDE_FORMAT);
+    // LOW-7: cache the format ID; RegisterClipboardFormatW returns the
+    // same value for the same name session-wide, so the per-paste call
+    // is wasted work.
+    if (cachedExcludeFormatId === null) {
+      cachedExcludeFormatId = w.RegisterClipboardFormatW(EXCLUDE_FORMAT);
+    }
+    const fmt = cachedExcludeFormatId;
     if (fmt) {
       hMark = allocGlobal(w, Buffer.from([0]));
       if (hMark && w.SetClipboardData(fmt, hMark)) hMark = null;
