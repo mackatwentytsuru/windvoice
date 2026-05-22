@@ -75,7 +75,12 @@ vi.mock('@main/store/secure', () => ({
   }
 }));
 
-import { gptFormatter, buildSystemPrompt, resetFormatterFailure } from '@main/postprocess/formatter';
+import {
+  gptFormatter,
+  buildSystemPrompt,
+  resetFormatterFailure,
+  isReasoningModel
+} from '@main/postprocess/formatter';
 
 function makeSettings(overrides: Partial<Settings> = {}): Settings {
   return {
@@ -276,5 +281,42 @@ describe('gptFormatter', () => {
     const ctx = makeCtx();
     const out = await gptFormatter.process('hello', ctx);
     expect(out).toBe('hello');
+  });
+});
+
+describe('isReasoningModel', () => {
+  // LOW-4: anchor the classification table so a future hand-rolled
+  // `startsWith()` chain (which historically caught `gpt-5x` but missed
+  // `o3-mini` if the test list grew) cannot regress silently.
+  it('matches the gpt-5 family', () => {
+    expect(isReasoningModel('gpt-5')).toBe(true);
+    expect(isReasoningModel('gpt-5-mini')).toBe(true);
+    expect(isReasoningModel('GPT-5')).toBe(true);
+  });
+
+  it('matches the o-series reasoning families', () => {
+    expect(isReasoningModel('o1')).toBe(true);
+    expect(isReasoningModel('o1-mini')).toBe(true);
+    expect(isReasoningModel('o3')).toBe(true);
+    expect(isReasoningModel('o3-mini')).toBe(true);
+    expect(isReasoningModel('o4')).toBe(true);
+    expect(isReasoningModel('o4-mini')).toBe(true);
+  });
+
+  it('does NOT match non-reasoning models', () => {
+    expect(isReasoningModel('gpt-4')).toBe(false);
+    expect(isReasoningModel('gpt-4o')).toBe(false);
+    expect(isReasoningModel('gpt-4o-mini')).toBe(false);
+    expect(isReasoningModel('gpt-3.5-turbo')).toBe(false);
+  });
+
+  it('does NOT match adjacent-but-unrelated names', () => {
+    // `o2` and `o5` aren't reasoning families; the regex must be exact.
+    expect(isReasoningModel('o2')).toBe(false);
+    expect(isReasoningModel('o5')).toBe(false);
+    // A trailing alphanumeric (no separator) must NOT count as a family
+    // member — `o123` is not o1.
+    expect(isReasoningModel('o123')).toBe(false);
+    expect(isReasoningModel('o4code')).toBe(false);
   });
 });

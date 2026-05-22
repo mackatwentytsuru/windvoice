@@ -58,10 +58,16 @@ export function setFormatterFailureListener(
  * with the default sampling temperature. Treat the gpt-5 family and the
  * o1/o3/o4 reasoning families as belonging to this group; everything else
  * (gpt-4, gpt-4o, gpt-3.5, etc.) still accepts the legacy params.
+ *
+ * The regex matches the exact family head followed by either end-of-string
+ * or `-` so `o1`/`o1-mini` match but a hypothetical `o123`/`o4code-mini`
+ * (which would be NEITHER an o-series nor a reasoning model) does not.
+ * Exported so unit tests can pin the classification table.
  */
-function isReasoningModel(model: string): boolean {
-  const m = model.toLowerCase();
-  return m.startsWith('gpt-5') || m.startsWith('o1') || m.startsWith('o3') || m.startsWith('o4');
+const REASONING_MODEL_RE = /^(?:gpt-5|o[134])(?:-|$)/;
+
+export function isReasoningModel(model: string): boolean {
+  return REASONING_MODEL_RE.test(model.toLowerCase());
 }
 
 // Cache OpenAI clients by a hash of the API key, never the raw key.
