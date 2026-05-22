@@ -176,7 +176,8 @@ export class DictationOrchestrator {
     if (settings.insertion.streaming) {
       streamingTyper.begin(
         settings.insertion.restoreClipboard,
-        settings.insertion.pasteCompatibility
+        settings.insertion.pasteCompatibility,
+        settings.insertion.excludeFromClipboardHistory
       );
       this.streamingActive = true;
     }
@@ -335,7 +336,8 @@ export class DictationOrchestrator {
       await pasteText(
         processed,
         settings.insertion.restoreClipboard,
-        settings.insertion.pasteCompatibility
+        settings.insertion.pasteCompatibility,
+        settings.insertion.excludeFromClipboardHistory
       );
     } catch (err) {
       debug('DICTATION', `paste failed: ${errMsg(err)}`);

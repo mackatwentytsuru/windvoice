@@ -293,7 +293,24 @@ export function GeneralPage({ settings, update }: Props): JSX.Element {
           <option value="balanced">{t('general.pasteCompatBalanced')}</option>
           <option value="safe">{t('general.pasteCompatSafe')}</option>
         </select>
-        <div className="helper">{t('general.pasteCompatHelper')}</div>
+        <div className="helper" style={{ marginBottom: 8 }}>{t('general.pasteCompatHelper')}</div>
+
+        <label className="row" style={{ cursor: 'pointer' }}>
+          <input
+            type="checkbox"
+            checked={settings.insertion.excludeFromClipboardHistory}
+            onChange={(e) =>
+              void update({
+                insertion: {
+                  ...settings.insertion,
+                  excludeFromClipboardHistory: e.target.checked
+                }
+              })
+            }
+          />
+          <span>{t('general.excludeClipboardHistory')}</span>
+        </label>
+        <div className="helper">{t('general.excludeClipboardHistoryHelper')}</div>
       </div>
 
       <div className="field" style={{ paddingTop: 12, borderTop: '1px solid var(--border)' }}>

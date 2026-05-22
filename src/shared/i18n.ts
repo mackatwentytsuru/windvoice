@@ -80,6 +80,9 @@ const ja: Dict = {
   'general.pasteCompatFast': '速い(低遅延)',
   'general.pasteCompatBalanced': '標準(推奨)',
   'general.pasteCompatSafe': '確実(ターミナル/リモート向け)',
+  'general.excludeClipboardHistory': 'クリップボード履歴に残さない (Windows)',
+  'general.excludeClipboardHistoryHelper':
+    '音声入力したテキストを Windows のクリップボード履歴 (Win+V) に記録しません。macOS / Linux では無効。',
   'general.system': 'システム',
   'general.autoLaunch': 'OS起動時に自動起動',
   'general.autoLaunchHelper': 'Windows / macOS のログイン時に WindVoice を自動で起動します。',
@@ -237,6 +240,9 @@ const en: Dict = {
   'general.pasteCompatFast': 'Fast (low latency)',
   'general.pasteCompatBalanced': 'Balanced (recommended)',
   'general.pasteCompatSafe': 'Safe (terminals / remote)',
+  'general.excludeClipboardHistory': 'Keep out of clipboard history (Windows)',
+  'general.excludeClipboardHistoryHelper':
+    "Don't record dictated text in the Windows clipboard history (Win+V). No effect on macOS / Linux.",
   'general.system': 'System',
   'general.autoLaunch': 'Launch on login',
   'general.autoLaunchHelper': 'Start WindVoice automatically when Windows / macOS signs in.',

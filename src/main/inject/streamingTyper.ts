@@ -4,6 +4,7 @@ import { sendCtrlVAtomic } from '@main/inject/pasteWin32';
 // releaseStuckModifiers no longer used — see note in typer.ts.
 import { getActiveHotkeyManager } from '@main/hotkey/manager';
 import { pasteTiming, type PasteCompatibility, type PasteTiming } from '@main/inject/pasteTiming';
+import { writeClipboardText } from '@main/inject/clipboardWrite';
 
 const DEBOUNCE_MS = 80;
 const COALESCE_MAX_CHARS = 200;
@@ -40,9 +41,14 @@ export class StreamingTyper {
   private idlePromise: Promise<void> | null = null;
   private resolveIdle: (() => void) | null = null;
   private timing: PasteTiming = pasteTiming('balanced');
+  private excludeHistory = false;
 
   /** Begin a streaming session; saves the user's current clipboard. */
-  begin(restoreClipboard: boolean, compatibility: PasteCompatibility = 'balanced'): void {
+  begin(
+    restoreClipboard: boolean,
+    compatibility: PasteCompatibility = 'balanced',
+    excludeFromClipboardHistory = false
+  ): void {
     if (this.active) {
       debug('DICTATION', 'streamingTyper.begin re-entry; ignoring');
       return;
@@ -53,6 +59,7 @@ export class StreamingTyper {
     this.idlePromise = null;
     this.resolveIdle = null;
     this.timing = pasteTiming(compatibility);
+    this.excludeHistory = excludeFromClipboardHistory;
     this.originalClipboard = restoreClipboard ? clipboard.readText() : null;
   }
 
@@ -145,7 +152,7 @@ export class StreamingTyper {
       // actually pasted (flushSeq > 0).
       if (this.flushSeq > 0) await sleep(this.timing.streamRestoreDelayMs);
       try {
-        clipboard.writeText(this.originalClipboard);
+        writeClipboardText(this.originalClipboard, this.excludeHistory);
       } catch {
         /* ignore */
       }
@@ -186,7 +193,7 @@ export class StreamingTyper {
         const chunk = this.buffer;
         this.buffer = '';
         try {
-          clipboard.writeText(chunk);
+          writeClipboardText(chunk, this.excludeHistory);
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
           debug('DICTATION', `streaming clipboard.writeText failed: ${msg}`);

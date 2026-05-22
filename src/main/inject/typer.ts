@@ -6,6 +6,7 @@ import { debug } from '@main/debug';
 import { getActiveHotkeyManager } from '@main/hotkey/manager';
 import { sendCtrlVAtomic } from '@main/inject/pasteWin32';
 import { pasteTiming, type PasteCompatibility } from '@main/inject/pasteTiming';
+import { writeClipboardText } from '@main/inject/clipboardWrite';
 
 // SETTLE / RESTORE delays are no longer fixed constants — they come from
 // the user-selectable timing profile in `pasteTiming.ts`. A previous
@@ -183,7 +184,8 @@ export function recoverClipboardIfPending(): void {
 export async function pasteText(
   text: string,
   restoreClipboard = true,
-  compatibility: PasteCompatibility = 'balanced'
+  compatibility: PasteCompatibility = 'balanced',
+  excludeFromClipboardHistory = false
 ): Promise<void> {
   if (!text) return;
 
@@ -192,7 +194,7 @@ export async function pasteText(
   if (restoreClipboard && previous !== null) {
     persistPreviousClipboard(previous);
   }
-  clipboard.writeText(text);
+  writeClipboardText(text, excludeFromClipboardHistory);
 
   // Wait for the user to physically release any modifier key. Synthesized
   // keyToggle('up') events alone are NOT enough — Windows re-reads the
@@ -226,7 +228,7 @@ export async function pasteText(
     notifyPasteFailed(msg);
     if (restoreClipboard) {
       try {
-        if (previous !== null) clipboard.writeText(previous);
+        if (previous !== null) writeClipboardText(previous, excludeFromClipboardHistory);
         else clipboard.clear();
       } catch (restoreErr) {
         const m = restoreErr instanceof Error ? restoreErr.message : String(restoreErr);
@@ -245,7 +247,7 @@ export async function pasteText(
     await sleep(timing.restoreDelayMs);
     try {
       if (previous !== null) {
-        clipboard.writeText(previous);
+        writeClipboardText(previous, excludeFromClipboardHistory);
       } else {
         clipboard.clear();
       }

@@ -92,7 +92,13 @@ export const SettingsSchema = z.object({
        * race on slow targets (terminals, RDP/VM, busy apps) and paste the
        * previously-copied content instead; 'safe' maximizes reliability.
        */
-      pasteCompatibility: z.enum(['fast', 'balanced', 'safe']).catch('balanced').default('balanced')
+      pasteCompatibility: z.enum(['fast', 'balanced', 'safe']).catch('balanced').default('balanced'),
+      /**
+       * Windows only: keep WindVoice's clipboard writes out of the Win+V
+       * clipboard history, so dictations don't flood the user's history.
+       * No-op on macOS / Linux.
+       */
+      excludeFromClipboardHistory: z.boolean().default(true)
     })
     .default({}),
   ui: z
