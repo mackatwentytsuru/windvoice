@@ -38,7 +38,12 @@ vi.mock('electron', () => ({
   clipboard: {
     writeText: hoisted.writeText,
     readText: hoisted.readText,
-    clear: hoisted.clearClip
+    clear: hoisted.clearClip,
+    // v0.1.5.1 LOW-1: typer.ts now consults `availableFormats()` to skip
+    // the persist/restore dance when the clipboard holds a non-text
+    // payload. The tests intentionally exercise the text path, so the
+    // default mock advertises text/plain.
+    availableFormats: vi.fn(() => ['text/plain'])
   },
   // v0.1.2: typer.ts now persists the previous clipboard via `safeStorage`
   // when available, falling back to plaintext. The tests exercise the

@@ -67,6 +67,28 @@ function restoreFilePath(): string | null {
   }
 }
 
+/**
+ * Returns true iff the OS clipboard currently has a text-format payload
+ * (LOW-1). We use `availableFormats()` rather than `readText().length > 0`
+ * because an image/file-list on the clipboard would `readText()` to '' —
+ * and we cannot restore that non-text payload through our text-only
+ * persistence path. If `availableFormats()` is unavailable for any
+ * reason, fall back to the safer behavior (assume text, preserve
+ * pre-LOW-1 semantics).
+ */
+function clipboardHasText(): boolean {
+  try {
+    const formats = clipboard.availableFormats();
+    if (!Array.isArray(formats) || formats.length === 0) {
+      // Empty clipboard — restoring '' is a harmless no-op.
+      return true;
+    }
+    return formats.some((f) => f.startsWith('text/'));
+  } catch {
+    return true;
+  }
+}
+
 function persistPreviousClipboard(text: string): void {
   const fp = restoreFilePath();
   if (!fp) return;
@@ -190,8 +212,19 @@ export async function pasteText(
   if (!text) return;
 
   const timing = pasteTiming(compatibility);
-  const previous = restoreClipboard ? clipboard.readText() : null;
-  if (restoreClipboard && previous !== null) {
+  // LOW-1: only persist + restore when the clipboard currently holds plain
+  // text. If the user had an image, a file list, or any other non-text
+  // format on the clipboard, `readText()` returns '' — and a subsequent
+  // restore would silently CLEAR that richer payload because we have no
+  // way to round-trip it through our text-only restore file. Detecting
+  // this case lets us paste the transcript without touching the original
+  // (non-text) clipboard at all.
+  const clipboardWasText = restoreClipboard ? clipboardHasText() : false;
+  if (restoreClipboard && !clipboardWasText) {
+    debug('DICTATION', 'clipboard restore skipped — non-text payload on clipboard');
+  }
+  const previous = clipboardWasText ? clipboard.readText() : null;
+  if (clipboardWasText && previous !== null) {
     persistPreviousClipboard(previous);
   }
   writeClipboardText(text, excludeFromClipboardHistory);
@@ -226,7 +259,7 @@ export async function pasteText(
     const msg = err instanceof Error ? err.message : String(err);
     process.stderr.write(`[error] paste keyTap failed: ${msg}\n`);
     notifyPasteFailed(msg);
-    if (restoreClipboard) {
+    if (clipboardWasText) {
       try {
         if (previous !== null) writeClipboardText(previous, excludeFromClipboardHistory);
         else clipboard.clear();
@@ -239,7 +272,7 @@ export async function pasteText(
     return;
   }
 
-  if (restoreClipboard) {
+  if (clipboardWasText) {
     // Wait long enough for the receiving app to consume the paste before
     // we put the old clipboard back. Too short here and a slow target
     // (terminal, RDP/VM, busy app) reads the restored old clipboard —
