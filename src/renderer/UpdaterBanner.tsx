@@ -14,7 +14,14 @@ export function UpdaterBanner(): JSX.Element | null {
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
-    void window.windvoice.getUpdaterState().then(setState);
+    // On an unsigned macOS build the auto-updater is never initialized,
+    // so its IPC handlers are not registered and this invoke rejects.
+    // Swallow it: the banner simply stays idle (renders nothing) rather
+    // than producing an unhandled promise rejection on every open.
+    void window.windvoice
+      .getUpdaterState()
+      .then(setState)
+      .catch(() => undefined);
     const off = window.windvoice.onUpdaterState((s) => {
       setState(s);
       setBusy(false);
