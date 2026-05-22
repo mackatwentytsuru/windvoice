@@ -1,6 +1,7 @@
 import { ipcMain, clipboard, BrowserWindow, type IpcMainInvokeEvent } from 'electron';
 import { z } from 'zod';
 import { IPC, SettingsSchema, type Settings, type HistoryEntry } from '@shared/types';
+import { API_KEY_MIN_LENGTH, API_KEY_MAX_LENGTH } from '@shared/apiKey';
 import { settingsStore } from '@main/store/settings';
 import { secureStore, SecureStoreUnavailableError } from '@main/store/secure';
 import { historyStore } from '@main/store/history';
@@ -18,7 +19,11 @@ export type IpcResult<T> =
   | { ok: false; error: string; code?: string };
 
 const HistoryRemoveSchema = z.object({ id: z.string().min(1).max(128) });
-const ApiKeySchema = z.string().min(10).max(512);
+// Length bounds come from the shared `@shared/apiKey` module so the IPC
+// boundary and the keytar-backed SecureStore.setApiKey check cannot drift
+// (LOW-3). Keeping them centralized also makes a future format tweak a
+// single-source-of-truth edit.
+const ApiKeySchema = z.string().min(API_KEY_MIN_LENGTH).max(API_KEY_MAX_LENGTH);
 const ClipboardWriteMaxBytes = 1_000_000;
 
 let trustedSettingsSenderId: number | null = null;

@@ -1,5 +1,6 @@
 import keytar from 'keytar';
 import { debug } from '@main/debug';
+import { isValidApiKey } from '@shared/apiKey';
 
 const SERVICE = 'WindVoice';
 const ACCOUNT = 'openai-api-key';
@@ -29,10 +30,10 @@ export class SecureStore {
   }
 
   async setApiKey(value: string): Promise<void> {
-    const trimmed = typeof value === 'string' ? value.trim() : '';
-    if (trimmed.length < 10 || trimmed.length > 512) {
+    if (!isValidApiKey(value)) {
       throw new Error('API key looks invalid');
     }
+    const trimmed = value.trim();
     try {
       await keytar.setPassword(SERVICE, ACCOUNT, trimmed);
     } catch (err) {
