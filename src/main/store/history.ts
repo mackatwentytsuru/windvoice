@@ -84,6 +84,16 @@ class HistoryStore {
   private cache: HistoryEntry[];
   private flushTimer: ReturnType<typeof setTimeout> | null = null;
   private dirty = false;
+  /**
+   * MEDIUM-5: when `flushSync` throws (transient EBUSY on Windows
+   * because an antivirus is scanning the JSON, ENOSPC, etc.), the
+   * previous code left `dirty=true` so the NEXT add/remove would
+   * retry — but if the user never dictated again, that pending data
+   * stayed unwritten forever. Schedule a single deferred retry so the
+   * cached delta lands on disk even when activity has gone quiet.
+   */
+  private retryTimer: ReturnType<typeof setTimeout> | null = null;
+  private static readonly RETRY_DELAY_MS = 5_000;
 
   constructor() {
     this.store = new Store<HistoryShape>({
@@ -169,9 +179,25 @@ class HistoryStore {
       // in-memory cache would diverge from disk permanently (next add /
       // remove sets dirty=true but the failed entry is also dirty=false).
       this.dirty = false;
+      if (this.retryTimer !== null) {
+        clearTimeout(this.retryTimer);
+        this.retryTimer = null;
+      }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       debug('DICTATION', `history flush failed: ${msg}`);
+      // MEDIUM-5: schedule a deferred retry so the dirty cache eventually
+      // reaches disk even if no further add/remove triggers a new flush
+      // (an antivirus EBUSY can persist for several seconds). Only one
+      // retry is in flight at a time; the next failed flush re-arms it.
+      // The timer is unref()'d so a pending retry never blocks app quit.
+      if (this.retryTimer === null) {
+        this.retryTimer = setTimeout(() => {
+          this.retryTimer = null;
+          this.flushSync();
+        }, HistoryStore.RETRY_DELAY_MS);
+        if (typeof this.retryTimer.unref === 'function') this.retryTimer.unref();
+      }
     }
   }
 
@@ -179,6 +205,10 @@ class HistoryStore {
     if (this.flushTimer !== null) {
       clearTimeout(this.flushTimer);
       this.flushTimer = null;
+    }
+    if (this.retryTimer !== null) {
+      clearTimeout(this.retryTimer);
+      this.retryTimer = null;
     }
     this.flushSync();
   }
