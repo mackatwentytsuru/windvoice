@@ -75,6 +75,25 @@ export class RealtimeClient extends EventEmitter {
     } as WebSocket.ClientOptions;
     this.ws = new WebSocket(url, wsOpts);
 
+    // MEDIUM-7: `dispose()` may run between the `new WebSocket(...)` call
+    // and the first listener attachment below (e.g. the orchestrator
+    // tears down mid-reconnect because the user revoked the API key).
+    // Re-check `disposed` immediately after constructing the socket so a
+    // mid-build dispose leaves no live socket holding the API-key header
+    // in flight. Without this guard the WS handshake would complete
+    // against a torn-down client and ws-level events would land on a
+    // detached EventEmitter.
+    if (this.disposed) {
+      const stillborn = this.ws;
+      this.ws = null;
+      try {
+        stillborn.terminate();
+      } catch {
+        /* ignore */
+      }
+      throw new Error('client disposed during reconnect');
+    }
+
     return new Promise<void>((resolve, reject) => {
       const ws = this.ws!;
       const onceOpen = (): void => {
