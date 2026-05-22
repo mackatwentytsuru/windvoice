@@ -108,31 +108,48 @@ function writeExcludedWin32(text: string): boolean {
   const w = loadWin32();
   if (!w) return false;
   let opened = false;
+  // Handles we allocated but the OS has not yet taken ownership of. Each
+  // is nulled the moment SetClipboardData accepts it; the finally block
+  // frees whatever is left, so an alloc failure or a rejected/thrown
+  // SetClipboardData on this per-dictation hot path cannot leak.
+  let hText: unknown = null;
+  let hMark: unknown = null;
   try {
     if (!w.OpenClipboard(null)) return false;
     opened = true;
     w.EmptyClipboard();
 
     // CF_UNICODETEXT expects UTF-16LE terminated by a null wchar.
-    const hText = allocGlobal(w, Buffer.from(text + '\0', 'utf16le'));
+    hText = allocGlobal(w, Buffer.from(text + '\0', 'utf16le'));
     if (!hText) return false;
-    if (!w.SetClipboardData(CF_UNICODETEXT, hText)) {
-      // SetClipboardData rejected the handle — ownership stayed with us.
-      w.GlobalFree(hText);
-      return false;
-    }
+    if (!w.SetClipboardData(CF_UNICODETEXT, hText)) return false;
+    hText = null; // ownership transferred to the OS
 
     // The exclusion marker: only its presence matters, not its content.
     const fmt = w.RegisterClipboardFormatW(EXCLUDE_FORMAT);
     if (fmt) {
-      const hMark = allocGlobal(w, Buffer.from([0]));
-      if (hMark && !w.SetClipboardData(fmt, hMark)) w.GlobalFree(hMark);
+      hMark = allocGlobal(w, Buffer.from([0]));
+      if (hMark && w.SetClipboardData(fmt, hMark)) hMark = null;
     }
     return true;
   } catch (err) {
     debug('DICTATION', `excluded clipboard write failed: ${err instanceof Error ? err.message : String(err)}`);
     return false;
   } finally {
+    if (hText) {
+      try {
+        w.GlobalFree(hText);
+      } catch {
+        /* ignore */
+      }
+    }
+    if (hMark) {
+      try {
+        w.GlobalFree(hMark);
+      } catch {
+        /* ignore */
+      }
+    }
     if (opened) {
       try {
         w.CloseClipboard();

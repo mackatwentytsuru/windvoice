@@ -64,6 +64,14 @@ function inputsForCodeUnit(cu: number): KBDInput[] {
   ];
 }
 
+/** UTF-16 high surrogate — the first half of a code point above U+FFFF. */
+function isHighSurrogate(cu: number): boolean {
+  return cu >= 0xd800 && cu <= 0xdbff;
+}
+
+/** Exported for unit testing — see tests/typeText.test.ts. */
+export const __test = { inputsForCodeUnit, isHighSurrogate };
+
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -97,7 +105,12 @@ export async function typeTextDirect(text: string): Promise<boolean> {
       if (cu === 0x0d) continue; // drop CR; LF below becomes a real Enter
       batch.push(...inputsForCodeUnit(cu));
       charsInBatch++;
-      if (charsInBatch >= BATCH_CHARS) {
+      // Flush full batches — but never between the two halves of a
+      // surrogate pair. KEYEVENTF_UNICODE reassembles a surrogate pair
+      // only when both code units arrive adjacently; splitting them
+      // across two SendInput calls (with the inter-batch sleep) would
+      // break the character.
+      if (charsInBatch >= BATCH_CHARS && !isHighSurrogate(cu)) {
         mod.SendInput(batch);
         sentAny = true;
         batch = [];
@@ -109,7 +122,9 @@ export async function typeTextDirect(text: string): Promise<boolean> {
       mod.SendInput(batch);
       sentAny = true;
     }
-    return true;
+    // `sentAny` is false only when the text was empty after dropping CRs;
+    // returning false lets the caller fall back to a paste in that case.
+    return sentAny;
   } catch (err) {
     debug('DICTATION', `type-mode SendInput failed: ${err instanceof Error ? err.message : String(err)}`);
     // If keystrokes already landed, report success so the caller does not

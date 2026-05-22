@@ -37,7 +37,10 @@ export function UpdaterBanner(): JSX.Element | null {
       label: t('general.updateDownload'),
       run: () => {
         setBusy(true);
-        void window.windvoice.downloadUpdate();
+        // Clear `busy` when the call settles even if no further state
+        // broadcast arrives (a rejected promise / dropped event would
+        // otherwise leave the button disabled forever).
+        void window.windvoice.downloadUpdate().finally(() => setBusy(false));
       }
     };
   } else if (state.phase === 'downloading') {
@@ -48,7 +51,7 @@ export function UpdaterBanner(): JSX.Element | null {
       label: t('general.updateRestart'),
       run: () => {
         setBusy(true);
-        void window.windvoice.restartToUpdate();
+        void window.windvoice.restartToUpdate().finally(() => setBusy(false));
       }
     };
   } else if (state.phase === 'error') {
