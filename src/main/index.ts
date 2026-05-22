@@ -423,7 +423,10 @@ app.whenReady().then(async () => {
 });
 
 app.on('window-all-closed', () => {
-  /* stay alive in tray */
+  // WindVoice is a tray-resident dictation app: closing the Settings window
+  // (or any other transient UI window) MUST NOT quit the process. The tray
+  // icon, the global hotkey hook, and the persistent Realtime connection
+  // all need to stay alive until the user explicitly chooses Tray → Quit.
 });
 
 app.on('before-quit', () => {
