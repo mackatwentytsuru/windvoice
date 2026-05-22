@@ -104,15 +104,21 @@ function getClient(apiKey: string): OpenAI {
 }
 
 /**
- * Escape values interpolated into the system prompt so a malicious or
- * accidentally-pasted dictionary entry / custom-instruction value cannot
- * break out of the surrounding bullet-list + double-quoted-string context
- * and inject new directives (issue #31). We do not truncate length — just
- * neutralize the characters that could terminate a line or a quoted span.
+ * Escape values interpolated into the system prompt so an attacker-controlled
+ * string (active-window title, OS-derived process name, third-party-derived
+ * dictionary entry) cannot break out of the surrounding bullet-list +
+ * double-quoted-string context and inject new directives (issue #31). We do
+ * not truncate length — just neutralize the characters that could terminate
+ * a line or a quoted span.
  *
- * Exported so any other code path that interpolates external/system-derived
- * strings (e.g. active-window titles, OS-derived process names) into LLM
- * prompts can apply the same escape rules — see issue #35.
+ * MEDIUM-2 — trust boundary: this helper is for UNTRUSTED inputs only.
+ * `customInstructions` and `appProfiles[].instructions` are typed by the
+ * USER into their own Settings window; they are deliberately allowed to
+ * include multi-line text, bullet lists, and quoted examples. Treating
+ * them as untrusted would force the user to escape their own newlines.
+ * Anything coming from outside the Settings window (active-window titles,
+ * dictionary entries that might be shared via export/import) MUST still
+ * pass through this helper before reaching the prompt.
  */
 export function sanitizePromptValue(v: string): string {
   return v
@@ -182,11 +188,19 @@ export function buildSystemPrompt(
     }
   }
 
+  // MEDIUM-2: customInstructions and appProfiles[].instructions are
+  // user-typed within the Settings window — inside the trust boundary —
+  // so they are passed through to the LLM verbatim. The user is allowed
+  // to embed newlines, bullets, and quoted examples in their own
+  // formatter instructions; sanitizing those would force them to escape
+  // their own input. Anything originating outside the Settings UI
+  // (window titles, third-party-imported dictionary entries) must still
+  // go through `sanitizePromptValue` before reaching the prompt.
   const custom = settings.formatter?.customInstructions?.trim() ?? '';
   if (custom.length > 0) {
     lines.push('');
     lines.push('Additional user instructions (follow these unless they conflict with the strict rules above):');
-    lines.push(sanitizePromptValue(custom));
+    lines.push(custom);
   }
 
   const profile = matchAppProfile(settings, activeWindowApp);
@@ -196,7 +210,7 @@ export function buildSystemPrompt(
     lines.push(
       'App-specific instructions for the application the user is currently dictating into (follow these unless they conflict with the strict rules above):'
     );
-    lines.push(sanitizePromptValue(profileInstructions));
+    lines.push(profileInstructions);
   }
 
   return lines.join('\n');
