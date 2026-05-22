@@ -50,8 +50,28 @@ export const IPC = {
   FORMATTER_ERROR: 'formatter:error',
   // misc system errors that the Settings UI should display inline
   // (e.g. autoLaunch refused by the OS, duck failed to restore volume)
-  SYSTEM_ERROR: 'system:error'
+  SYSTEM_ERROR: 'system:error',
+  // auto-updater (renderer ↔ main)
+  UPDATER_CHECK: 'updater:check',
+  UPDATER_DOWNLOAD: 'updater:download',
+  UPDATER_RESTART: 'updater:restart',
+  UPDATER_STATE: 'updater:state',
+  UPDATER_LAST_STATE: 'updater:lastState'
 } as const;
+
+/**
+ * Auto-updater lifecycle state, broadcast from main → renderer on every
+ * transition. Defined here (zod-free) so both the preload bridge and the
+ * renderer UI can import it without pulling in main-process modules.
+ */
+export type UpdaterState =
+  | { phase: 'idle' }
+  | { phase: 'checking' }
+  | { phase: 'available'; version: string }
+  | { phase: 'not-available' }
+  | { phase: 'downloading'; percent: number }
+  | { phase: 'downloaded'; version: string }
+  | { phase: 'error'; message: string };
 
 export interface FormatterErrorPayload {
   code: string;

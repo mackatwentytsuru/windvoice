@@ -8,22 +8,9 @@ import pkg from 'electron-updater';
 import { debug } from '@main/debug';
 import { settingsStore } from '@main/store/settings';
 import { refuseUntrusted } from '@main/ipc/handlers';
+import { IPC, type UpdaterState } from '@shared/ipc';
 
 const { autoUpdater } = pkg;
-
-const CHECK_CHANNEL = 'updater:check';
-const STATE_CHANNEL = 'updater:state';
-const RESTART_CHANNEL = 'updater:restart';
-const LAST_STATE_CHANNEL = 'updater:lastState';
-
-export type UpdaterState =
-  | { phase: 'idle' }
-  | { phase: 'checking' }
-  | { phase: 'available'; version: string }
-  | { phase: 'not-available' }
-  | { phase: 'downloading'; percent: number }
-  | { phase: 'downloaded'; version: string }
-  | { phase: 'error'; message: string };
 
 let lastState: UpdaterState = { phase: 'idle' };
 let initialized = false;
@@ -53,7 +40,7 @@ export function notifyDictationIdle(): void {
 function broadcast(state: UpdaterState): void {
   lastState = state;
   for (const win of BrowserWindow.getAllWindows()) {
-    win.webContents.send(STATE_CHANNEL, state);
+    win.webContents.send(IPC.UPDATER_STATE, state);
   }
 }
 
@@ -85,17 +72,15 @@ export function initAutoUpdater(): void {
   // Supply-chain hardening (issue #11): the build is unsigned on both
   // macOS (identity: null) and Windows (signtoolOptions: null), so anyone
   // who gains push access to the GitHub release could ship arbitrary code
-  // to existing users on next launch. Disable autoDownload entirely until
-  // signing/notarization is set up — `update-available` still broadcasts
-  // to the renderer, which can offer an explicit "Update now" button.
+  // to existing users on next launch. autoDownload stays OFF so a check
+  // never pulls a binary on its own — `update-available` only broadcasts
+  // to the renderer, which surfaces an explicit "Update now" button. The
+  // download is started solely by the UPDATER_DOWNLOAD IPC, i.e. only on
+  // a deliberate user click.
   //
-  // autoInstallOnAppQuit MUST also stay false: otherwise the renderer-side
-  // "Update now" path could download a binary and electron-updater would
-  // silently install it during the next graceful quit, defeating the
-  // explicit-consent model. Until we have code signing and notarization
-  // wired up, the user must opt in to every install via an explicit
-  // restart action driven by the renderer "Update now" UI (deferred —
-  // not implemented in this change set).
+  // autoInstallOnAppQuit MUST also stay false so a downloaded update is
+  // never silently installed during a graceful quit — every install goes
+  // through the explicit UPDATER_RESTART action.
   autoUpdater.autoDownload = false;
   autoUpdater.autoInstallOnAppQuit = false;
   // Route update lifecycle events to the project debug() helper instead
@@ -129,7 +114,7 @@ export function initAutoUpdater(): void {
     broadcast({ phase: 'error', message: err.message })
   );
 
-  ipcMain.handle(CHECK_CHANNEL, async (event) => {
+  ipcMain.handle(IPC.UPDATER_CHECK, async (event) => {
     const refusal = refuseUntrusted(event);
     if (refusal) return refusal;
     try {
@@ -141,7 +126,22 @@ export function initAutoUpdater(): void {
     return lastState;
   });
 
-  ipcMain.handle(RESTART_CHANNEL, (event) => {
+  ipcMain.handle(IPC.UPDATER_DOWNLOAD, async (event) => {
+    const refusal = refuseUntrusted(event);
+    if (refusal) return refusal;
+    // Only reachable from the trusted settings window, and only after an
+    // `update-available` broadcast — i.e. a deliberate "Update now" click.
+    try {
+      broadcast({ phase: 'downloading', percent: 0 });
+      await autoUpdater.downloadUpdate();
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      broadcast({ phase: 'error', message: msg });
+    }
+    return lastState;
+  });
+
+  ipcMain.handle(IPC.UPDATER_RESTART, (event) => {
     const refusal = refuseUntrusted(event);
     if (refusal) return refusal;
     if (dictationActiveCheck && dictationActiveCheck()) {
@@ -154,7 +154,7 @@ export function initAutoUpdater(): void {
     autoUpdater.quitAndInstall(false, true);
     return { deferred: false };
   });
-  ipcMain.handle(LAST_STATE_CHANNEL, (event) => {
+  ipcMain.handle(IPC.UPDATER_LAST_STATE, (event) => {
     const refusal = refuseUntrusted(event);
     if (refusal) return refusal;
     return lastState;

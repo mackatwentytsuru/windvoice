@@ -9,7 +9,8 @@ import {
   type DictationStatus,
   type HistoryEntry,
   type OverlayState,
-  type BeepKind
+  type BeepKind,
+  type UpdaterState
 } from '../shared/ipc';
 
 type IpcResult<T> =
@@ -59,6 +60,21 @@ function isOverlayState(v: unknown): v is OverlayState {
   if (!v || typeof v !== 'object') return false;
   const o = v as { status?: unknown; level?: unknown };
   return isDictationStatus(o.status) && typeof o.level === 'number';
+}
+
+const UPDATER_PHASES: ReadonlySet<string> = new Set([
+  'idle',
+  'checking',
+  'available',
+  'not-available',
+  'downloading',
+  'downloaded',
+  'error'
+]);
+
+function isUpdaterState(v: unknown): v is UpdaterState {
+  if (!v || typeof v !== 'object') return false;
+  return UPDATER_PHASES.has((v as { phase?: unknown }).phase as string);
 }
 
 function isHistoryEntry(v: unknown): v is HistoryEntry {
@@ -164,6 +180,26 @@ const api = {
     const handler = (_e: unknown, s: Settings): void => cb(s);
     ipcRenderer.on(IPC.SETTINGS_CHANGED, handler);
     return () => ipcRenderer.removeListener(IPC.SETTINGS_CHANGED, handler);
+  },
+
+  // auto-updater. check/download/restart are gated to the trusted settings
+  // window in main; they resolve to the latest UpdaterState (or a refusal
+  // object, which the trusted settings window never triggers).
+  checkForUpdate: (): Promise<UpdaterState> => ipcRenderer.invoke(IPC.UPDATER_CHECK),
+  downloadUpdate: (): Promise<UpdaterState> => ipcRenderer.invoke(IPC.UPDATER_DOWNLOAD),
+  restartToUpdate: (): Promise<{ deferred: boolean }> =>
+    ipcRenderer.invoke(IPC.UPDATER_RESTART),
+  getUpdaterState: (): Promise<UpdaterState> => ipcRenderer.invoke(IPC.UPDATER_LAST_STATE),
+  onUpdaterState: (cb: (s: UpdaterState) => void): (() => void) => {
+    const handler = (_e: unknown, s: unknown): void => {
+      if (!isUpdaterState(s)) {
+        console.error('[preload] dropped UPDATER_STATE with invalid payload', s);
+        return;
+      }
+      cb(s);
+    };
+    ipcRenderer.on(IPC.UPDATER_STATE, handler);
+    return () => ipcRenderer.removeListener(IPC.UPDATER_STATE, handler);
   }
 };
 

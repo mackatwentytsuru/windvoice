@@ -6,6 +6,7 @@ import { HotkeysPage } from './pages/Hotkeys';
 import { DictionaryPage } from './pages/Dictionary';
 import { ReplacementsPage } from './pages/Replacements';
 import { HistoryPage } from './pages/History';
+import { UpdaterBanner } from './UpdaterBanner';
 
 type Tab = 'general' | 'hotkeys' | 'dictionary' | 'replacements' | 'history';
 
@@ -156,6 +157,7 @@ export function App(): JSX.Element {
         </nav>
       </aside>
       <main className="main" role="tabpanel" aria-label={tabLabels[tab]}>
+        <UpdaterBanner />
         {banner && (
           <div
             role="alert"

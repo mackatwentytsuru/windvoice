@@ -20,6 +20,24 @@ export function GeneralPage({ settings, update }: Props): JSX.Element {
   const [testError, setTestError] = useState<string | null>(null);
   const [devices, setDevices] = useState<AudioInputDevice[]>([]);
   const [deviceError, setDeviceError] = useState<string | null>(null);
+  const [updateMsg, setUpdateMsg] = useState<string | null>(null);
+  const [checkingUpdate, setCheckingUpdate] = useState(false);
+
+  async function checkForUpdate(): Promise<void> {
+    setCheckingUpdate(true);
+    setUpdateMsg(t('general.updateChecking'));
+    try {
+      const s = await window.windvoice.checkForUpdate();
+      if (s.phase === 'not-available') setUpdateMsg(t('general.updateUpToDate'));
+      else if (s.phase === 'available') setUpdateMsg(`${t('general.updateAvailable')} (v${s.version})`);
+      else if (s.phase === 'error') setUpdateMsg(`${t('general.updateError')}: ${s.message}`);
+      else setUpdateMsg(null);
+    } catch (err) {
+      setUpdateMsg(`${t('general.updateError')}: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setCheckingUpdate(false);
+    }
+  }
 
   useEffect(() => {
     void window.windvoice.hasApiKey().then(setHasKey);
@@ -302,7 +320,15 @@ export function GeneralPage({ settings, update }: Props): JSX.Element {
           />
           <span>{t('general.autoUpdate')}</span>
         </label>
-        <div className="helper">{t('general.autoUpdateHelper')}</div>
+        <div className="helper" style={{ marginBottom: 8 }}>{t('general.autoUpdateHelper')}</div>
+        <div className="row">
+          <button onClick={() => void checkForUpdate()} disabled={checkingUpdate}>
+            {t('general.checkForUpdate')}
+          </button>
+          {updateMsg && (
+            <span className="helper" style={{ marginTop: 0 }}>{updateMsg}</span>
+          )}
+        </div>
       </div>
 
       <div className="field" style={{ marginTop: 24, paddingTop: 16, borderTop: '1px solid var(--border)' }}>

@@ -7,6 +7,7 @@ import type {
   OverlayState,
   BeepKind
 } from '../shared/types';
+import type { UpdaterState } from '../shared/ipc';
 
 declare module '*?raw' {
   const content: string;
@@ -38,6 +39,11 @@ declare global {
       onHistoryChanged(cb: (entry: HistoryEntry) => void): () => void;
       copyText(text: string): Promise<void>;
       onSettingsChanged(cb: (s: Settings) => void): () => void;
+      checkForUpdate(): Promise<UpdaterState>;
+      downloadUpdate(): Promise<UpdaterState>;
+      restartToUpdate(): Promise<{ deferred: boolean }>;
+      getUpdaterState(): Promise<UpdaterState>;
+      onUpdaterState(cb: (s: UpdaterState) => void): () => void;
     };
     audio: {
       ready(): void;
