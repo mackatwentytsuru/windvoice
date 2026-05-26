@@ -165,8 +165,14 @@ export class RealtimeClient extends EventEmitter {
           format: { type: 'audio/pcm', rate: 24_000 },
           transcription: {
             model,
-            ...(this.opts.language ? { language: this.opts.language } : {}),
-            ...(this.opts.prompt ? { prompt: this.opts.prompt } : {})
+            ...(this.opts.language ? { language: this.opts.language } : {})
+            // Note: `prompt` was previously sent as a biasing hint built from
+            // the user dictionary. As of 2026-05-26, OpenAI's Realtime API
+            // returns `"The 'prompt' parameter is not supported for this
+            // model."` and aborts the session immediately after `session.created`.
+            // The dictionary is still applied downstream in the gpt-5-mini
+            // formatter step (postprocess/formatter.ts), so the final paste
+            // remains corrected — only the realtime biasing was lost.
           },
           turn_detection: this.opts.vadEnabled
             ? {
