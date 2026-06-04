@@ -76,7 +76,7 @@ function restoreFilePath(): string | null {
  * reason, fall back to the safer behavior (assume text, preserve
  * pre-LOW-1 semantics).
  */
-function clipboardHasText(): boolean {
+export function clipboardHasText(): boolean {
   try {
     const formats = clipboard.availableFormats();
     if (!Array.isArray(formats) || formats.length === 0) {

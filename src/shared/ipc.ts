@@ -39,6 +39,11 @@ export const IPC = {
   // while the user is not actively dictating (issue #7).
   AUDIO_SUSPEND_CMD: 'audio:suspend',
   AUDIO_RESUME_CMD: 'audio:resume',
+  // Tear down and re-acquire the microphone stream. Fired after the OS
+  // resumes from sleep (powerMonitor 'resume') or when the active capture
+  // track dies — the existing MediaStreamTrack goes silent/ended and must
+  // be replaced or the spectrogram + dictation receive only silence.
+  AUDIO_RECOVER_CMD: 'audio:recover',
   // overlay / level / beep
   AUDIO_LEVEL: 'audio:level',
   BEEP_PLAY: 'beep:play',

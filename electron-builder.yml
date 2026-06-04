@@ -28,7 +28,9 @@ win:
     - target: nsis
       arch:
         - x64
-  icon: resources/icon.ico
+  # Point at the 1024×1024 PNG (no .ico is committed). electron-builder
+  # auto-generates a multi-resolution .ico from it for the exe + installer.
+  icon: resources/icon.png
   artifactName: WindVoice-Setup-${version}-${arch}.${ext}
   # Skip signtool/osslsigncode altogether — we don't sign personal builds.
   signtoolOptions: null

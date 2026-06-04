@@ -5,6 +5,7 @@ import { sendCtrlVAtomic } from '@main/inject/pasteWin32';
 import { getActiveHotkeyManager } from '@main/hotkey/manager';
 import { pasteTiming, type PasteCompatibility, type PasteTiming } from '@main/inject/pasteTiming';
 import { writeClipboardText } from '@main/inject/clipboardWrite';
+import { clipboardHasText } from '@main/inject/typer';
 
 const DEBOUNCE_MS = 80;
 const COALESCE_MAX_CHARS = 200;
@@ -60,7 +61,13 @@ export class StreamingTyper {
     this.resolveIdle = null;
     this.timing = pasteTiming(compatibility);
     this.excludeHistory = excludeFromClipboardHistory;
-    this.originalClipboard = restoreClipboard ? clipboard.readText() : null;
+    // Only snapshot the clipboard for restore when it holds TEXT. If the user
+    // has an image or file list copied, `readText()` returns '' — restoring
+    // that at end() would silently wipe their non-text clipboard. In that
+    // case we skip restore (originalClipboard stays null) rather than destroy
+    // their data. Mirrors the non-streaming guard in typer.ts (LOW-1).
+    this.originalClipboard =
+      restoreClipboard && clipboardHasText() ? clipboard.readText() : null;
   }
 
   /**

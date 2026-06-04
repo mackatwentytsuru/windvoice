@@ -13,6 +13,25 @@ let source: MediaStreamAudioSourceNode | null = null;
 let workletUrl: string | null = null;
 let currentDeviceId: string | null = null;
 let beepCtx: AudioContext | null = null;
+// Guards against overlapping recoveries: a sleep/resume can fire the power
+// monitor AND a `track.ended` event almost simultaneously, and each would
+// otherwise kick off its own stop→start cycle.
+let recovering = false;
+
+/**
+ * When the OS suspends/resumes (sleep, audio device reset, headset unplug),
+ * the live MediaStreamTrack goes to `ended`/`muted` and never recovers on its
+ * own — the worklet keeps running on a dead track, so the meter freezes and
+ * dictation captures only silence. Watch the track and rebuild on loss.
+ */
+function watchTrackHealth(stream: MediaStream): void {
+  for (const track of stream.getAudioTracks()) {
+    track.addEventListener('ended', () => {
+      window.audio.reportError('mic track ended — re-acquiring');
+      void recapture();
+    });
+  }
+}
 
 async function startCapture(deviceId?: string): Promise<void> {
   if (audioCtx) return;
@@ -28,6 +47,7 @@ async function startCapture(deviceId?: string): Promise<void> {
     };
     mediaStream = await navigator.mediaDevices.getUserMedia(constraints);
     currentDeviceId = deviceId ?? null;
+    watchTrackHealth(mediaStream);
     audioCtx = new AudioContext();
     if (!workletUrl) {
       const blob = new Blob([workletSource], { type: 'application/javascript' });
@@ -113,6 +133,35 @@ async function restartWithDevice(deviceId: string): Promise<void> {
   await startCapture(deviceId);
 }
 
+/**
+ * Rebuild the capture graph from scratch, preserving the selected device.
+ * Triggered by the main process after the OS resumes from sleep, and by the
+ * `track.ended` watcher. If the previously selected device has vanished
+ * (e.g. an unplugged USB mic), fall back to the system default rather than
+ * leaving the user with no working microphone.
+ */
+async function recapture(): Promise<void> {
+  if (recovering) return;
+  recovering = true;
+  const device = currentDeviceId ?? undefined;
+  try {
+    await stopCapture();
+    try {
+      await startCapture(device);
+    } catch {
+      // `{ deviceId: { exact } }` throws OverconstrainedError when the device
+      // is gone. Retry on the default input so capture still works.
+      if (device) await startCapture(undefined);
+    }
+  } catch (e: unknown) {
+    window.audio.reportError(
+      `recapture failed: ${e instanceof Error ? e.message : String(e)}`
+    );
+  } finally {
+    recovering = false;
+  }
+}
+
 // ─── beep generator ────────────────────────────────────────────────────────
 
 function ensureBeepCtx(): AudioContext {
@@ -176,6 +225,10 @@ window.audio.onResume?.(() => {
       );
     });
   }
+});
+// Power resume / device-loss recovery: rebuild the whole capture graph.
+window.audio.onRecover?.(() => {
+  void recapture();
 });
 window.audio.onBeep((kind: 'start' | 'stop') => {
   playBeep(kind);

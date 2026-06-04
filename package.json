@@ -1,7 +1,7 @@
 {
   "name": "windvoice",
-  "version": "0.1.8",
-  "description": "AquaVoice-like voice dictation for Windows powered by OpenAI Realtime API",
+  "version": "0.1.9",
+  "description": "AquaVoice-like voice dictation for Windows and macOS powered by OpenAI Realtime API",
   "main": "out/main/index.js",
   "scripts": {
     "dev": "electron-vite dev",

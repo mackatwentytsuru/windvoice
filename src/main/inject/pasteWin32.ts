@@ -114,12 +114,24 @@ export function sendCtrlVAtomic(): void {
   const hkm = getActiveHotkeyManager();
   const ctrlAlreadyHeld = hkm?.isCtrlHeld() === true;
 
+  // Prepend Alt key-up events so any physically-held (or hook-injected) Alt
+  // is "released" inside the same atomic SendInput call before V fires —
+  // otherwise the target sees Alt+V and Windows opens the View menu instead
+  // of pasting (Notepad et al.). A KEYUP for a key that is NOT down is a
+  // harmless no-op, so these are safe to send unconditionally.
+  const releaseAlt: KBDInput[] = [
+    { up: true, val: VK.LMENU, type: 0 },
+    { up: true, val: VK.RMENU, type: 0 }
+  ];
+
   const batch: KBDInput[] = ctrlAlreadyHeld
     ? [
+        ...releaseAlt,
         { up: false, val: VK.V, type: 0 },
         { up: true, val: VK.V, type: 0 }
       ]
     : [
+        ...releaseAlt,
         { up: false, val: VK.LCONTROL, type: 0 },
         { up: false, val: VK.V, type: 0 },
         { up: true, val: VK.V, type: 0 },

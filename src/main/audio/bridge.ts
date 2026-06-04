@@ -152,6 +152,18 @@ export class AudioBridge {
     this.win?.webContents.send(IPC.AUDIO_DEVICE_CHANGE, deviceId);
   }
 
+  /**
+   * Ask the hidden audio renderer to tear down and re-acquire the microphone
+   * stream. Called when the OS resumes from sleep — the previously captured
+   * MediaStreamTrack is dead after suspend and yields only silence (frozen
+   * spectrogram, empty dictation) until it is replaced.
+   */
+  recapture(): void {
+    if (!this.capturing) return;
+    this.win?.webContents.send(IPC.AUDIO_RECOVER_CMD);
+    debug('AUDIO', 'recapture requested (power resume / track loss)');
+  }
+
   beginForwarding(): { startCount: number } {
     this.forwarding = true;
     // Resume the AudioContext if it was suspended during idle. The

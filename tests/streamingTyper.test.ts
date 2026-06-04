@@ -2,10 +2,12 @@ import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest';
 
 const hoisted = vi.hoisted(() => ({
   clipboardText: '',
+  formats: ['text/plain'] as string[],
   writeText: vi.fn((text: string) => {
     hoisted.clipboardText = text;
   }),
   readText: vi.fn(() => hoisted.clipboardText),
+  availableFormats: vi.fn(() => hoisted.formats),
   keyTap: vi.fn()
 }));
 
@@ -13,6 +15,7 @@ vi.mock('electron', () => ({
   clipboard: {
     writeText: hoisted.writeText,
     readText: hoisted.readText,
+    availableFormats: hoisted.availableFormats,
     clear: vi.fn(() => {
       hoisted.clipboardText = '';
     })
@@ -38,8 +41,10 @@ describe('StreamingTyper', () => {
   beforeEach(() => {
     vi.useFakeTimers();
     hoisted.clipboardText = 'ORIGINAL';
+    hoisted.formats = ['text/plain'];
     hoisted.writeText.mockClear();
     hoisted.readText.mockClear();
+    hoisted.availableFormats.mockClear();
     hoisted.keyTap.mockClear();
     typer = new StreamingTyper();
   });
@@ -123,6 +128,24 @@ describe('StreamingTyper', () => {
     await endP;
     // The last clipboard.writeText call should have restored 'USER-COPY'.
     expect(hoisted.writeText).toHaveBeenLastCalledWith('USER-COPY');
+  });
+
+  it('does NOT restore (overwrite) a non-text clipboard like an image', async () => {
+    // User has an image copied — readText() would be '' and restoring it
+    // at end() would silently destroy their image. begin() must detect the
+    // non-text payload and skip the restore entirely.
+    hoisted.formats = ['image/png'];
+    hoisted.clipboardText = '';
+    typer.begin(true);
+    typer.append('dictated words');
+    await vi.advanceTimersByTimeAsync(80 + 100);
+    hoisted.writeText.mockClear(); // ignore the paste writes; we only care about restore
+    const endP = typer.end();
+    await vi.advanceTimersByTimeAsync(2_500);
+    await endP;
+    // No empty-string restore write happened — the image is left untouched.
+    const restoredEmpty = hoisted.writeText.mock.calls.some((c) => c[0] === '');
+    expect(restoredEmpty).toBe(false);
   });
 
   it('flushSeq correctness: no double-flush within debounce window', async () => {

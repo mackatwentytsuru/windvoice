@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, session, shell, systemPreferences } from 'electron';
+import { app, BrowserWindow, dialog, powerMonitor, session, shell, systemPreferences } from 'electron';
 import path from 'node:path';
 import { is } from '@main/audio/env';
 import { settingsStore } from '@main/store/settings';
@@ -358,6 +358,17 @@ app.whenReady().then(async () => {
     process.stderr.write(`[audio] ${message}\n`);
     broadcastToUiWindows(IPC.AUDIO_ERROR, message);
   });
+
+  // After the machine wakes from sleep, the microphone's MediaStreamTrack is
+  // dead — the worklet keeps running but only silence flows, so the meter
+  // freezes and dictation captures nothing until the app restarts. Rebuild
+  // the capture stream on resume. `unlock-screen` covers the case where the
+  // display sleeps/locks without a full system suspend.
+  powerMonitor.on('resume', () => {
+    process.stderr.write('[power] resume — re-acquiring microphone\n');
+    audio?.recapture();
+  });
+  powerMonitor.on('unlock-screen', () => audio?.recapture());
 
   // Register post-processors. Order matters: formatter first (cleans
   // hallucinations + applies dictionary via prompt), then deterministic

@@ -250,6 +250,12 @@ const audioBridge = {
     ipcRenderer.on(IPC.AUDIO_RESUME_CMD, handler);
     return () => ipcRenderer.removeListener(IPC.AUDIO_RESUME_CMD, handler);
   },
+  /** Main → hidden audio renderer: rebuild the capture stream after sleep/resume. */
+  onRecover: (cb: () => void): (() => void) => {
+    const handler = (): void => cb();
+    ipcRenderer.on(IPC.AUDIO_RECOVER_CMD, handler);
+    return () => ipcRenderer.removeListener(IPC.AUDIO_RECOVER_CMD, handler);
+  },
   /** Main → hidden audio renderer: play a short tone cue. */
   onBeep: (cb: (kind: BeepKind) => void): (() => void) => {
     const handler = (_e: unknown, kind: unknown): void => {
