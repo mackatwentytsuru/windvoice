@@ -9,7 +9,7 @@ import crypto from 'node:crypto';
 import OpenAI from 'openai';
 import { debug } from '@main/debug';
 import type { PostProcessContext, PostProcessor } from '@main/postprocess/pipeline';
-import type { DictionaryEntry, Settings } from '@shared/types';
+import { APP_PROFILE_INSTRUCTIONS_MAX, type DictionaryEntry, type Settings } from '@shared/types';
 
 const HARD_TIMEOUT_MS = 2_000;
 const DEFAULT_MODEL = 'gpt-5-mini';
@@ -129,10 +129,37 @@ export function sanitizePromptValue(v: string): string {
 }
 
 /**
- * Find the first per-app formatter profile whose `match` is a
- * case-insensitive substring of the foreground app name. Matching is
- * done against the app name only (never the window title — titles can
- * carry PII; see context/activeWindow.ts).
+ * Normalize an app/profile name for matching: lowercase, trimmed, with a
+ * trailing `.exe` stripped. Windows reports process names like
+ * `Code.exe` / `msedge.exe` while users naturally type `code` or
+ * `msedge` (and vice versa) — strip the extension on BOTH sides so the
+ * two spellings are interchangeable.
+ */
+function normalizeAppName(v: string): string {
+  return v.trim().toLowerCase().replace(/\.exe$/, '');
+}
+
+/** Escape regex metacharacters so a user-typed profile `match` is always
+ * treated as a literal string inside the word-boundary regex below. */
+function escapeRegExp(v: string): string {
+  return v.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * Find the first per-app formatter profile that matches the foreground
+ * app name. Matching is done against the app name only (never the window
+ * title — titles can carry PII; see context/activeWindow.ts).
+ *
+ * Hardening: a bare `includes()` substring test over-matched — profile
+ * "code" matched "decode.exe" — and let any app whose name merely embeds
+ * a profile token inherit that profile's instructions. Both sides are
+ * now normalized (see `normalizeAppName`) and the profile `match` must
+ * appear at WORD BOUNDARIES inside the app name, i.e. not glued to an
+ * adjacent letter or digit. This is the least surprising tightening for
+ * existing configs: "Terminal" still matches "Windows Terminal", "code"
+ * still matches "Visual Studio Code" and "Code.exe", but "code" no
+ * longer matches "decode". The boundary classes use Unicode property
+ * escapes so the same rule holds for non-ASCII app names (e.g. "メモ帳").
  */
 function matchAppProfile(
   settings: Readonly<Settings>,
@@ -140,11 +167,13 @@ function matchAppProfile(
 ): { match: string; instructions: string } | null {
   const profiles = settings.formatter?.appProfiles;
   if (!profiles || profiles.length === 0) return null;
-  const app = (appName ?? '').toLowerCase();
+  const app = normalizeAppName(appName ?? '');
   if (!app) return null;
   for (const p of profiles) {
-    const m = p.match.trim().toLowerCase();
-    if (m && app.includes(m)) return p;
+    const m = normalizeAppName(p.match);
+    if (!m) continue;
+    const re = new RegExp(`(?<![\\p{L}\\p{N}])${escapeRegExp(m)}(?![\\p{L}\\p{N}])`, 'u');
+    if (re.test(app)) return p;
   }
   return null;
 }
@@ -204,7 +233,14 @@ export function buildSystemPrompt(
   }
 
   const profile = matchAppProfile(settings, activeWindowApp);
-  const profileInstructions = profile?.instructions.trim() ?? '';
+  // Cap profile instructions at use even though the settings schema also
+  // clamps them (defense in depth): instructions flow verbatim into the
+  // LLM system prompt, so a settings file written outside the schema path
+  // (hand-edited JSON, an older app version, a third-party config import)
+  // must not be able to smuggle an unbounded prompt-injection payload.
+  const profileInstructions = (profile?.instructions ?? '')
+    .slice(0, APP_PROFILE_INSTRUCTIONS_MAX)
+    .trim();
   if (profileInstructions.length > 0) {
     lines.push('');
     lines.push(
@@ -256,6 +292,11 @@ async function callOpenAI(params: FormatterCallParams): Promise<string> {
           // completion. `reasoning_effort: 'minimal'` skips that phase.
           // We also generously over-budget completion tokens so even very
           // long transcripts (with the reasoning floor on top) fit.
+          //
+          // NOTE: `reasoning_effort` IS the correct top-level parameter for
+          // the Chat Completions API used here (`client.chat.completions
+          // .create`); the nested `reasoning: { effort }` shape belongs to
+          // the Responses API only. Do not "fix" this.
           max_completion_tokens: Math.max(maxTokens, 1024) + 512,
           reasoning_effort: 'minimal'
         }
@@ -336,17 +377,18 @@ export const gptFormatter: PostProcessor = {
     // explicitly updates the API key (which calls resetFormatterFailure).
     if (permanentFailureReason !== null) return text;
 
-    const ctxKey = (ctx as PostProcessContext & { apiKey?: string }).apiKey;
-    const ctxApiKey: string | null =
-      typeof ctxKey === 'string' && ctxKey.length > 0 ? ctxKey : null;
-    let apiKey: string | null = ctxApiKey;
-    if (!apiKey) {
-      try {
-        const mod = await import('@main/store/secure');
-        apiKey = await mod.secureStore.getApiKey();
-      } catch {
-        apiKey = null;
-      }
+    // The API key is always loaded from the OS keychain via secureStore.
+    // PostProcessContext deliberately carries no key material (so context
+    // objects can flow through logging / pipeline code without secrets).
+    // An earlier revision read a phantom `ctx.apiKey` here via an unsafe
+    // cast — the field never existed on the context type, so that branch
+    // was dead code and implied a second key source that never existed.
+    let apiKey: string | null = null;
+    try {
+      const mod = await import('@main/store/secure');
+      apiKey = await mod.secureStore.getApiKey();
+    } catch {
+      apiKey = null;
     }
     if (!apiKey || apiKey.length === 0) return text;
 

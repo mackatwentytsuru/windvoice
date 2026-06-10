@@ -3,6 +3,25 @@ import type { UpdaterState } from '../shared/ipc';
 import { useI18n } from './useI18n';
 
 /**
+ * `busy` guards the action button between the user's click and the next
+ * updater state broadcast. It lives in module scope (mirrored into
+ * component state below) so a REMOUNT within the same renderer — tab
+ * switches, React 18 StrictMode double-mount — restores an in-flight
+ * click instead of silently re-enabling the button.
+ *
+ * Known limitation (deliberate — avoids adding a new IPC channel): if the
+ * settings WINDOW itself is destroyed and recreated (close → reopen from
+ * the tray), the renderer process and this module scope die with it. That
+ * is acceptable because main broadcasts `downloading` synchronously at
+ * the start of UPDATER_DOWNLOAD (before any await — see main/updater),
+ * so the recreated window re-derives the correct phase from the
+ * UPDATER_LAST_STATE query on mount; only the few-millisecond
+ * click→broadcast race is unrecoverable, and re-clicking Download /
+ * Restart is idempotent on the main side.
+ */
+let lastKnownBusy = false;
+
+/**
  * Surfaces auto-updater state. The updater never downloads or installs on
  * its own (builds are unsigned — see main/updater) so this banner is the
  * only path to an update: it shows an explicit "Download" then "Restart"
@@ -11,7 +30,14 @@ import { useI18n } from './useI18n';
 export function UpdaterBanner(): JSX.Element | null {
   const { t } = useI18n();
   const [state, setState] = useState<UpdaterState>({ phase: 'idle' });
-  const [busy, setBusy] = useState(false);
+  const [busy, setBusyState] = useState(lastKnownBusy);
+
+  // Single funnel for busy updates: keep the module-scope mirror and the
+  // rendered state in lockstep so the next mount starts from the truth.
+  function setBusy(value: boolean): void {
+    lastKnownBusy = value;
+    setBusyState(value);
+  }
 
   useEffect(() => {
     // On an unsigned macOS build the auto-updater is never initialized,

@@ -40,14 +40,36 @@ export const ReplacementEntrySchema = z.object({
 export type ReplacementEntry = z.infer<typeof ReplacementEntrySchema>;
 
 /**
+ * Hard cap on per-profile formatter `instructions`. Instructions flow
+ * verbatim into the LLM system prompt (they are user-typed and inside
+ * the trust boundary — see the MEDIUM-2 note in postprocess/formatter.ts),
+ * but WITHOUT a length cap a settings file synced or imported from
+ * elsewhere could smuggle an arbitrarily large prompt-injection payload.
+ * 2000 chars is far above any realistic hand-typed instruction set.
+ * Enforced both here (settings boundary) and at use (formatter.ts).
+ */
+export const APP_PROFILE_INSTRUCTIONS_MAX = 2000;
+
+/**
  * Per-application formatter profile. When the foreground app's name
- * contains `match` (case-insensitive substring), `instructions` are
- * appended to the formatter prompt — e.g. "terse, no markdown" for a
- * terminal, "casual tone" for a chat app.
+ * contains `match` as a case-insensitive WHOLE WORD (both sides are
+ * normalized: lowercased, trailing `.exe` stripped — so "code" matches
+ * "Visual Studio Code" and "Code.exe" but not "decode"), `instructions`
+ * are appended to the formatter prompt — e.g. "terse, no markdown" for a
+ * terminal, "casual tone" for a chat app. Matching lives in
+ * postprocess/formatter.ts (`matchAppProfile`).
  */
 export const AppProfileSchema = z.object({
   match: z.string().min(1),
-  instructions: z.string()
+  // Clamp (not reject) over-long instructions: a `.max()` would make the
+  // whole settings file fail safeParse in store/settings.ts, which resets
+  // EVERY setting to defaults — losing the user's hotkeys and dictionary
+  // over one oversized field would be far worse than truncating it.
+  instructions: z
+    .string()
+    .transform((s) =>
+      s.length > APP_PROFILE_INSTRUCTIONS_MAX ? s.slice(0, APP_PROFILE_INSTRUCTIONS_MAX) : s
+    )
 });
 export type AppProfile = z.infer<typeof AppProfileSchema>;
 

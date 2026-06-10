@@ -10,7 +10,11 @@ const hoisted = vi.hoisted(() => {
     nextResponse: null as unknown,
     nextError: null as Error | null,
     delayMs: 0,
-    abortDelayMs: -1
+    abortDelayMs: -1,
+    // What the mocked secureStore.getApiKey() resolves to. The formatter
+    // loads its key EXCLUSIVELY from the keychain (PostProcessContext
+    // carries no key material), so tests control the key through here.
+    secureApiKey: 'sk-test' as string | null
   };
   return state;
 });
@@ -65,13 +69,13 @@ vi.mock('openai', () => {
   return { default: FakeOpenAI };
 });
 
-// v0.1.2: when no API key is provided in the context, the formatter falls
-// back to `secureStore.getApiKey()` which calls real `keytar` and can
-// hang the test environment. Stub it to always return null so the "no
-// key" branch resolves synchronously.
+// The formatter's only key source is `secureStore.getApiKey()`, which
+// calls real `keytar` and can hang the test environment. Stub it with a
+// controllable value so tests can exercise both the keyed and the
+// "no key" branches synchronously.
 vi.mock('@main/store/secure', () => ({
   secureStore: {
-    getApiKey: vi.fn(async () => null)
+    getApiKey: vi.fn(async () => hoisted.secureApiKey)
   }
 }));
 
@@ -112,7 +116,6 @@ function makeSettings(overrides: Partial<Settings> = {}): Settings {
 function makeCtx(overrides: Partial<PostProcessContext> = {}): PostProcessContext {
   return {
     settings: overrides.settings ?? makeSettings(),
-    apiKey: 'sk-test',
     ...overrides
   };
 }
@@ -130,6 +133,7 @@ describe('gptFormatter', () => {
     hoisted.nextError = null;
     hoisted.delayMs = 0;
     hoisted.abortDelayMs = -1;
+    hoisted.secureApiKey = 'sk-test';
     // v0.1.2: the formatter caches a permanent-failure marker (E_AUTH /
     // E_NOT_FOUND) and an OpenAI client cache. Reset both so test order
     // doesn't leak state between cases.
@@ -151,14 +155,15 @@ describe('gptFormatter', () => {
     expect(hoisted.createCalls).toHaveLength(0);
   });
 
-  it('returns input unchanged when no API key is provided', async () => {
-    const ctx = makeCtx({ apiKey: undefined });
+  it('returns input unchanged when the keychain has no API key', async () => {
+    hoisted.secureApiKey = null;
+    const ctx = makeCtx();
     const out = await gptFormatter.process('hello world', ctx);
     expect(out).toBe('hello world');
     expect(hoisted.createCalls).toHaveLength(0);
 
-    const ctxEmpty = makeCtx({ apiKey: '' });
-    const out2 = await gptFormatter.process('hello world', ctxEmpty);
+    hoisted.secureApiKey = '';
+    const out2 = await gptFormatter.process('hello world', ctx);
     expect(out2).toBe('hello world');
     expect(hoisted.createCalls).toHaveLength(0);
   });
