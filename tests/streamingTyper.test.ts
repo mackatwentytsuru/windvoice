@@ -33,6 +33,21 @@ vi.mock('uiohook-napi', () => ({
   }
 }));
 
+// Mock the whole paste helper (same pattern as tests/typer.test.ts).
+// Without this, on a Windows host sendCtrlVAtomic() loads the REAL
+// sendinput.node via bare `require()` (invisible to vi.mock) and every
+// flush would inject an actual Ctrl+V into the focused window during the
+// test run. sendCtrlVAtomic's own branches are covered directly in
+// tests/pasteWin32.test.ts.
+vi.mock('@main/inject/pasteWin32', async () => {
+  const { uIOhook, UiohookKey } = await import('uiohook-napi');
+  return {
+    sendCtrlVAtomic: () => {
+      uIOhook.keyTap(UiohookKey.V, [UiohookKey.Ctrl]);
+    }
+  };
+});
+
 import { StreamingTyper } from '../src/main/inject/streamingTyper';
 
 describe('StreamingTyper', () => {

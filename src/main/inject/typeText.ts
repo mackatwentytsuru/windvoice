@@ -15,6 +15,7 @@
 
 import { debug } from '@main/debug';
 import { getActiveHotkeyManager } from '@main/hotkey/manager';
+import { sleep } from '@main/util/sleep';
 
 interface KBDInput {
   up: boolean;
@@ -24,8 +25,17 @@ interface KBDInput {
   type: 0 | 1 | 2;
 }
 
+// Contract note: `require('sendinput')` resolves to the package's JS
+// wrapper (index.js), NOT the raw .node binary. The wrapper accepts plain
+// `{up, val, type}` objects and converts each one itself via the native
+// `CreateKBDInpVKey/ScanCode/Unicode` factories into the `Napi::External`
+// handles that the native `SendInput` consumes. Passing externals from
+// here would be wrong — the wrapper would reject them ("Expecting val to
+// be an integer"). The Win32 SendInput return value (number of events
+// actually injected) is propagated back through the wrapper, which lets
+// us detect blocked/partial injection below.
 interface SendInputModule {
-  SendInput(inputs: KBDInput[] | KBDInput): void;
+  SendInput(inputs: KBDInput[] | KBDInput): number;
 }
 
 const VK_RETURN = 0x0d;
@@ -42,7 +52,18 @@ function loadSendInput(): SendInputModule | null {
   if (loadFailed) return null;
   try {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
-    sendInputMod = require('sendinput') as SendInputModule;
+    const mod = require('sendinput') as SendInputModule;
+    // Runtime contract smoke-test: an empty array is a true no-op (the
+    // native side skips the Win32 call when len === 0), but it still
+    // round-trips the full wrapper → addon path. If a future sendinput
+    // version changes the call contract (e.g. stops accepting plain
+    // `{up, val, type}` objects), this throws HERE with a debug log,
+    // instead of every dictation silently falling back to paste.
+    if (typeof mod.SendInput !== 'function') {
+      throw new Error('sendinput contract break: SendInput is not a function');
+    }
+    mod.SendInput([]);
+    sendInputMod = mod;
     return sendInputMod;
   } catch (err) {
     loadFailed = true;
@@ -69,11 +90,30 @@ function isHighSurrogate(cu: number): boolean {
   return cu >= 0xd800 && cu <= 0xdbff;
 }
 
-/** Exported for unit testing — see tests/typeText.test.ts. */
-export const __test = { inputsForCodeUnit, isHighSurrogate };
+/**
+ * Test seam — see tests/typeText.test.ts. Same rationale as the seam in
+ * pasteWin32.ts: the bare `require('sendinput')` above is invisible to
+ * vitest's module mocks, and letting the real addon load in tests would
+ * type real keystrokes into the focused window.
+ */
+function setSendInputModuleForTest(mod: SendInputModule | null): void {
+  sendInputMod = mod;
+  loadFailed = false;
+}
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+/** Exported for unit testing — see tests/typeText.test.ts. */
+export const __test = { inputsForCodeUnit, isHighSurrogate, setSendInputModuleForTest };
+
+/**
+ * Win32 SendInput returns the number of events it actually injected.
+ * Fewer than requested means the rest were blocked (UIPI when the target
+ * window is elevated, or another hook swallowed them) — surface that in
+ * the debug log so a partial insertion is diagnosable instead of silent.
+ */
+function checkInjectedCount(sent: number, batch: KBDInput[]): void {
+  if (typeof sent === 'number' && sent !== batch.length) {
+    debug('DICTATION', `type-mode SendInput injected ${sent}/${batch.length} events — input may be blocked (UIPI?)`);
+  }
 }
 
 /**
@@ -103,6 +143,15 @@ export async function typeTextDirect(text: string): Promise<boolean> {
     for (let i = 0; i < text.length; i++) {
       const cu = text.charCodeAt(i);
       if (cu === 0x0d) continue; // drop CR; LF below becomes a real Enter
+      // A lone trailing high surrogate (string truncated mid-code-point)
+      // is dropped rather than sent: KEYEVENTF_UNICODE delivers it as an
+      // unpaired WM_CHAR, which most apps render as U+FFFD or garbage.
+      // Dropping the half-character is the least-bad outcome — the rest
+      // of the text still lands intact.
+      if (isHighSurrogate(cu) && i === text.length - 1) {
+        debug('DICTATION', 'type-mode: dropping lone trailing high surrogate');
+        continue;
+      }
       batch.push(...inputsForCodeUnit(cu));
       charsInBatch++;
       // Flush full batches — but never between the two halves of a
@@ -111,7 +160,7 @@ export async function typeTextDirect(text: string): Promise<boolean> {
       // across two SendInput calls (with the inter-batch sleep) would
       // break the character.
       if (charsInBatch >= BATCH_CHARS && !isHighSurrogate(cu)) {
-        mod.SendInput(batch);
+        checkInjectedCount(mod.SendInput(batch), batch);
         sentAny = true;
         batch = [];
         charsInBatch = 0;
@@ -119,11 +168,12 @@ export async function typeTextDirect(text: string): Promise<boolean> {
       }
     }
     if (batch.length > 0) {
-      mod.SendInput(batch);
+      checkInjectedCount(mod.SendInput(batch), batch);
       sentAny = true;
     }
-    // `sentAny` is false only when the text was empty after dropping CRs;
-    // returning false lets the caller fall back to a paste in that case.
+    // `sentAny` is false only when nothing survived filtering (text was
+    // all CRs, or a single lone high surrogate); returning false lets the
+    // caller fall back to a paste in that case.
     return sentAny;
   } catch (err) {
     debug('DICTATION', `type-mode SendInput failed: ${err instanceof Error ? err.message : String(err)}`);

@@ -6,6 +6,7 @@ import { getActiveHotkeyManager } from '@main/hotkey/manager';
 import { pasteTiming, type PasteCompatibility, type PasteTiming } from '@main/inject/pasteTiming';
 import { writeClipboardText } from '@main/inject/clipboardWrite';
 import { clipboardHasText } from '@main/inject/typer';
+import { sleep } from '@main/util/sleep';
 
 const DEBOUNCE_MS = 80;
 const COALESCE_MAX_CHARS = 200;
@@ -248,10 +249,6 @@ export class StreamingTyper {
       if (this.buffer.length === 0) this.signalIdle();
     }
   }
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 export const streamingTyper = new StreamingTyper();

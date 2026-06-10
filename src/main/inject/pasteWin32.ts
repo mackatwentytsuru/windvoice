@@ -51,6 +51,18 @@ interface SendInputModule {
 let sendInputMod: SendInputModule | null = null;
 let sendInputLoadError: string | null = null;
 
+/**
+ * Test seam — see tests/pasteWin32.test.ts. The native addon is loaded via
+ * a bare `require()` that vitest's module mocks cannot intercept (vite-node
+ * resolves it against the real filesystem), so without this hook the tests
+ * would load the REAL sendinput.node and inject actual Ctrl+V keystrokes
+ * into whatever window has focus during the test run.
+ */
+export function __setSendInputModuleForTest(mod: SendInputModule | null): void {
+  sendInputMod = mod;
+  sendInputLoadError = null;
+}
+
 function loadSendInput(): SendInputModule | null {
   if (sendInputMod) return sendInputMod;
   if (sendInputLoadError) return null;

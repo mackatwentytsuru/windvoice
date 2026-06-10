@@ -7,6 +7,7 @@ import { getActiveHotkeyManager } from '@main/hotkey/manager';
 import { sendCtrlVAtomic } from '@main/inject/pasteWin32';
 import { pasteTiming, type PasteCompatibility } from '@main/inject/pasteTiming';
 import { writeClipboardText } from '@main/inject/clipboardWrite';
+import { sleep } from '@main/util/sleep';
 
 // SETTLE / RESTORE delays are no longer fixed constants — they come from
 // the user-selectable timing profile in `pasteTiming.ts`. A previous
@@ -294,8 +295,4 @@ export async function pasteText(
     }
     clearPersistedClipboard();
   }
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }
