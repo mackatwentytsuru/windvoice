@@ -11,6 +11,23 @@ export interface ChunkPayload {
   level?: number;
 }
 
+// ─── live-but-silent watchdog ────────────────────────────────────────────────
+// A microphone MediaStreamTrack can report readyState==='live' && !muted while
+// the underlying OS pipeline delivers only digital silence — e.g. another app
+// holds WASAPI exclusive mode (Teams/Zoom), a Bluetooth headset hands off, a
+// driver resets, or the display slept via DPMS (which fires NO powerMonitor
+// event). The renderer's flag-based health probe cannot see this: the worklet
+// keeps emitting all-zero PCM chunks, chunkCount advances normally, and the
+// dictation transcribes silence — staying broken until the app restarts. The
+// only reliable signal is the audio ENERGY actually delivered, which the
+// worklet already computes per chunk as `level` (RMS). After each dictation
+// starts we watch that energy and force a microphone rebuild if it stays flat.
+const SILENCE_WATCHDOG_MS = 600;
+// RMS levels are small floats (a quiet room's noise floor is typically well
+// above this). True device-dead capture delivers exact zeros, so a low
+// threshold catches the dead-pipeline case without tripping on quiet speech.
+const SILENCE_LEVEL_THRESHOLD = 0.001;
+
 /** Public listener signature exposed by `setChunkListener`. */
 export type ChunkListener = (chunk: ChunkPayload | AudioChunk) => void;
 
@@ -24,6 +41,10 @@ export class AudioBridge {
   private capturing = false;
   private forwarding = false;
   private chunkCount = 0;
+  // Highest RMS level seen since the current dictation began forwarding. Reset
+  // in beginForwarding and inspected by the silence watchdog.
+  private maxLevelSinceForward = 0;
+  private silenceWatchdog: NodeJS.Timeout | null = null;
   private readyResolvers: Array<() => void> = [];
   private chunkListener: ((chunk: ChunkPayload | AudioChunk) => void) | null = null;
   private levelListener: ((level: number) => void) | null = null;
@@ -66,7 +87,12 @@ export class AudioBridge {
       }
       this.chunkCount++;
       if (normalized.level !== undefined) this.levelListener?.(normalized.level);
-      if (this.forwarding) this.chunkListener?.(normalized);
+      if (this.forwarding) {
+        if (normalized.level !== undefined && normalized.level > this.maxLevelSinceForward) {
+          this.maxLevelSinceForward = normalized.level;
+        }
+        this.chunkListener?.(normalized);
+      }
     };
 
     this.onErrorHandler = (event, message): void => {
@@ -166,15 +192,18 @@ export class AudioBridge {
 
   beginForwarding(): { startCount: number } {
     this.forwarding = true;
+    this.maxLevelSinceForward = 0;
     // Resume the AudioContext if it was suspended during idle. The
     // first chunk after resume arrives in ~5-15ms, well within the
     // perceived start-recording window.
     this.win?.webContents.send(IPC.AUDIO_RESUME_CMD);
+    this.armSilenceWatchdog(this.chunkCount);
     return { startCount: this.chunkCount };
   }
 
   endForwarding(startCount: number): { delivered: number } {
     this.forwarding = false;
+    this.clearSilenceWatchdog();
     // Suspend the AudioContext so the worklet stops generating 50ms
     // chunks (issue #7). Saves ~20 IPC crossings + Buffer.from copies
     // per idle second.
@@ -182,11 +211,45 @@ export class AudioBridge {
     return { delivered: this.chunkCount - startCount };
   }
 
+  /**
+   * Catch a "live-but-silent" microphone (see the watchdog note above). A short
+   * time after forwarding starts, if NO chunks arrived (graph stuck suspended)
+   * or every chunk was effectively digital silence (dead OS pipeline), force a
+   * full microphone rebuild via `recapture()`. This measures the energy the mic
+   * actually delivers rather than the OS API's `live`/`muted` flags, which lie
+   * when another app holds the device or a driver/display reset has occurred.
+   */
+  private armSilenceWatchdog(startCount: number): void {
+    this.clearSilenceWatchdog();
+    this.silenceWatchdog = setTimeout(() => {
+      this.silenceWatchdog = null;
+      if (!this.forwarding) return;
+      const delivered = this.chunkCount - startCount;
+      const silent = delivered === 0 || this.maxLevelSinceForward < SILENCE_LEVEL_THRESHOLD;
+      if (silent) {
+        debug(
+          'AUDIO',
+          `silent capture detected (delivered=${delivered} maxLevel=${this.maxLevelSinceForward.toFixed(4)}) — rebuilding mic`
+        );
+        this.recapture();
+      }
+    }, SILENCE_WATCHDOG_MS);
+    if (typeof this.silenceWatchdog.unref === 'function') this.silenceWatchdog.unref();
+  }
+
+  private clearSilenceWatchdog(): void {
+    if (this.silenceWatchdog) {
+      clearTimeout(this.silenceWatchdog);
+      this.silenceWatchdog = null;
+    }
+  }
+
   playBeep(kind: BeepKind): void {
     this.win?.webContents.send(IPC.BEEP_PLAY, kind);
   }
 
   destroy(): void {
+    this.clearSilenceWatchdog();
     this.win?.webContents.send(IPC.AUDIO_STOP_CMD);
     this.capturing = false;
     this.forwarding = false;

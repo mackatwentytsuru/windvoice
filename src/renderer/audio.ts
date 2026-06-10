@@ -33,6 +33,20 @@ function watchTrackHealth(stream: MediaStream): void {
   }
 }
 
+/**
+ * True only when the capture graph is wired AND a live mic track is actually
+ * able to deliver audio (not `ended`, not `muted`). A track can silently go
+ * `muted`/silent after a display-off, audio-device reset, or another app
+ * grabbing the mic — WITHOUT firing `ended` and WITHOUT a powerMonitor
+ * resume/unlock event — leaving the prewarmed graph alive but deaf until the
+ * app restarts. This is the liveness probe used right before each dictation.
+ */
+function isCaptureHealthy(): boolean {
+  if (!audioCtx || !mediaStream) return false;
+  const tracks = mediaStream.getAudioTracks();
+  return tracks.length > 0 && tracks.some((t) => t.readyState === 'live' && !t.muted);
+}
+
 async function startCapture(deviceId?: string): Promise<void> {
   if (audioCtx) return;
   try {
@@ -218,6 +232,31 @@ window.audio.onSuspend?.(() => {
   }
 });
 window.audio.onResume?.(() => {
+  // PTT pressed: this fires at the very start of every dictation. Before
+  // resuming the prewarmed graph, verify the mic is still actually live —
+  // a silent/`muted` track that never fired `ended` (the most common cause
+  // of "the overlay shows but nothing is captured until I restart") would
+  // otherwise feed only silence. Rebuild, then resume so THIS dictation
+  // still captures audio rather than waiting for the next press.
+  if (!isCaptureHealthy()) {
+    window.audio.reportError('mic not live at capture start — rebuilding');
+    void recapture().then(() => {
+      // The rebuilt AudioContext is suspended at the end of startCapture, but
+      // that suspend is fire-and-forget and may still be in-flight here — so
+      // `state` can momentarily read 'running' and a `=== 'suspended'` guard
+      // would skip the wake, leaving the graph suspended with nobody to resume
+      // it. resume() is idempotent on a running context, so call it
+      // unconditionally to guarantee THIS dictation captures audio.
+      if (audioCtx) {
+        audioCtx.resume().catch((e: unknown) => {
+          window.audio.reportError(
+            `audioCtx.resume after rebuild failed: ${e instanceof Error ? e.message : String(e)}`
+          );
+        });
+      }
+    });
+    return;
+  }
   if (audioCtx && audioCtx.state === 'suspended') {
     audioCtx.resume().catch((e: unknown) => {
       window.audio.reportError(
@@ -229,6 +268,16 @@ window.audio.onResume?.(() => {
 // Power resume / device-loss recovery: rebuild the whole capture graph.
 window.audio.onRecover?.(() => {
   void recapture();
+});
+// Audio device topology changed (USB mic unplugged, Bluetooth headset
+// handoff, default device switched). `devicechange` fires for ANY add/remove
+// — including unrelated devices like a webcam — so only rebuild when OUR
+// capture actually broke, leaving a healthy mic untouched mid-dictation.
+navigator.mediaDevices.addEventListener('devicechange', () => {
+  if (audioCtx && !isCaptureHealthy()) {
+    window.audio.reportError('device change broke mic — re-acquiring');
+    void recapture();
+  }
 });
 window.audio.onBeep((kind: 'start' | 'stop') => {
   playBeep(kind);
