@@ -75,6 +75,22 @@ function lastInstance(): InstanceType<typeof hoisted.FakeWS> {
   return hoisted.instances[hoisted.instances.length - 1]!;
 }
 
+// connect() no longer resolves on socket-open: the server must ack our
+// session.update (v0.1.8 watchdog). Helper to feed the ack.
+function ackSessionUpdate(inst: InstanceType<typeof hoisted.FakeWS>): void {
+  inst.emit('message', Buffer.from(JSON.stringify({ type: 'transcription_session.updated' })));
+}
+
+// Drive a fresh connect() through open + ready ack and return the FakeWS.
+async function openAndReady(p: Promise<void>): Promise<InstanceType<typeof hoisted.FakeWS>> {
+  await Promise.resolve();
+  const inst = lastInstance();
+  inst._open();
+  ackSessionUpdate(inst);
+  await p;
+  return inst;
+}
+
 describe('RealtimeClient', () => {
   beforeEach(() => {
     hoisted.instances.length = 0;
@@ -84,14 +100,10 @@ describe('RealtimeClient', () => {
     vi.useRealTimers();
   });
 
-  it('connect() resolves on `open` and sets rejectUnauthorized + servername', async () => {
+  it('connect() resolves on session.updated ack and sets rejectUnauthorized + servername', async () => {
     const client = new RealtimeClient({ apiKey: 'sk-x', vadEnabled: false });
     const p = client.connect();
-    // Simulate ws open after one microtask.
-    await Promise.resolve();
-    const inst = lastInstance();
-    inst._open();
-    await p;
+    const inst = await openAndReady(p);
 
     const opts = inst.opts as Record<string, unknown>;
     expect(opts.rejectUnauthorized).toBe(true);
@@ -116,16 +128,14 @@ describe('RealtimeClient', () => {
     expect(hoisted.instances.length).toBe(2);
     const inst2 = lastInstance();
     inst2._open();
+    ackSessionUpdate(inst2);
     await expect(p2).resolves.toBeUndefined();
   });
 
   it('appendAudio(Buffer) sends base64 in JSON', async () => {
     const client = new RealtimeClient({ apiKey: 'sk-x', vadEnabled: false });
     const p = client.connect();
-    await Promise.resolve();
-    const inst = lastInstance();
-    inst._open();
-    await p;
+    const inst = await openAndReady(p);
     inst.sent.length = 0; // clear session.update
 
     client.appendAudio(Buffer.from([1, 2, 3]));
@@ -138,10 +148,7 @@ describe('RealtimeClient', () => {
   it('appendAudio(ArrayBuffer) sends base64', async () => {
     const client = new RealtimeClient({ apiKey: 'sk-x', vadEnabled: false });
     const p = client.connect();
-    await Promise.resolve();
-    const inst = lastInstance();
-    inst._open();
-    await p;
+    const inst = await openAndReady(p);
     inst.sent.length = 0;
 
     const ab = new Uint8Array([1, 2, 3]).buffer;
@@ -153,10 +160,7 @@ describe('RealtimeClient', () => {
   it('appendAudio(Uint8Array) sends base64', async () => {
     const client = new RealtimeClient({ apiKey: 'sk-x', vadEnabled: false });
     const p = client.connect();
-    await Promise.resolve();
-    const inst = lastInstance();
-    inst._open();
-    await p;
+    const inst = await openAndReady(p);
     inst.sent.length = 0;
 
     client.appendAudio(new Uint8Array([1, 2, 3]));
@@ -167,10 +171,7 @@ describe('RealtimeClient', () => {
   it('appendAudio(string) passes the base64 string through', async () => {
     const client = new RealtimeClient({ apiKey: 'sk-x', vadEnabled: false });
     const p = client.connect();
-    await Promise.resolve();
-    const inst = lastInstance();
-    inst._open();
-    await p;
+    const inst = await openAndReady(p);
     inst.sent.length = 0;
 
     client.appendAudio('AAA=');
@@ -181,10 +182,7 @@ describe('RealtimeClient', () => {
   it('appendAudio is dropped silently when bufferedAmount > 256_000', async () => {
     const client = new RealtimeClient({ apiKey: 'sk-x', vadEnabled: false });
     const p = client.connect();
-    await Promise.resolve();
-    const inst = lastInstance();
-    inst._open();
-    await p;
+    const inst = await openAndReady(p);
     inst.sent.length = 0;
 
     // Threshold is 256 * 1024 = 262_144 bytes.
@@ -197,10 +195,7 @@ describe('RealtimeClient', () => {
     vi.useFakeTimers();
     const client = new RealtimeClient({ apiKey: 'sk-x', vadEnabled: false });
     const p = client.connect();
-    await Promise.resolve();
-    const inst1 = lastInstance();
-    inst1._open();
-    await p;
+    const inst1 = await openAndReady(p);
 
     // Abnormal close — abnormal because cleanClose flag is false (no .close() call).
     inst1.emit('close');
@@ -212,6 +207,7 @@ describe('RealtimeClient', () => {
     expect(hoisted.instances.length).toBeGreaterThanOrEqual(2);
     const inst2 = lastInstance();
     inst2._open();
+    ackSessionUpdate(inst2);
     await Promise.resolve();
     // Reconnect succeeded — emit a fresh close to test the cap.
     // Force 5 more failures: each reconnect will create a new ws then close it abnormally.
@@ -236,10 +232,7 @@ describe('RealtimeClient', () => {
     vi.useFakeTimers();
     const client = new RealtimeClient({ apiKey: 'sk-x', vadEnabled: false });
     const p = client.connect();
-    await Promise.resolve();
-    const inst = lastInstance();
-    inst._open();
-    await p;
+    const inst = await openAndReady(p);
 
     let closeCount = 0;
     client.on('close', () => closeCount++);
@@ -259,15 +252,78 @@ describe('RealtimeClient', () => {
     vi.useFakeTimers();
     const client = new RealtimeClient({ apiKey: 'sk-x', vadEnabled: false });
     const p = client.connect();
-    await Promise.resolve();
-    const inst = lastInstance();
-    inst._open();
-    await p;
+    const inst = await openAndReady(p);
 
     expect(inst.pinged).toBe(0);
     await vi.advanceTimersByTimeAsync(20_500);
     expect(inst.pinged).toBeGreaterThanOrEqual(1);
 
     client.dispose();
+  });
+
+  // v0.1.8 regression class: the server accepts the WS, then rejects our
+  // session.update — the session is dead while looking healthy.
+  it('server error during setup rejects connect() and never resends the rejected payload', async () => {
+    vi.useFakeTimers();
+    const client = new RealtimeClient({ apiKey: 'sk-x', vadEnabled: false });
+    const p = client.connect();
+    await Promise.resolve();
+    const inst = lastInstance();
+    inst._open();
+    expect(inst.sent.map((s) => (JSON.parse(s) as { type: string }).type)).toEqual([
+      'session.update'
+    ]);
+
+    inst.emit(
+      'message',
+      Buffer.from(
+        JSON.stringify({
+          type: 'error',
+          error: { message: "The 'prompt' parameter is not supported for this model." }
+        })
+      )
+    );
+    await expect(p).rejects.toThrow("The 'prompt' parameter is not supported");
+    expect(inst.terminated).toBe(true);
+
+    // No reconnect loop: no new ws is constructed however long we wait,
+    // so the identical (rejected) session.update is never resent.
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(hoisted.instances.length).toBe(1);
+  });
+
+  it('connect() rejects when no session.updated ack arrives within 5s (ready watchdog)', async () => {
+    vi.useFakeTimers();
+    const client = new RealtimeClient({ apiKey: 'sk-x', vadEnabled: false });
+    const p = client.connect();
+    await Promise.resolve();
+    const inst = lastInstance();
+    inst._open();
+
+    const assertion = expect(p).rejects.toThrow('not ready within 5s');
+    await vi.advanceTimersByTimeAsync(5_100);
+    await assertion;
+    expect(inst.terminated).toBe(true);
+  });
+
+  it('accepts the GA `session.updated` ack name as ready', async () => {
+    const client = new RealtimeClient({ apiKey: 'sk-x', vadEnabled: false });
+    const p = client.connect();
+    await Promise.resolve();
+    const inst = lastInstance();
+    inst._open();
+    inst.emit('message', Buffer.from(JSON.stringify({ type: 'session.updated' })));
+    await expect(p).resolves.toBeUndefined();
+    client.dispose();
+  });
+
+  it('connect() rejects when the socket closes before the setup ack', async () => {
+    const client = new RealtimeClient({ apiKey: 'sk-x', vadEnabled: false });
+    const p = client.connect();
+    await Promise.resolve();
+    const inst = lastInstance();
+    inst._open();
+    inst.emit('close');
+    await expect(p).rejects.toThrow('connection closed during session setup');
   });
 });

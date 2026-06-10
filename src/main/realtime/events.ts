@@ -39,6 +39,9 @@ export const InputAudioCommittedEvent = z.object({
   item_id: z.string().optional()
 });
 
+// Setup ack for `session.update`. The transcription intent historically
+// emitted `transcription_session.updated`; the GA API uses `session.updated`.
+// Accept both — this event is the client's "ready" signal (see client.ts).
 export const SessionUpdatedEvent = z.object({
-  type: z.literal('transcription_session.updated')
+  type: z.enum(['transcription_session.updated', 'session.updated'])
 });

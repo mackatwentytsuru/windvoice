@@ -14,6 +14,8 @@ import { historyStore } from '@main/store/history';
 import { postProcessorPipeline } from '@main/postprocess/pipeline';
 import { getActiveWindow } from '@main/context/activeWindow';
 import { debug } from '@main/debug';
+import { sleep } from '@main/util/sleep';
+import { broadcastToUiWindows } from '@main/broadcast';
 import { IPC, type DictationStatus } from '@shared/types';
 import { CHUNK_MS, FINAL_TIMEOUT_MS, MIN_AUDIO_MS } from '@shared/constants';
 
@@ -30,6 +32,11 @@ type ChunkLike = ChunkPayload | AudioChunk;
 export class DictationOrchestrator {
   private client: RealtimeClient | null = null;
   private connectPromise: Promise<RealtimeClient> | null = null;
+  // Set by dispose(). _doConnect re-checks it after `await client.connect()`
+  // so a client whose connect was still in flight when the orchestrator was
+  // torn down is closed once the connect settles, instead of leaking a live
+  // WS that nothing references (orphan-window fix).
+  private disposed = false;
   private inFlight = false;
   private partial = '';
   private startCount = 0;
@@ -92,11 +99,12 @@ export class DictationOrchestrator {
         // the user pastes a key, which resolves and transitions to idle.
         this.updateStatus('unavailable');
       } else {
-        // Any other failure (WS handshake rejected, secure storage
-        // error, etc.). Without this branch the status would stay
-        // stuck on 'connecting' — the emit happens just before
-        // `await client.connect()` in ensureConnected.
+        // Any other failure (WS handshake rejected, session.update
+        // rejected by the server, ready watchdog timeout, secure storage
+        // error, etc.). Surface it — a silent prewarm failure here is
+        // exactly how v0.1.8 looked alive while every dictation failed.
         this.updateStatus('error');
+        this.reportTranscriptionError(errMsg(err));
       }
     }
   }
@@ -145,11 +153,19 @@ export class DictationOrchestrator {
 
     let client: RealtimeClient;
     try {
+      // Emit 'connecting' from the dictation cycle itself, not inside
+      // _doConnect: a startup/api-key prewarm may already own the in-flight
+      // connect, and a hotkey press that joins it via ensureConnected's
+      // coalescing would otherwise never observe the transition (the
+      // prewarm "consumed" it). Warm path: ensureConnected returns the
+      // open client immediately and the transition is idle → listening.
+      if (!this.client?.isOpen()) this.updateStatus('connecting');
       client = await this.ensureConnected();
     } catch (err) {
       this.updateStatus('error');
       this.inFlight = false;
       this.broadcast(IPC.TRANSCRIPT_FINAL, `[error] ${errMsg(err)}`);
+      this.reportTranscriptionError(errMsg(err));
       return;
     }
 
@@ -360,6 +376,7 @@ export class DictationOrchestrator {
 
   /** Detach all listeners and tear down the realtime client. */
   dispose(): void {
+    this.disposed = true;
     this.cancelRequested = true;
     this.cycleId++;
     this.clearPendingFinalTimer();
@@ -442,6 +459,18 @@ export class DictationOrchestrator {
     this.overlay?.setStatus(status);
   }
 
+  /**
+   * Surface a realtime/server-side dictation failure as a SYSTEM_ERROR
+   * banner in the Settings UI (v0.1.8 incident: server errors after
+   * session.created were downgraded to a TRANSCRIPT_FINAL '[error]…' token
+   * and a tray color — invisible unless a transcript view happened to be
+   * open, so every dictation failed silently). Same wiring as
+   * main/index.ts's paste/duck/autoLaunch error surfacing.
+   */
+  private reportTranscriptionError(message: string): void {
+    broadcastToUiWindows(IPC.SYSTEM_ERROR, { source: 'transcription', message });
+  }
+
   private broadcast(channel: string, payload: unknown): void {
     for (const win of BrowserWindow.getAllWindows()) {
       win.webContents.send(channel, payload);
@@ -484,7 +513,6 @@ export class DictationOrchestrator {
     const client = new RealtimeClient({
       apiKey,
       language: settings.language === 'auto' ? undefined : settings.language,
-      prompt: dictionaryPrompt(settings.dictionary),
       vadEnabled: false
     });
 
@@ -506,6 +534,7 @@ export class DictationOrchestrator {
     const onError = (err: Error): void => {
       debug('REALTIME', err.message);
       this.broadcast(IPC.TRANSCRIPT_FINAL, `[error] ${err.message}`);
+      this.reportTranscriptionError(err.message);
       if (this.pendingFinal) {
         this.pendingFinal('');
       }
@@ -562,6 +591,7 @@ export class DictationOrchestrator {
         }
         this.updateStatus('error');
         this.broadcast(IPC.TRANSCRIPT_FINAL, '[error] connection closed');
+        this.reportTranscriptionError('connection closed mid-dictation');
       } else if (isOurClient) {
         // H7: WS closed (likely reconnect-attempts exhausted) while no
         // dictation was in flight. Previously the tray stayed on
@@ -583,14 +613,36 @@ export class DictationOrchestrator {
     client.on('error', onError);
     client.on('close', onClose);
 
-    // Emit 'connecting' just before the WS handshake so the tray and
-    // overlay reflect the gap between hotkey press and 'listening' on
-    // a cold start. If the connection is already warm, ensureConnected
-    // returns early above and this branch never runs (transition is
-    // idle → listening directly).
-    this.updateStatus('connecting');
+    // The 'connecting' status emit lives in start(), not here: this method
+    // also serves prewarm, and a prewarm-owned connect must neither flash
+    // the overlay nor swallow the transition a joining dictation expects.
 
-    await client.connect();
+    try {
+      await client.connect();
+    } catch (err) {
+      // Connect failed (handshake error, session.update rejected, ready
+      // watchdog). Detach our handlers and dispose so nothing lingers on
+      // the dead client's emitter.
+      this.detachClientListeners(client);
+      try {
+        client.dispose();
+      } catch {
+        /* ignore */
+      }
+      throw err;
+    }
+    if (this.disposed) {
+      // dispose() ran while the connect was in flight — this client was
+      // never published to `this.client`, so without this check its live
+      // WS would be orphaned (connected, unreferenced, unkillable).
+      this.detachClientListeners(client);
+      try {
+        client.dispose();
+      } catch {
+        /* ignore */
+      }
+      throw new Error('orchestrator disposed during connect');
+    }
     const chunkListener = (chunk: ChunkLike): void => {
       // Prefer the binary path; fall back to base64 for legacy/test paths.
       if ('data' in chunk && chunk.data) client.appendAudio(chunk.data as Buffer);
@@ -601,16 +653,6 @@ export class DictationOrchestrator {
     this.client = client;
     return client;
   }
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-function dictionaryPrompt(entries: { from: string; to: string }[]): string | undefined {
-  if (!entries.length) return undefined;
-  const terms = entries.map((e) => e.to).join(', ');
-  return `Use these proper nouns when relevant: ${terms}.`;
 }
 
 function errMsg(err: unknown): string {

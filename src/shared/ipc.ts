@@ -87,7 +87,19 @@ export interface FormatterErrorPayload {
 }
 
 export interface SystemErrorPayload {
-  source: 'duck' | 'autoLaunch' | 'updater' | 'paste';
+  // Every `source` main actually sends must be listed here. v0.1.8 shipped
+  // with 'storage' (store/history.ts) and 'audio-backpressure' (main/index.ts)
+  // missing from this union — the payloads still flowed (the renderer treats
+  // source as an opaque label), but the type lied. 'transcription' carries
+  // realtime/server-side dictation failures (the v0.1.8 silent-error class).
+  source:
+    | 'duck'
+    | 'autoLaunch'
+    | 'updater'
+    | 'paste'
+    | 'storage'
+    | 'audio-backpressure'
+    | 'transcription';
   message: string;
 }
 

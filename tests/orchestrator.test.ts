@@ -12,6 +12,7 @@ const hoisted = vi.hoisted(() => {
     appended: string[] = [];
     committed = false;
     closed = false;
+    disposed = false;
     connectDelay = 50;
     failConnect = false;
 
@@ -46,6 +47,10 @@ const hoisted = vi.hoisted(() => {
       this.opened = false;
       this.closed = true;
       this.emit('close');
+    }
+    dispose(): void {
+      this.disposed = true;
+      this.opened = false;
     }
     isOpen(): boolean {
       return this.opened;
@@ -106,6 +111,11 @@ vi.mock('@main/inject/typer', () => ({
 
 vi.mock('@main/tray', () => ({
   setStatus: vi.fn()
+}));
+
+vi.mock('@main/broadcast', () => ({
+  broadcastToUiWindows: vi.fn(),
+  setAudioWebContentsId: vi.fn()
 }));
 
 vi.mock('@main/store/history', () => ({
@@ -182,6 +192,9 @@ class FakeAudioBridge {
 import { DictationOrchestrator } from '../src/main/dictation/orchestrator';
 import { pasteText } from '@main/inject/typer';
 import { historyStore } from '@main/store/history';
+import { broadcastToUiWindows } from '@main/broadcast';
+import { setStatus } from '@main/tray';
+import { IPC } from '../src/shared/ipc';
 
 describe('DictationOrchestrator', () => {
   let audio: FakeAudioBridge;
@@ -193,6 +206,8 @@ describe('DictationOrchestrator', () => {
     orch = new DictationOrchestrator(audio as never);
     vi.mocked(pasteText).mockClear();
     vi.mocked(historyStore.add).mockClear();
+    vi.mocked(broadcastToUiWindows).mockClear();
+    vi.mocked(setStatus).mockClear();
   });
 
   afterEach(() => {
@@ -397,5 +412,73 @@ describe('DictationOrchestrator', () => {
     await stop;
 
     expect(pasteText).toHaveBeenCalledWith('recovered', true, 'balanced', true);
+  });
+
+  // v0.1.8 incident class: a server error must surface as SYSTEM_ERROR
+  // (source 'transcription') to the Settings UI, not just a transcript token.
+  it('runtime server error broadcasts SYSTEM_ERROR with source transcription', async () => {
+    await orch.start();
+    audio.feed(5);
+    hoisted.instances[0]!.emit('error', new Error('The server had an error'));
+    await new Promise((r) => setTimeout(r, 10));
+
+    expect(broadcastToUiWindows).toHaveBeenCalledWith(IPC.SYSTEM_ERROR, {
+      source: 'transcription',
+      message: 'The server had an error'
+    });
+  });
+
+  it('connect failure (setup error) rejects start and broadcasts SYSTEM_ERROR', async () => {
+    const original = hoisted.FakeRealtimeClient.prototype.connect;
+    hoisted.FakeRealtimeClient.prototype.connect = function (): Promise<void> {
+      this.failConnect = true;
+      return original.call(this);
+    };
+    try {
+      await orch.start();
+      expect(orch.isActive()).toBe(false);
+      expect(broadcastToUiWindows).toHaveBeenCalledWith(IPC.SYSTEM_ERROR, {
+        source: 'transcription',
+        message: 'mock connect failure'
+      });
+      // The failed client must have been disposed, not left dangling.
+      expect(hoisted.instances[0]?.disposed).toBe(true);
+    } finally {
+      hoisted.FakeRealtimeClient.prototype.connect = original;
+    }
+  });
+
+  it('dispose() during an in-flight connect closes the client once connect settles', async () => {
+    const startP = orch.start();
+    // Let start() reach _doConnect (api key fetch is a microtask) before disposing.
+    await new Promise((r) => setTimeout(r, 10));
+    expect(hoisted.instances).toHaveLength(1);
+    orch.dispose();
+    await startP;
+
+    // The connect resolved AFTER dispose — the client must not be orphaned
+    // with a live WS.
+    expect(hoisted.instances[0]!.disposed).toBe(true);
+    expect(orch.isActive()).toBe(false);
+  });
+
+  it('prewarm alone never emits the connecting status', async () => {
+    await orch.prewarmConnection();
+    expect(setStatus).not.toHaveBeenCalledWith('connecting');
+    expect(setStatus).toHaveBeenCalledWith('idle');
+  });
+
+  it('start() joining an in-flight prewarm connect still emits connecting', async () => {
+    const prewarmP = orch.prewarmConnection();
+    // Join while the prewarm-owned connect (50ms) is still in flight.
+    await new Promise((r) => setTimeout(r, 10));
+    const startP = orch.start();
+    await Promise.all([prewarmP, startP]);
+
+    // Only one client (the connect was coalesced) AND the dictation cycle
+    // observed 'connecting' even though prewarm owned the connect.
+    expect(hoisted.instances).toHaveLength(1);
+    expect(setStatus).toHaveBeenCalledWith('connecting');
+    expect(setStatus).toHaveBeenCalledWith('listening');
   });
 });

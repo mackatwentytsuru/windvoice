@@ -13,6 +13,11 @@ const DEFAULT_MODEL = 'gpt-realtime-whisper';
 const RECONNECT_BASE_MS = 250;
 const RECONNECT_MAX_MS = 5_000;
 const RECONNECT_MAX_ATTEMPTS = 5;
+// v0.1.8 incident: the server can accept the WS handshake and emit
+// `session.created`, then reject our `session.update` — leaving a session
+// that looks healthy but transcribes nothing. connect() therefore resolves
+// only on the `session.updated` ack, raced against this watchdog.
+const READY_TIMEOUT_MS = 5_000;
 const IDLE_PING_MS = 20_000;
 const AUDIO_BACKPRESSURE_BYTES = 256 * 1024;
 // MEDIUM-4: sustained backpressure surfacing threshold. With ~50 ms PCM
@@ -39,7 +44,6 @@ export interface RealtimeClientOptions {
   apiKey: string;
   model?: string;
   language?: string;        // e.g. "ja", "en"; undefined for auto-detect
-  prompt?: string;
   vadEnabled?: boolean;
 }
 
@@ -74,8 +78,18 @@ export class RealtimeClient extends EventEmitter {
   // Kept short — only the last BACKPRESSURE_WINDOW_MS worth — so old drops
   // age out and a brief network blip does not stay "armed" forever.
   private dropTimestamps: number[] = [];
-  private consecutiveDrops = 0;
   private lastBackpressureNotifyAt = 0;
+  /**
+   * Pending connect() settle while we wait for the server to ack our
+   * `session.update` (FIX for the v0.1.8 dead-after-session.created class:
+   * resolving connect() on socket-open made a setup-rejected session look
+   * healthy). Cleared on ack, setup error, watchdog timeout, close/dispose.
+   */
+  private setupPending: {
+    resolve: () => void;
+    reject: (err: Error) => void;
+    timer: NodeJS.Timeout;
+  } | null = null;
 
   constructor(opts: RealtimeClientOptions) {
     super();
@@ -124,7 +138,6 @@ export class RealtimeClient extends EventEmitter {
       const onceOpen = (): void => {
         ws.off('error', onceError);
         this.opened = true;
-        this.reconnectAttempts = 0;
         this.cleanClose = false;
         this.sendSessionUpdate();
         this.emit('open');
@@ -138,7 +151,21 @@ export class RealtimeClient extends EventEmitter {
           this.emit('error', wrapped);
         });
         this.startPing();
-        resolve();
+        // v0.1.8: do NOT resolve here. Socket-open + session.created is not
+        // a usable session — the server may still reject our session.update.
+        // Resolve on the `session.updated` ack (onMessage), raced against
+        // the READY_TIMEOUT_MS watchdog. `reconnectAttempts` is reset on
+        // ack, not here, so a server that accepts the socket but never
+        // becomes ready cannot reconnect-loop forever.
+        const timer = setTimeout(() => {
+          this.failSetup(
+            new Error(
+              `realtime session not ready within ${READY_TIMEOUT_MS / 1000}s (no session.updated ack)`
+            )
+          );
+        }, READY_TIMEOUT_MS);
+        if (typeof timer.unref === 'function') timer.unref();
+        this.setupPending = { resolve, reject, timer };
       };
       const onceError = (err: Error): void => {
         ws.off('open', onceOpen);
@@ -156,6 +183,43 @@ export class RealtimeClient extends EventEmitter {
     });
   }
 
+  /** Clear + reject the pending connect() settle. Returns false if none. */
+  private rejectSetup(err: Error): boolean {
+    const pending = this.setupPending;
+    if (!pending) return false;
+    this.setupPending = null;
+    clearTimeout(pending.timer);
+    pending.reject(err);
+    return true;
+  }
+
+  /**
+   * Fail the in-flight connect() during the setup phase (between sending
+   * session.update and receiving its ack) and tear the socket down.
+   * `fatal` marks a server-side rejection of our session.update payload:
+   * auto-reconnecting would resend the identical payload and loop forever
+   * (the v0.1.8 `prompt` rejection), so reconnect is suppressed via
+   * cleanClose. Non-fatal (watchdog timeout) leaves reconnect policy to
+   * the caller / normal close path.
+   */
+  private failSetup(err: Error, fatal = false): void {
+    if (!this.setupPending) return;
+    if (fatal) this.cleanClose = true;
+    this.opened = false;
+    this.stopPing();
+    const deadWs = this.ws;
+    this.ws = null;
+    if (deadWs) {
+      try {
+        deadWs.removeAllListeners();
+        deadWs.terminate();
+      } catch {
+        /* ignore */
+      }
+    }
+    this.rejectSetup(err);
+  }
+
   private sendSessionUpdate(): void {
     const model = this.opts.model ?? DEFAULT_MODEL;
     const session: Record<string, unknown> = {
@@ -166,13 +230,11 @@ export class RealtimeClient extends EventEmitter {
           transcription: {
             model,
             ...(this.opts.language ? { language: this.opts.language } : {})
-            // Note: `prompt` was previously sent as a biasing hint built from
-            // the user dictionary. As of 2026-05-26, OpenAI's Realtime API
-            // returns `"The 'prompt' parameter is not supported for this
-            // model."` and aborts the session immediately after `session.created`.
-            // The dictionary is still applied downstream in the gpt-5-mini
-            // formatter step (postprocess/formatter.ts), so the final paste
-            // remains corrected — only the realtime biasing was lost.
+            // Note: `prompt` (dictionary biasing) was removed here. As of
+            // 2026-05-26 the Realtime API rejects it ("The 'prompt' parameter
+            // is not supported for this model.") right after session.created.
+            // The dictionary is still applied in the gpt-5-mini formatter
+            // step (postprocess/formatter.ts).
           },
           turn_detection: this.opts.vadEnabled
             ? {
@@ -190,13 +252,15 @@ export class RealtimeClient extends EventEmitter {
 
   private recordBackpressureDrop(): void {
     const now = Date.now();
-    this.consecutiveDrops++;
     this.dropTimestamps.push(now);
-    // Age out drops outside the sliding window.
+    // Age out drops outside the sliding window — find the first still-live
+    // entry and splice once instead of shifting one element at a time.
     const cutoff = now - BACKPRESSURE_WINDOW_MS;
-    while (this.dropTimestamps.length > 0 && this.dropTimestamps[0]! < cutoff) {
-      this.dropTimestamps.shift();
+    let firstLive = 0;
+    while (firstLive < this.dropTimestamps.length && this.dropTimestamps[firstLive]! < cutoff) {
+      firstLive++;
     }
+    if (firstLive > 0) this.dropTimestamps.splice(0, firstLive);
     if (
       this.dropTimestamps.length >= BACKPRESSURE_NOTIFY_THRESHOLD &&
       now - this.lastBackpressureNotifyAt >= BACKPRESSURE_NOTIFY_COOLDOWN_MS
@@ -220,13 +284,11 @@ export class RealtimeClient extends EventEmitter {
       // so 10 drops in a 5 s window means roughly half a second has been
       // tossed — enough that the resulting transcript will miss words.
       // Surface that to the UI banner so the user knows their network is
-      // the reason, not WindVoice. The counter resets on every healthy
-      // (non-dropping) call so a one-off blip does not trigger.
+      // the reason, not WindVoice. Old drops age out of the sliding window
+      // so a one-off blip does not trigger.
       this.recordBackpressureDrop();
       return;
     }
-    // Reset the run when we successfully send — backpressure has cleared.
-    this.consecutiveDrops = 0;
     let base64: string;
     if (typeof buf === 'string') {
       base64 = buf;
@@ -254,6 +316,8 @@ export class RealtimeClient extends EventEmitter {
     this.cleanClose = true;
     this.stopPing();
     this.clearReconnectTimer();
+    // A connect() still waiting for the session.update ack must not hang.
+    this.rejectSetup(new Error('client closed during session setup'));
     if (this.ws) {
       try {
         this.ws.close(1000);
@@ -271,6 +335,7 @@ export class RealtimeClient extends EventEmitter {
     this.cleanClose = true;
     this.stopPing();
     this.clearReconnectTimer();
+    this.rejectSetup(new Error('client disposed during session setup'));
     if (this.ws) {
       try {
         this.ws.removeAllListeners();
@@ -329,6 +394,14 @@ export class RealtimeClient extends EventEmitter {
     this.opened = false;
     this.stopPing();
     this.ws = null;
+
+    // Transport dropped between session.update and its ack: fail the
+    // pending connect() and let its caller own the retry decision —
+    // scheduling our own reconnect here would race the caller's error
+    // handling and double-drive the connection.
+    if (this.rejectSetup(new Error('connection closed during session setup'))) {
+      return;
+    }
 
     if (this.cleanClose) {
       this.emit('close');
@@ -394,9 +467,36 @@ export class RealtimeClient extends EventEmitter {
         if (ev.success) this.emit('final', ev.data.transcript);
         break;
       }
+      // Setup ack: the server accepted our session.update — only now is the
+      // session actually usable (see READY_TIMEOUT_MS). The transcription
+      // intent emits `transcription_session.updated`; GA uses
+      // `session.updated`. Accept both (events.ts SessionUpdatedEvent).
+      case 'transcription_session.updated':
+      case 'session.updated': {
+        const pending = this.setupPending;
+        if (pending) {
+          this.setupPending = null;
+          clearTimeout(pending.timer);
+          // Ready is the only place reconnect attempts reset — a server
+          // that accepts the socket but never acks must hit the cap.
+          this.reconnectAttempts = 0;
+          pending.resolve();
+        }
+        break;
+      }
       case 'error': {
         const ev = ErrorEvent.safeParse(parsed);
-        if (ev.success) this.emit('error', new Error(ev.data.error.message));
+        if (!ev.success) break;
+        const err = new Error(ev.data.error.message);
+        if (this.setupPending) {
+          // Server rejected our session.update (v0.1.8: "The 'prompt'
+          // parameter is not supported for this model."). Fatal: a
+          // reconnect would resend the identical payload and loop, so
+          // fail the pending connect() and suppress auto-reconnect.
+          this.failSetup(err, true);
+        } else {
+          this.emit('error', err);
+        }
         break;
       }
       default:
