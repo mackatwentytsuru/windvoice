@@ -91,6 +91,26 @@ function isHighSurrogate(cu: number): boolean {
 }
 
 /**
+ * True only when every character can be reliably synthesized as a keystroke
+ * via KEYEVENTF_UNICODE (VK_PACKET) — i.e. plain ASCII (≤ U+007F).
+ *
+ * Why: with an active IME (Japanese / Chinese / Korean), Windows routes
+ * VK_PACKET input THROUGH the IME for non-ASCII characters, which mangles the
+ * result — a documented issue (e.g. stale/duplicated characters for the
+ * U+3000–U+30FF Japanese range). ASCII passes through cleanly regardless of
+ * IME mode, which is exactly why the symptom is "fine in half-width English,
+ * garbled in Japanese". The caller routes any non-ASCII text through the
+ * IME-safe clipboard paste path instead of the keystroke path. Newline/CR/Tab
+ * are ASCII and already handled by typeTextDirect.
+ */
+export function isAsciiTypeable(text: string): boolean {
+  for (let i = 0; i < text.length; i++) {
+    if (text.charCodeAt(i) > 0x7f) return false;
+  }
+  return true;
+}
+
+/**
  * Test seam — see tests/typeText.test.ts. Same rationale as the seam in
  * pasteWin32.ts: the bare `require('sendinput')` above is invisible to
  * vitest's module mocks, and letting the real addon load in tests would

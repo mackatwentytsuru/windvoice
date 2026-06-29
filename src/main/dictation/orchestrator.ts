@@ -5,7 +5,7 @@ import type { OverlayWindow } from '@main/overlay/window';
 import { audioDuck } from '@main/audio/duck';
 import { RealtimeClient } from '@main/realtime/client';
 import { pasteText } from '@main/inject/typer';
-import { typeTextDirect } from '@main/inject/typeText';
+import { typeTextDirect, isAsciiTypeable } from '@main/inject/typeText';
 import { streamingTyper } from '@main/inject/streamingTyper';
 import { secureStore } from '@main/store/secure';
 import { settingsStore } from '@main/store/settings';
@@ -392,11 +392,18 @@ export class DictationOrchestrator {
     this.broadcast(IPC.TRANSCRIPT_FINAL, processed);
     try {
       const ins = settings.insertion;
-      // 'type' mode synthesizes keystrokes (Windows). typeTextDirect
-      // returns false when nothing was injected (non-Windows / module
-      // missing) — only then is it safe to fall back to a paste, since a
-      // partial type must not be followed by a full paste.
-      const typed = ins.method === 'type' && (await typeTextDirect(processed));
+      // 'type' mode synthesizes keystrokes (Windows). KEYEVENTF_UNICODE is
+      // reliable for ASCII regardless of IME state, but an active IME
+      // (Japanese/Chinese/Korean) intercepts and garbles non-ASCII VK_PACKET
+      // injection (the "fine in half-width English, garbled in Japanese"
+      // symptom). So non-ASCII text is routed through the IME-safe paste path
+      // even in 'type' mode. typeTextDirect returns false when nothing was
+      // injected (non-Windows / module missing); only then is a paste fallback
+      // safe, since a partial type must not be followed by a full paste.
+      const typed =
+        ins.method === 'type' &&
+        isAsciiTypeable(processed) &&
+        (await typeTextDirect(processed));
       if (!typed) {
         await pasteText(
           processed,

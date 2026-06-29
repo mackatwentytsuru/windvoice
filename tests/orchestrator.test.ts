@@ -114,6 +114,14 @@ vi.mock('@main/inject/typer', () => ({
   pasteText: vi.fn().mockResolvedValue(undefined)
 }));
 
+// Keep the REAL isAsciiTypeable (the routing decision under test) but stub
+// typeTextDirect so a 'type'-mode test never injects real keystrokes into the
+// focused window on a Windows CI host.
+vi.mock('@main/inject/typeText', async (importActual) => {
+  const actual = await importActual<typeof import('@main/inject/typeText')>();
+  return { ...actual, typeTextDirect: vi.fn().mockResolvedValue(false) };
+});
+
 vi.mock('@main/tray', () => ({
   setStatus: vi.fn()
 }));
@@ -202,7 +210,9 @@ class FakeAudioBridge {
 }
 
 import { DictationOrchestrator } from '../src/main/dictation/orchestrator';
+import { settingsStore } from '@main/store/settings';
 import { pasteText } from '@main/inject/typer';
+import { typeTextDirect } from '@main/inject/typeText';
 import { historyStore } from '@main/store/history';
 import { broadcastToUiWindows } from '@main/broadcast';
 import { setStatus } from '@main/tray';
@@ -541,6 +551,58 @@ describe('DictationOrchestrator', () => {
     audio.feed(10, 0);
     await orch.stop();
     expect(audio.recaptures).toBe(0);
+  });
+
+  function withTypeMode(): () => void {
+    const orig = vi.mocked(settingsStore.get).getMockImplementation();
+    const base = settingsStore.get();
+    vi.mocked(settingsStore.get).mockReturnValue({
+      ...base,
+      insertion: { ...base.insertion, method: 'type' },
+      formatter: { ...base.formatter, enabled: false } // skip the network formatter
+    } as never);
+    return () => vi.mocked(settingsStore.get).mockImplementation(orig!);
+  }
+
+  it('type mode: non-ASCII (Japanese) text routes to the IME-safe paste path', async () => {
+    // KEYEVENTF_UNICODE is garbled by an active Japanese IME for non-ASCII, so
+    // the orchestrator must NOT type it — typeTextDirect is never invoked and
+    // the text is pasted instead.
+    const restore = withTypeMode();
+    vi.mocked(typeTextDirect).mockClear();
+    try {
+      await orch.start();
+      audio.feed(10, 0.5);
+      const stop = orch.stop();
+      await new Promise((r) => setTimeout(r, 100));
+      hoisted.instances[0]!.emit('final', 'こんにちは世界');
+      await stop;
+
+      expect(typeTextDirect).not.toHaveBeenCalled();
+      expect(pasteText).toHaveBeenCalledWith('こんにちは世界', true, 'balanced', true);
+    } finally {
+      restore();
+    }
+  });
+
+  it('type mode: pure-ASCII text is typed via typeTextDirect, not pasted', async () => {
+    const restore = withTypeMode();
+    vi.mocked(typeTextDirect).mockClear();
+    vi.mocked(typeTextDirect).mockResolvedValueOnce(true); // simulate a successful type
+    vi.mocked(pasteText).mockClear();
+    try {
+      await orch.start();
+      audio.feed(10, 0.5);
+      const stop = orch.stop();
+      await new Promise((r) => setTimeout(r, 100));
+      hoisted.instances[0]!.emit('final', 'echo hello');
+      await stop;
+
+      expect(typeTextDirect).toHaveBeenCalledWith('echo hello');
+      expect(pasteText).not.toHaveBeenCalled();
+    } finally {
+      restore();
+    }
   });
 
   it('surfaces a connection notice when audio had energy but commit is refused', async () => {

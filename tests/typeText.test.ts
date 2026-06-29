@@ -14,7 +14,7 @@ const hoisted = vi.hoisted(() => ({
 vi.mock('@main/debug', () => ({ debug: vi.fn() }));
 vi.mock('@main/hotkey/manager', () => ({ getActiveHotkeyManager: () => null }));
 
-import { typeTextDirect, __test } from '@main/inject/typeText';
+import { typeTextDirect, isAsciiTypeable, __test } from '@main/inject/typeText';
 import { debug } from '@main/debug';
 
 const { inputsForCodeUnit, isHighSurrogate, setSendInputModuleForTest } = __test;
@@ -150,6 +150,28 @@ describe('inputsForCodeUnit', () => {
       { up: false, val: 0x0d, type: 0 },
       { up: true, val: 0x0d, type: 0 }
     ]);
+  });
+});
+
+describe('isAsciiTypeable', () => {
+  it('is true for pure ASCII (typed reliably regardless of IME mode)', () => {
+    expect(isAsciiTypeable('hello world 123 !@#')).toBe(true);
+    expect(isAsciiTypeable('git commit -m "wip"')).toBe(true);
+    expect(isAsciiTypeable('line1\nline2\t end')).toBe(true);
+    expect(isAsciiTypeable('')).toBe(true);
+  });
+
+  it('is false when any non-ASCII char is present (must paste — IME garbles VK_PACKET)', () => {
+    expect(isAsciiTypeable('こんにちは')).toBe(false);
+    expect(isAsciiTypeable('OK です')).toBe(false); // mixed ASCII + Japanese
+    expect(isAsciiTypeable('café')).toBe(false); // Latin-1 accent
+    expect(isAsciiTypeable('「全角」')).toBe(false); // U+3000–U+30FF range
+    expect(isAsciiTypeable('😀')).toBe(false);
+  });
+
+  it('treats U+007F as the inclusive ASCII boundary', () => {
+    expect(isAsciiTypeable('\x7f')).toBe(true); // DEL, still ≤ 0x7F
+    expect(isAsciiTypeable('')).toBe(false); // U+0080, first non-ASCII code point
   });
 });
 
