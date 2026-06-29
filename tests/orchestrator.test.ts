@@ -35,13 +35,18 @@ const hoisted = vi.hoisted(() => {
       });
     }
 
+    cleared = false;
     appendAudio(b64: string): void {
       if (!this.opened) return;
       this.appended.push(b64);
     }
-    commit(): void {
-      if (!this.opened) return;
+    commit(): boolean {
+      if (!this.opened) return false;
       this.committed = true;
+      return true;
+    }
+    clearInput(): void {
+      this.cleared = true;
     }
     close(): void {
       this.opened = false;
@@ -143,9 +148,11 @@ class FakeAudioBridge {
   private chunkListener: ((c: { base64: string; samples: number }) => void) | null = null;
   private levelListener: ((level: number) => void) | null = null;
   private chunkCount = 0;
+  private maxLevel = 0;
   beeps: Array<'start' | 'stop'> = [];
   devices: string[] = [];
   recentAudioError: string | null = null;
+  recaptures = 0;
 
   setChunkListener(cb: ((c: { base64: string; samples: number }) => void) | null): void {
     this.chunkListener = cb;
@@ -157,10 +164,14 @@ class FakeAudioBridge {
     this.levelListener = cb;
   }
   beginForwarding(): { startCount: number } {
+    this.maxLevel = 0;
     return { startCount: this.chunkCount };
   }
-  endForwarding(start: number): { delivered: number } {
-    return { delivered: this.chunkCount - start };
+  endForwarding(start: number): { delivered: number; maxLevel: number } {
+    return { delivered: this.chunkCount - start, maxLevel: this.maxLevel };
+  }
+  recapture(): void {
+    this.recaptures++;
   }
   playBeep(kind: 'start' | 'stop'): void {
     this.beeps.push(kind);
@@ -185,6 +196,7 @@ class FakeAudioBridge {
       this.chunkCount++;
       this.chunkListener?.({ base64: 'AAA=', samples: 1200 });
       this.levelListener?.(level);
+      if (level > this.maxLevel) this.maxLevel = level;
     }
   }
 }
@@ -480,5 +492,71 @@ describe('DictationOrchestrator', () => {
     expect(hoisted.instances).toHaveLength(1);
     expect(setStatus).toHaveBeenCalledWith('connecting');
     expect(setStatus).toHaveBeenCalledWith('listening');
+  });
+
+  // Live-but-silent mic: chunks arrive (enough by count) but carry no energy.
+  // The take must NOT commit (that would draw the raw "0.00ms" server error);
+  // instead it clears the server buffer and surfaces a friendly notice.
+  it('abandons a silent take: no commit, clears buffer, surfaces a notice', async () => {
+    await orch.start();
+    audio.feed(10, 0); // 10 chunks, zero energy → silent
+    await orch.stop();
+
+    expect(hoisted.instances[0]?.committed).toBe(false);
+    expect(hoisted.instances[0]?.cleared).toBe(true);
+    expect(pasteText).not.toHaveBeenCalled();
+    expect(broadcastToUiWindows).toHaveBeenCalledWith(IPC.SYSTEM_ERROR, {
+      source: 'notice',
+      message: expect.any(String)
+    });
+    expect(orch.isActive()).toBe(false);
+  });
+
+  it('escalates and forces a recapture after a second consecutive silent take', async () => {
+    await orch.start();
+    audio.feed(10, 0);
+    await orch.stop();
+    await orch.start();
+    audio.feed(10, 0);
+    await orch.stop();
+
+    // Recapture is only forced on the escalation (2nd consecutive), not the 1st.
+    expect(audio.recaptures).toBe(1);
+  });
+
+  it('a committed take resets the silent-take streak', async () => {
+    // One silent take...
+    await orch.start();
+    audio.feed(10, 0);
+    await orch.stop();
+    // ...then a real one commits and clears the streak.
+    await orch.start();
+    audio.feed(10, 0.5);
+    const stop = orch.stop();
+    await new Promise((r) => setTimeout(r, 100));
+    hoisted.instances[0]!.emit('final', 'back to normal');
+    await stop;
+    // A third, silent take is therefore the FIRST of a new streak → no recapture.
+    await orch.start();
+    audio.feed(10, 0);
+    await orch.stop();
+    expect(audio.recaptures).toBe(0);
+  });
+
+  it('surfaces a connection notice when audio had energy but commit is refused', async () => {
+    await orch.start();
+    audio.feed(10, 0.5); // real energy
+    // Client refuses commit (e.g. appends dropped by a blip → <100ms server-side).
+    hoisted.instances[0]!.commit = (): boolean => false;
+    await orch.stop();
+
+    expect(pasteText).not.toHaveBeenCalled();
+    expect(hoisted.instances[0]?.cleared).toBe(true);
+    expect(broadcastToUiWindows).toHaveBeenCalledWith(IPC.SYSTEM_ERROR, {
+      source: 'notice',
+      message: expect.any(String)
+    });
+    // A connection refusal is not a silent mic → no recapture escalation.
+    expect(audio.recaptures).toBe(0);
   });
 });

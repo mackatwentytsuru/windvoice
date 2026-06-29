@@ -6,9 +6,20 @@ import {
   TranscriptionCompletedEvent,
   ErrorEvent
 } from './events';
+import {
+  BYTES_PER_SAMPLE,
+  MIN_COMMIT_AUDIO_MS,
+  TARGET_SAMPLE_RATE
+} from '@shared/constants';
 
 const REALTIME_BASE = 'wss://api.openai.com/v1/realtime';
 const DEFAULT_MODEL = 'gpt-realtime-whisper';
+
+// Minimum PCM bytes that must reach the server before a commit can succeed.
+// 100 ms × 24 000 Hz × 2 bytes/sample = 4 800 bytes. Committing below this
+// draws the server's "buffer too small … 0.00ms of audio" error, so the
+// client refuses client-side instead (see `commit`).
+const MIN_COMMIT_BYTES = Math.ceil((MIN_COMMIT_AUDIO_MS / 1000) * TARGET_SAMPLE_RATE) * BYTES_PER_SAMPLE;
 
 const RECONNECT_BASE_MS = 250;
 const RECONNECT_MAX_MS = 5_000;
@@ -38,6 +49,21 @@ let onAudioBackpressureCb: (() => void) | null = null;
  */
 export function setAudioBackpressureListener(cb: (() => void) | null): void {
   onAudioBackpressureCb = cb;
+}
+
+/**
+ * Decoded byte length of a base64 string without allocating a Buffer.
+ * Used to count PCM bytes when `appendAudio` is handed a pre-encoded string
+ * (legacy/test path) so the commit gate sees the same byte total as the
+ * binary path.
+ */
+function base64DecodedBytes(b64: string): number {
+  const len = b64.length;
+  if (len === 0) return 0;
+  let padding = 0;
+  if (b64.charCodeAt(len - 1) === 61 /* '=' */) padding++;
+  if (len > 1 && b64.charCodeAt(len - 2) === 61) padding++;
+  return Math.max(0, Math.floor((len * 3) / 4) - padding);
 }
 
 export interface RealtimeClientOptions {
@@ -79,6 +105,14 @@ export class RealtimeClient extends EventEmitter {
   // age out and a brief network blip does not stay "armed" forever.
   private dropTimestamps: number[] = [];
   private lastBackpressureNotifyAt = 0;
+  // PCM bytes successfully pushed to the server since the last commit/clear.
+  // Counts only bytes that actually left over the socket (post backpressure
+  // and open-state checks), so it reflects what the server's input buffer
+  // really holds — the authoritative gate for `commit` (see MIN_COMMIT_BYTES).
+  // Reset on commit, clear, and on each fresh `session.updated` ack so a
+  // mid-take reconnect (which starts a new, empty server buffer) cannot let a
+  // stale count wave through a commit against an empty buffer.
+  private appendedBytesSinceCommit = 0;
   /**
    * Pending connect() settle while we wait for the server to ack our
    * `session.update` (FIX for the v0.1.8 dead-after-session.created class:
@@ -290,21 +324,59 @@ export class RealtimeClient extends EventEmitter {
       return;
     }
     let base64: string;
+    let pcmBytes: number;
     if (typeof buf === 'string') {
       base64 = buf;
+      pcmBytes = base64DecodedBytes(buf);
     } else if (Buffer.isBuffer(buf)) {
       base64 = buf.toString('base64');
+      pcmBytes = buf.byteLength;
     } else if (buf instanceof Uint8Array) {
       base64 = Buffer.from(buf.buffer, buf.byteOffset, buf.byteLength).toString('base64');
+      pcmBytes = buf.byteLength;
     } else {
       base64 = Buffer.from(new Uint8Array(buf)).toString('base64');
+      pcmBytes = buf.byteLength;
     }
     this.send({ type: 'input_audio_buffer.append', audio: base64 });
+    // Count only what we actually sent: backpressure/closed-socket drops
+    // returned early above, so this mirrors the server-side buffer length.
+    this.appendedBytesSinceCommit += pcmBytes;
   }
 
-  commit(): void {
-    if (!this.opened) return;
+  /**
+   * Commit the buffered audio for transcription. Returns `true` only when a
+   * commit was actually sent. When less than 100 ms (MIN_COMMIT_BYTES) has
+   * reached the server, the commit is REFUSED client-side and `false` is
+   * returned — committing here is what produces the server's "buffer too
+   * small … 0.00ms of audio" error after a silent or dropped take. The
+   * caller decides how to surface the empty take (see the orchestrator's
+   * `handleEmptyTake`) and may call `clearInput()` to discard the partial
+   * buffer.
+   */
+  commit(): boolean {
+    if (!this.opened) return false;
+    if (this.appendedBytesSinceCommit < MIN_COMMIT_BYTES) {
+      debug(
+        'REALTIME',
+        `commit refused: ${this.appendedBytesSinceCommit}B buffered (< ${MIN_COMMIT_BYTES}B floor)`
+      );
+      return false;
+    }
     this.send({ type: 'input_audio_buffer.commit' });
+    this.appendedBytesSinceCommit = 0;
+    return true;
+  }
+
+  /**
+   * Discard the server-side input buffer without transcribing it. Used to
+   * drop a sub-threshold / silent take so its leftover audio does not bleed
+   * into the next dictation's commit.
+   */
+  clearInput(): void {
+    if (!this.opened) return;
+    this.send({ type: 'input_audio_buffer.clear' });
+    this.appendedBytesSinceCommit = 0;
   }
 
   isOpen(): boolean {
@@ -473,6 +545,11 @@ export class RealtimeClient extends EventEmitter {
       // `session.updated`. Accept both (events.ts SessionUpdatedEvent).
       case 'transcription_session.updated':
       case 'session.updated': {
+        // Fresh / reconfigured session ⇒ empty server-side input buffer.
+        // Drop any byte count carried over (e.g. from a take interrupted by a
+        // reconnect) so the commit gate judges only audio appended to THIS
+        // session and can't wave a commit through against an empty buffer.
+        this.appendedBytesSinceCommit = 0;
         const pending = this.setupPending;
         if (pending) {
           this.setupPending = null;

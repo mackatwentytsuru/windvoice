@@ -17,7 +17,14 @@ import { debug } from '@main/debug';
 import { sleep } from '@main/util/sleep';
 import { broadcastToUiWindows } from '@main/broadcast';
 import { IPC, type DictationStatus } from '@shared/types';
-import { CHUNK_MS, FINAL_TIMEOUT_MS, MIN_AUDIO_MS } from '@shared/constants';
+import type { Settings } from '@shared/types';
+import { t } from '@shared/i18n';
+import {
+  CHUNK_MS,
+  FINAL_TIMEOUT_MS,
+  MIN_AUDIO_MS,
+  SILENCE_RMS_THRESHOLD
+} from '@shared/constants';
 
 const MIN_CHUNKS = Math.ceil(MIN_AUDIO_MS / CHUNK_MS);
 const RECENT_AUDIO_ERROR_WINDOW_MS = 3_000;
@@ -43,6 +50,11 @@ export class DictationOrchestrator {
   private pendingFinal: ((text: string) => void) | null = null;
   private pendingFinalTimer: NodeJS.Timeout | null = null;
   private cancelRequested = false;
+  // Number of back-to-back takes that captured no real audio. Drives the
+  // escalation from a one-off "no audio detected" hint to actionable mic
+  // guidance (another app holding the device, wrong input). Reset on any
+  // take that actually commits.
+  private consecutiveSilentTakes = 0;
   private duckedThisCycle = false;
   private duckPromise: Promise<void> | null = null;
   private streamingActive = false;
@@ -244,8 +256,8 @@ export class DictationOrchestrator {
     const myCycle = this.cycleId;
     this.updateStatus('processing');
     const settings = settingsStore.get();
-    const { delivered } = this.audio.endForwarding(this.startCount);
-    debug('DICTATION', `delivered=${delivered} chunks`);
+    const { delivered, maxLevel } = this.audio.endForwarding(this.startCount);
+    debug('DICTATION', `delivered=${delivered} chunks maxLevel=${maxLevel.toFixed(4)}`);
 
     if (settings.ui.soundCuesEnabled) {
       this.audio.playBeep('stop');
@@ -259,7 +271,24 @@ export class DictationOrchestrator {
 
     let final = '';
     const client = this.client;
-    if (delivered >= MIN_CHUNKS && client.isOpen()) {
+    // A take is "silent" when its peak energy never rose above the noise
+    // floor — the live-but-silent mic case (digital zeros). Don't even try
+    // to commit those: transcribing silence wastes a round-trip and the
+    // commit gate below would reject it anyway.
+    const silentTake = maxLevel < SILENCE_RMS_THRESHOLD;
+    const enoughChunks = delivered >= MIN_CHUNKS;
+
+    // `commit()` returns false when less than 100 ms of audio actually
+    // reached the server (silent mic, or appends dropped by a connection
+    // blip) — refusing client-side is what keeps the raw "buffer too small …
+    // 0.00ms of audio" server error from ever reaching the user.
+    let committed = false;
+    if (enoughChunks && client.isOpen() && !silentTake) {
+      committed = client.commit();
+    }
+
+    if (committed) {
+      this.consecutiveSilentTakes = 0;
       final = await new Promise<string>((resolve) => {
         this.clearPendingFinalTimer();
         this.pendingFinalTimer = setTimeout(() => {
@@ -272,9 +301,17 @@ export class DictationOrchestrator {
           this.pendingFinal = null;
           resolve(text);
         };
-        client.commit();
+        // commit() was already sent above; just await the final here.
       });
+    } else if (enoughChunks) {
+      // The user dictated long enough, but nothing usable reached the
+      // server. Discard any partial server buffer so it can't bleed into
+      // the next take, then guide the user instead of failing silently.
+      if (client.isOpen()) client.clearInput();
+      this.handleEmptyTake(silentTake, settings);
     } else {
+      // Sub-threshold tap (accidental key press, no speech) — a no-op, as
+      // before. No banner: nagging on every stray tap would be worse.
       debug('DICTATION', `skip commit: delivered=${delivered} (<${MIN_CHUNKS})`);
     }
 
@@ -469,6 +506,42 @@ export class DictationOrchestrator {
    */
   private reportTranscriptionError(message: string): void {
     broadcastToUiWindows(IPC.SYSTEM_ERROR, { source: 'transcription', message });
+  }
+
+  /**
+   * A take captured no usable audio. Turn that into actionable, localized
+   * guidance instead of the cryptic raw server error the old path surfaced:
+   *
+   *  - Had energy but didn't land server-side  → connection hiccup.
+   *  - Silent (live-but-silent mic), first time → gentle "no audio detected".
+   *  - Silent again (the bridge's silence watchdog already rebuilt the mic
+   *    and it's STILL dead) → the device itself is the problem; force a fresh
+   *    rebuild and tell the user to free the mic / check their input device.
+   */
+  private handleEmptyTake(silentTake: boolean, settings: Settings): void {
+    const lang = settings.ui.uiLanguage;
+    if (!silentTake) {
+      this.reportNotice(t('error.audioNotSent', lang));
+      return;
+    }
+    this.consecutiveSilentTakes++;
+    if (this.consecutiveSilentTakes >= 2) {
+      // Proactively rebuild in case the per-cycle watchdog didn't trip this
+      // time; recapture() is a no-op when capture isn't active.
+      this.audio.recapture();
+      this.reportNotice(t('error.micUnavailable', lang));
+    } else {
+      this.reportNotice(t('error.noAudioDetected', lang));
+    }
+  }
+
+  /**
+   * User-facing, already-localized guidance (not a raw error). Uses the
+   * 'notice' source so the Settings banner renders the message verbatim,
+   * without the technical "source:" prefix applied to real errors.
+   */
+  private reportNotice(message: string): void {
+    broadcastToUiWindows(IPC.SYSTEM_ERROR, { source: 'notice', message });
   }
 
   private broadcast(channel: string, payload: unknown): void {

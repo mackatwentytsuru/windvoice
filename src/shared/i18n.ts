@@ -171,6 +171,10 @@ const ja: Dict = {
   // errors
   'error.apiKeyInvalid': 'API キーの形式が正しくありません。',
   'error.secureStoreUnavailable': '資格情報ストアが利用できません。',
+  'error.noAudioDetected': '音声が検出されませんでした。マイクに向かって話してから離してください。',
+  'error.micUnavailable':
+    'マイクから音声を取得できません。他のアプリ（Teams や Zoom など）がマイクを使用していないか確認し、Windows の入力デバイス設定を見直してください。',
+  'error.audioNotSent': '音声をサーバーに送信できませんでした。ネットワーク接続を確認して、もう一度お試しください。',
 
   // aria / accessibility
   'aria.delete': '削除',
@@ -346,6 +350,10 @@ const en: Dict = {
   // errors
   'error.apiKeyInvalid': 'API key format is invalid.',
   'error.secureStoreUnavailable': 'Credential store unavailable.',
+  'error.noAudioDetected': 'No audio was detected. Speak into the microphone, then release the key.',
+  'error.micUnavailable':
+    "Can't capture audio from the microphone. Check that no other app (e.g. Teams or Zoom) is using it, and review your input device in Windows sound settings.",
+  'error.audioNotSent': "Couldn't send audio to the server. Check your network connection and try again.",
 
   // aria / accessibility
   'aria.delete': 'Delete',
