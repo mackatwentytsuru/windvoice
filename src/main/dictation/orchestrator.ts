@@ -269,6 +269,33 @@ export class DictationOrchestrator {
     // latency between key-up and visible text (issue #8).
     await sleep(20);
 
+    // The flush window above yields the event loop. A WS close (onClose) or a
+    // before-quit dispose() can null `this.client` or drop it to CLOSING during
+    // those 20ms. If so, that path already reset state and surfaced any error —
+    // bail cleanly here instead of dereferencing a null client (crash) or
+    // emitting a second, contradictory banner. Restore the duck/streaming we
+    // grabbed for this cycle in case onClose ran after we'd flipped inFlight.
+    if (!this.client || !this.client.isOpen()) {
+      if (myCycle === this.cycleId) {
+        this.inFlight = false;
+        this.updateStatus('idle');
+        if (this.duckedThisCycle) {
+          this.duckedThisCycle = false;
+          void audioDuck.restore().catch(() => {
+            /* best-effort */
+          });
+        }
+        if (this.streamingActive) {
+          this.streamingActive = false;
+          void streamingTyper.end().catch(() => {
+            /* best-effort */
+          });
+        }
+      }
+      debug('DICTATION', 'stop: client closed during flush window — abandoning take');
+      return;
+    }
+
     let final = '';
     const client = this.client;
     // A take is "silent" when its peak energy never rose above the noise
@@ -573,6 +600,10 @@ export class DictationOrchestrator {
    * future take. `ensureConnected()` in the next `start()` reconnects lazily.
    */
   private resetClientForReconnect(): void {
+    // A connection failure is NOT a silent-mic streak — clear the counter so
+    // the next genuinely-silent take starts the escalation from level 1 ("no
+    // audio detected") instead of jumping to the mic-unavailable guidance.
+    this.consecutiveSilentTakes = 0;
     const old = this.client;
     if (!old) return;
     this.detachClientListeners(old);

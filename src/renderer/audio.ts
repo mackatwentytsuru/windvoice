@@ -17,6 +17,10 @@ let beepCtx: AudioContext | null = null;
 // monitor AND a `track.ended` event almost simultaneously, and each would
 // otherwise kick off its own stop→start cycle.
 let recovering = false;
+// Set when a dictation-start resume arrives while a recapture() is in flight.
+// recapture() resumes the freshly-built (suspended) context in its finally so
+// the in-progress rebuild does not leave the mic dead for the current take.
+let pendingResume = false;
 
 /**
  * When the OS suspends/resumes (sleep, audio device reset, headset unplug),
@@ -173,6 +177,19 @@ async function recapture(): Promise<void> {
     );
   } finally {
     recovering = false;
+    // A dictation-start resume arrived mid-rebuild (the new AudioContext ends
+    // suspended). Resume it now so THIS take captures audio instead of waiting
+    // for the next PTT press. resume() is idempotent on a running context.
+    if (pendingResume) {
+      pendingResume = false;
+      if (audioCtx) {
+        audioCtx.resume().catch((e: unknown) => {
+          window.audio.reportError(
+            `audioCtx.resume after rebuild failed: ${e instanceof Error ? e.message : String(e)}`
+          );
+        });
+      }
+    }
   }
 }
 
@@ -238,26 +255,20 @@ window.audio.onResume?.(() => {
   // of "the overlay shows but nothing is captured until I restart") would
   // otherwise feed only silence. Rebuild, then resume so THIS dictation
   // still captures audio rather than waiting for the next press.
-  if (!isCaptureHealthy()) {
-    window.audio.reportError('mic not live at capture start — rebuilding');
-    void recapture().then(() => {
-      // The rebuilt AudioContext is suspended at the end of startCapture, but
-      // that suspend is fire-and-forget and may still be in-flight here — so
-      // `state` can momentarily read 'running' and a `=== 'suspended'` guard
-      // would skip the wake, leaving the graph suspended with nobody to resume
-      // it. resume() is idempotent on a running context, so call it
-      // unconditionally to guarantee THIS dictation captures audio.
-      if (audioCtx) {
-        audioCtx.resume().catch((e: unknown) => {
-          window.audio.reportError(
-            `audioCtx.resume after rebuild failed: ${e instanceof Error ? e.message : String(e)}`
-          );
-        });
-      }
-    });
+  // If a rebuild is already in flight (a forced recapture fired just before
+  // this PTT press — the deterministic AUDIO_RECOVER_CMD → AUDIO_RESUME_CMD
+  // ordering), do NOT start a second recapture and do NOT resume now: the
+  // context is mid-teardown (audioCtx may be null), so an immediate resume is a
+  // no-op and the rebuilt context would be left suspended forever. Flag the
+  // resume; recapture()'s finally performs it once the new context exists.
+  if (recovering || !isCaptureHealthy()) {
+    if (!recovering) window.audio.reportError('mic not live at capture start — rebuilding');
+    pendingResume = true;
+    void recapture(); // no-op if a rebuild is already running
     return;
   }
   if (audioCtx && audioCtx.state === 'suspended') {
+    pendingResume = false;
     audioCtx.resume().catch((e: unknown) => {
       window.audio.reportError(
         `audioCtx.resume failed: ${e instanceof Error ? e.message : String(e)}`

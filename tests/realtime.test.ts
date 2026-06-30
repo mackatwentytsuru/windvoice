@@ -377,6 +377,20 @@ describe('RealtimeClient', () => {
     client.dispose();
   });
 
+  it('commit() returns false (not true) when the socket dropped to CLOSING', async () => {
+    const client = new RealtimeClient({ apiKey: 'sk-x', vadEnabled: false });
+    const p = client.connect();
+    const inst = await openAndReady(p);
+    client.appendAudio(Buffer.alloc(9600)); // plenty buffered
+    inst.sent.length = 0;
+
+    // Socket transitions OPEN → CLOSING after isOpen() but before send().
+    inst.readyState = 2; // CLOSING
+    expect(client.commit()).toBe(false);
+    expect(inst.sent.length).toBe(0); // no commit frame sent
+    client.dispose();
+  });
+
   it('a fresh session.updated ack clears buffered bytes (reconnect safety)', async () => {
     const client = new RealtimeClient({ apiKey: 'sk-x', vadEnabled: false });
     const p = client.connect();

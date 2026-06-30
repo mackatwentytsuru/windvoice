@@ -364,8 +364,15 @@ export class RealtimeClient extends EventEmitter {
    * buffer.
    */
   commit(): boolean {
-    if (!this.opened) {
-      debug('REALTIME', 'commit refused: client not open');
+    // Honest result: only claim a commit when the frame can actually be sent.
+    // The socket can transition OPEN → CLOSING between the orchestrator's
+    // isOpen() check and here; without the readyState check, send() would be a
+    // silent no-op yet commit() returned true, stalling the take for the full
+    // FINAL_TIMEOUT. Reset the drop counters here too so a closed-socket take
+    // doesn't bleed stale counts into the next take's diagnostic line.
+    if (!this.opened || !this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      debug('REALTIME', 'commit refused: socket not open');
+      this.resetAppendCounters();
       return false;
     }
     debug(
@@ -546,7 +553,11 @@ export class RealtimeClient extends EventEmitter {
     if (typeof parsed !== 'object' || parsed === null) return;
     const obj = parsed as { type?: string };
 
-    debug('REALTIME', `${obj.type ?? 'unknown'}`);
+    // Skip the 10-20 Hz streaming delta in the log — it floods the hot path and
+    // the per-take 'commit gate' / 'take result' lines already capture the flow.
+    if (obj.type !== 'conversation.item.input_audio_transcription.delta') {
+      debug('REALTIME', `${obj.type ?? 'unknown'}`);
+    }
 
     switch (obj.type) {
       case 'conversation.item.input_audio_transcription.delta': {
