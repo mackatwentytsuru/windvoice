@@ -113,6 +113,11 @@ export class RealtimeClient extends EventEmitter {
   // mid-take reconnect (which starts a new, empty server buffer) cannot let a
   // stale count wave through a commit against an empty buffer.
   private appendedBytesSinceCommit = 0;
+  // Diagnostics: how many appends were dropped since the last commit/clear, by
+  // cause. Logged at commit time so a failed take's log line shows whether the
+  // audio was lost to a closed socket or to send-buffer backpressure.
+  private droppedNotOpen = 0;
+  private droppedBackpressure = 0;
   /**
    * Pending connect() settle while we wait for the server to ack our
    * `session.update` (FIX for the v0.1.8 dead-after-session.created class:
@@ -310,8 +315,12 @@ export class RealtimeClient extends EventEmitter {
 
   /** Append a PCM chunk. Accepts a Buffer/Uint8Array/ArrayBuffer or pre-encoded base64 string. */
   appendAudio(buf: Buffer | Uint8Array | ArrayBuffer | string): void {
-    if (!this.opened || !this.ws) return;
+    if (!this.opened || !this.ws) {
+      this.droppedNotOpen++;
+      return;
+    }
     if (this.ws.bufferedAmount > AUDIO_BACKPRESSURE_BYTES) {
+      this.droppedBackpressure++;
       debug('REALTIME', 'audio backpressure drop');
       // MEDIUM-4: silent drop was previously invisible to the user. At
       // 24 kHz mono PCM16 with ~50 ms chunks each drop ≈ 50 ms of audio,
@@ -355,17 +364,29 @@ export class RealtimeClient extends EventEmitter {
    * buffer.
    */
   commit(): boolean {
-    if (!this.opened) return false;
+    if (!this.opened) {
+      debug('REALTIME', 'commit refused: client not open');
+      return false;
+    }
+    debug(
+      'REALTIME',
+      `commit gate: buffered=${this.appendedBytesSinceCommit}B (floor ${MIN_COMMIT_BYTES}B) ` +
+        `droppedNotOpen=${this.droppedNotOpen} droppedBackpressure=${this.droppedBackpressure} ` +
+        `wsBuffered=${this.ws?.bufferedAmount ?? -1}`
+    );
     if (this.appendedBytesSinceCommit < MIN_COMMIT_BYTES) {
-      debug(
-        'REALTIME',
-        `commit refused: ${this.appendedBytesSinceCommit}B buffered (< ${MIN_COMMIT_BYTES}B floor)`
-      );
+      this.resetAppendCounters();
       return false;
     }
     this.send({ type: 'input_audio_buffer.commit' });
-    this.appendedBytesSinceCommit = 0;
+    this.resetAppendCounters();
     return true;
+  }
+
+  private resetAppendCounters(): void {
+    this.appendedBytesSinceCommit = 0;
+    this.droppedNotOpen = 0;
+    this.droppedBackpressure = 0;
   }
 
   /**
@@ -376,7 +397,7 @@ export class RealtimeClient extends EventEmitter {
   clearInput(): void {
     if (!this.opened) return;
     this.send({ type: 'input_audio_buffer.clear' });
-    this.appendedBytesSinceCommit = 0;
+    this.resetAppendCounters();
   }
 
   isOpen(): boolean {
@@ -549,7 +570,7 @@ export class RealtimeClient extends EventEmitter {
         // Drop any byte count carried over (e.g. from a take interrupted by a
         // reconnect) so the commit gate judges only audio appended to THIS
         // session and can't wave a commit through against an empty buffer.
-        this.appendedBytesSinceCommit = 0;
+        this.resetAppendCounters();
         const pending = this.setupPending;
         if (pending) {
           this.setupPending = null;

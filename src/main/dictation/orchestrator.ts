@@ -287,6 +287,14 @@ export class DictationOrchestrator {
       committed = client.commit();
     }
 
+    // One-line diagnostic per take — the single most useful record for
+    // explaining a "became unusable" stall after the fact (see debug log file).
+    debug(
+      'DICTATION',
+      `take result: delivered=${delivered} maxLevel=${maxLevel.toFixed(4)} ` +
+        `isOpen=${client.isOpen()} enoughChunks=${enoughChunks} silent=${silentTake} committed=${committed}`
+    );
+
     if (committed) {
       this.consecutiveSilentTakes = 0;
       final = await new Promise<string>((resolve) => {
