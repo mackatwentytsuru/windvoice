@@ -57,9 +57,18 @@ async function startCapture(deviceId?: string): Promise<void> {
     const constraints: MediaStreamConstraints = {
       audio: {
         channelCount: 1,
-        echoCancellation: true,
-        noiseSuppression: true,
-        autoGainControl: true,
+        // Dictation needs the RAW mic feed. Chromium's call-oriented DSP can
+        // latch into a state that classifies real speech as noise and clamps
+        // the signal to a near-zero floor (~0.005 RMS) mid-session and keeps it
+        // there — observed in the field as the mic "dying", level collapsing
+        // from ~0.8 to a stuck 0.0047 with empty transcripts. Disabling all
+        // three gives a stable, unprocessed feed the transcription model
+        // handles well, and removes the most common cause of mid-session
+        // capture degradation. (noiseSuppression is the prime offender; AGC and
+        // echoCancellation are off too so nothing pumps or cancels the input.)
+        echoCancellation: false,
+        noiseSuppression: false,
+        autoGainControl: false,
         ...(deviceId && deviceId !== 'default' ? { deviceId: { exact: deviceId } } : {})
       }
     };
