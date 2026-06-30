@@ -528,6 +528,13 @@ export class DictationOrchestrator {
   private handleEmptyTake(silentTake: boolean, settings: Settings): void {
     const lang = settings.ui.uiLanguage;
     if (!silentTake) {
+      // Energy WAS captured but nothing reached the server — the realtime
+      // socket is closed, half-open, or back-pressured (its send buffer never
+      // drained). Left alone, every subsequent take fails the same way and the
+      // app "becomes unusable". Tear the client down so the NEXT dictation
+      // reconnects on a fresh socket; this take's audio is already lost, so the
+      // notice asks the user to retry — which now succeeds.
+      this.resetClientForReconnect();
       this.reportNotice(t('error.audioNotSent', lang));
       return;
     }
@@ -549,6 +556,25 @@ export class DictationOrchestrator {
    */
   private reportNotice(message: string): void {
     broadcastToUiWindows(IPC.SYSTEM_ERROR, { source: 'notice', message });
+  }
+
+  /**
+   * Drop the current realtime client so the NEXT dictation builds a fresh one.
+   * Called when a take had real audio energy but nothing reached the server —
+   * the socket is dead/half-open/back-pressured and would keep swallowing every
+   * future take. `ensureConnected()` in the next `start()` reconnects lazily.
+   */
+  private resetClientForReconnect(): void {
+    const old = this.client;
+    if (!old) return;
+    this.detachClientListeners(old);
+    this.client = null;
+    try {
+      old.dispose();
+    } catch {
+      /* ignore */
+    }
+    debug('DICTATION', 'reset realtime client after undelivered audio — reconnect on next take');
   }
 
   private broadcast(channel: string, payload: unknown): void {

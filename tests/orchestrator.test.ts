@@ -620,5 +620,14 @@ describe('DictationOrchestrator', () => {
     });
     // A connection refusal is not a silent mic → no recapture escalation.
     expect(audio.recaptures).toBe(0);
+    // The dead socket is torn down so a future take can reconnect fresh.
+    expect(hoisted.instances[0]?.disposed).toBe(true);
+
+    // Next dictation builds a brand-new client (reconnect recovery) instead of
+    // reusing the dead one — this is what un-sticks "became unusable".
+    const before = hoisted.instances.length;
+    await orch.start();
+    expect(hoisted.instances.length).toBe(before + 1);
+    await orch.stop();
   });
 });
