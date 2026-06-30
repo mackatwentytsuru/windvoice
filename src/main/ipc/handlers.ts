@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { IPC, SettingsSchema, type Settings, type HistoryEntry } from '@shared/types';
 import { API_KEY_MIN_LENGTH, API_KEY_MAX_LENGTH } from '@shared/apiKey';
 import { settingsStore } from '@main/store/settings';
-import { secureStore, SecureStoreUnavailableError } from '@main/store/secure';
+import { secureStore, SecureStoreUnavailableError, InvalidApiKeyError } from '@main/store/secure';
 import { historyStore } from '@main/store/history';
 import { broadcastToUiWindows } from '@main/broadcast';
 
@@ -24,7 +24,11 @@ const HistoryRemoveSchema = z.object({ id: z.string().min(1).max(128) });
 // boundary and the keytar-backed SecureStore.setApiKey check cannot drift
 // (LOW-3). Keeping them centralized also makes a future format tweak a
 // single-source-of-truth edit.
-const ApiKeySchema = z.string().min(API_KEY_MIN_LENGTH).max(API_KEY_MAX_LENGTH);
+// LOW-3: `.trim()` first so the schema measures the SAME trimmed value that
+// SecureStore.setApiKey stores. Without it, a whitespace-padded too-short
+// key passed the raw-length check here, then got trimmed + rejected deeper
+// in the keyring layer — surfacing as a misleading 'E_SECURE_STORE'.
+const ApiKeySchema = z.string().trim().min(API_KEY_MIN_LENGTH).max(API_KEY_MAX_LENGTH);
 const ClipboardWriteMaxBytes = 1_000_000;
 
 let trustedSettingsSenderId: number | null = null;
@@ -114,7 +118,11 @@ export function registerIpc(triggers: ManualTriggers): void {
       try {
         await secureStore.setApiKey(parsed);
       } catch (err) {
-        const code = err instanceof SecureStoreUnavailableError ? err.code : 'E_SECURE_STORE';
+        // LOW-3: a bad-input rejection from the keyring layer must NOT be
+        // reported as a secure-store/keyring failure. Classify it explicitly.
+        let code = 'E_SECURE_STORE';
+        if (err instanceof SecureStoreUnavailableError) code = err.code;
+        else if (err instanceof InvalidApiKeyError) code = err.code;
         return { ok: false, error: errMsg(err), code };
       }
       try {

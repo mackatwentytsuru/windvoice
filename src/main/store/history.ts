@@ -18,6 +18,36 @@ interface PersistedEntry {
   app?: string;
 }
 
+/**
+ * HIGH: in-memory cache entry. Extends the public `HistoryEntry` with
+ * non-schema passthrough fields used ONLY when a stored value was
+ * ciphertext we could not decrypt at load (keyring transiently locked or
+ * `decryptString` threw). In that case we retain the ORIGINAL ciphertext
+ * verbatim so a later `flushSync()` re-emits it unchanged instead of
+ * overwriting still-valid ciphertext with a blanked transcript. These
+ * fields never leave the store — `toPublicEntry` strips them.
+ */
+interface CachedEntry extends HistoryEntry {
+  /** Original `enc:v1:` transcript string, retained when decryption failed. */
+  rawTranscript?: string;
+  /** Original `enc:v1:` app string, retained when decryption failed. */
+  rawApp?: string;
+  /** True when this entry could not be decrypted and must be hidden from the UI. */
+  undecryptable?: boolean;
+}
+
+interface DecryptResult {
+  /** Decrypted plaintext, or '' when the ciphertext could not be decrypted. */
+  value: string;
+  /** True when the stored value was ciphertext we could NOT decrypt. */
+  failed: boolean;
+}
+
+function toPublicEntry(e: CachedEntry): HistoryEntry {
+  const { rawTranscript: _t, rawApp: _a, undecryptable: _u, ...pub } = e;
+  return pub;
+}
+
 interface HistoryShape {
   entries: PersistedEntry[];
 }
@@ -61,16 +91,25 @@ function maybeEncrypt(value: string): string {
   }
 }
 
-function maybeDecrypt(value: string): string {
-  if (!value.startsWith(ENC_PREFIX)) return value;
-  if (!encryptionAvailable()) return '';
+/**
+ * HIGH: decrypt a stored value, distinguishing "plaintext / decrypted
+ * fine" from "ciphertext we could NOT read". The previous `maybeDecrypt`
+ * collapsed BOTH a transient `encryptionAvailable() === false` and a
+ * `decryptString` throw to '' — which then got re-serialized over the
+ * good ciphertext on the next add/remove/clear, turning a brief keychain
+ * lock into permanent total data loss. Callers now retain the original
+ * ciphertext when `failed` is true and never persist a blank in its place.
+ */
+function tryDecrypt(value: string): DecryptResult {
+  if (!value.startsWith(ENC_PREFIX)) return { value, failed: false };
+  if (!encryptionAvailable()) return { value: '', failed: true };
   try {
     const buf = Buffer.from(value.slice(ENC_PREFIX.length), 'base64');
-    return safeStorage.decryptString(buf);
+    return { value: safeStorage.decryptString(buf), failed: false };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     debug('DICTATION', `safeStorage.decryptString failed: ${msg}`);
-    return '';
+    return { value: '', failed: true };
   }
 }
 
@@ -81,9 +120,16 @@ function truncate(s: string): string {
 
 class HistoryStore {
   private store: Store<HistoryShape>;
-  private cache: HistoryEntry[];
+  private cache: CachedEntry[];
   private flushTimer: ReturnType<typeof setTimeout> | null = null;
   private dirty = false;
+  /**
+   * HIGH: set true when at least one stored entry failed to decrypt at
+   * load (transient keyring lock or `decryptString` throw). Those entries
+   * are hidden from the UI list but their ciphertext is preserved verbatim
+   * on every flush, so the data returns once the keyring unlocks.
+   */
+  public loadDegraded = false;
   /**
    * MEDIUM-5: when `flushSync` throws (transient EBUSY on Windows
    * because an antivirus is scanning the JSON, ENOSPC, etc.), the
@@ -104,28 +150,49 @@ class HistoryStore {
     this.cache = this.loadFromDisk();
   }
 
-  private loadFromDisk(): HistoryEntry[] {
+  private loadFromDisk(): CachedEntry[] {
     const raw = this.store.get('entries', []) as PersistedEntry[];
-    const decoded: HistoryEntry[] = [];
+    const decoded: CachedEntry[] = [];
     for (const e of raw) {
       if (!e || typeof e !== 'object') continue;
-      const transcript = typeof e.transcript === 'string' ? maybeDecrypt(e.transcript) : '';
-      const app = typeof e.app === 'string' ? maybeDecrypt(e.app) : undefined;
+      const transcriptStored = typeof e.transcript === 'string' ? e.transcript : '';
+      const appStored = typeof e.app === 'string' ? e.app : undefined;
+      // HIGH: decrypt without collapsing undecryptable ciphertext to ''.
+      const tRes = tryDecrypt(transcriptStored);
+      const aRes: DecryptResult =
+        appStored !== undefined ? tryDecrypt(appStored) : { value: '', failed: false };
+      const app = aRes.value;
       const candidate: PersistedEntry = {
         id: e.id,
         timestamp: e.timestamp,
-        transcript,
+        transcript: tRes.value,
         ...(typeof e.durationMs === 'number' ? { durationMs: e.durationMs } : {}),
         ...(app && app.length > 0 ? { app } : {})
       };
       const parsed = HistoryEntrySchema.safeParse(candidate);
-      if (parsed.success) decoded.push(parsed.data);
+      if (!parsed.success) continue;
+      const cached: CachedEntry = { ...parsed.data };
+      if (tRes.failed) {
+        // HIGH: retain the ORIGINAL ciphertext so flushSync re-emits it
+        // verbatim instead of overwriting it with the blanked transcript.
+        cached.rawTranscript = transcriptStored;
+        cached.undecryptable = true;
+      }
+      if (aRes.failed && appStored !== undefined) {
+        cached.rawApp = appStored;
+        cached.undecryptable = true;
+      }
+      if (tRes.failed || aRes.failed) this.loadDegraded = true;
+      decoded.push(cached);
     }
     return decoded;
   }
 
   list(): HistoryEntry[] {
-    return this.cache.slice();
+    // HIGH: hide entries that could not be decrypted (their plaintext is
+    // unknown right now) — but they stay in `cache` so flushSync keeps
+    // re-persisting their original ciphertext until the keyring unlocks.
+    return this.cache.filter((e) => !e.undecryptable).map(toPublicEntry);
   }
 
   add(input: { transcript: string; durationMs?: number; app?: string }): HistoryEntry {
@@ -165,13 +232,21 @@ class HistoryStore {
 
   private flushSync(): void {
     if (!this.dirty) return;
-    const persisted: PersistedEntry[] = this.cache.map((e) => ({
-      id: e.id,
-      timestamp: e.timestamp,
-      transcript: maybeEncrypt(e.transcript),
-      ...(e.durationMs !== undefined ? { durationMs: e.durationMs } : {}),
-      ...(e.app ? { app: maybeEncrypt(e.app) } : {})
-    }));
+    const persisted: PersistedEntry[] = this.cache.map((e) => {
+      // HIGH: for entries we could not decrypt at load, re-emit the
+      // retained original ciphertext verbatim — NEVER re-encrypt a blanked
+      // transcript over still-valid ciphertext.
+      const transcript =
+        e.rawTranscript !== undefined ? e.rawTranscript : maybeEncrypt(e.transcript);
+      const app = e.rawApp !== undefined ? e.rawApp : e.app ? maybeEncrypt(e.app) : undefined;
+      return {
+        id: e.id,
+        timestamp: e.timestamp,
+        transcript,
+        ...(e.durationMs !== undefined ? { durationMs: e.durationMs } : {}),
+        ...(app !== undefined ? { app } : {})
+      };
+    });
     try {
       this.store.set('entries', persisted);
       // Clear `dirty` only after a successful write. If the write throws

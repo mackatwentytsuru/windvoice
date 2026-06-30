@@ -56,4 +56,32 @@ describe('SettingsSchema', () => {
     const parsed = SettingsSchema.parse({ insertion: { method: 'magic' } });
     expect(parsed.insertion.method).toBe('paste');
   });
+
+  // MEDIUM: one out-of-range nested scalar must NOT nuke every other setting.
+  // Each nested scalar now has a field-level `.catch(default)`, so a bad
+  // `ui.duckLevel` (out of [0,1]) is repaired to its own default while the
+  // user's custom hotkeys / other fields are preserved. Previously a single
+  // bad field failed the whole-object safeParse in store/settings.ts and
+  // reset EVERYTHING to defaults.
+  it('repairs one out-of-range nested field without resetting other settings', () => {
+    const parsed = SettingsSchema.parse({
+      hotkeys: [{ id: 'longform', keys: ['Ctrl', 'Shift', 'Space'], mode: 'toggle' }],
+      language: 'en',
+      ui: { duckLevel: 1.5 }
+    });
+    // The user's other settings survive untouched.
+    expect(parsed.hotkeys).toHaveLength(1);
+    expect(parsed.hotkeys[0]?.mode).toBe('toggle');
+    expect(parsed.hotkeys[0]?.keys).toEqual(['Ctrl', 'Shift', 'Space']);
+    expect(parsed.language).toBe('en');
+    // Only the bad field is repaired to its own default.
+    expect(parsed.ui.duckLevel).toBe(0.3);
+  });
+
+  // MEDIUM: an out-of-enum nested scalar also repairs to its own default
+  // instead of failing the whole parse.
+  it('repairs an invalid ui.theme enum value to its default', () => {
+    const parsed = SettingsSchema.parse({ ui: { theme: 'neon' } });
+    expect(parsed.ui.theme).toBe('system');
+  });
 });

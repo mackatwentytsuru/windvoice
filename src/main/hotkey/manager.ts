@@ -51,6 +51,15 @@ export class HotkeyManager extends EventEmitter {
   private bindings: NormalizedBinding[] = [];
   private heldDown: Set<string> = new Set();
   private toggleActive: Set<string> = new Set();
+  /**
+   * Bug: tracks which toggle triggers are PHYSICALLY held right now —
+   * distinct from `toggleActive`, which tracks recording on/off state.
+   * OS auto-repeat (libuiohook forwards key repeats as repeated keydowns)
+   * on a non-modifier toggle trigger would otherwise flip
+   * start/stop/start/stop rapidly; this de-bounces so the flip happens only
+   * on the FIRST keydown and re-arms on keyup.
+   */
+  private toggleHeld: Set<string> = new Set();
   private started = false;
   /**
    * When the typer is synthesizing a paste keystroke (uIOhook.keyTap on macOS
@@ -284,13 +293,22 @@ export class HotkeyManager extends EventEmitter {
             this.heldDown.delete(id);
             this.emit('stop', id);
           }
-        } else if (nb.binding.mode === 'toggle' && down) {
-          if (this.toggleActive.has(id)) {
-            this.toggleActive.delete(id);
-            this.emit('stop', id);
-          } else {
-            this.toggleActive.add(id);
-            this.emit('start', id);
+        } else if (nb.binding.mode === 'toggle') {
+          // Bug: only flip on the FIRST physical keydown. OS auto-repeat
+          // re-fires keydown without an intervening keyup; the `toggleHeld`
+          // guard de-bounces those so holding the key doesn't flicker
+          // start/stop. Keyup re-arms by clearing `toggleHeld`.
+          if (down && !this.toggleHeld.has(id)) {
+            this.toggleHeld.add(id);
+            if (this.toggleActive.has(id)) {
+              this.toggleActive.delete(id);
+              this.emit('stop', id);
+            } else {
+              this.toggleActive.add(id);
+              this.emit('start', id);
+            }
+          } else if (!down) {
+            this.toggleHeld.delete(id);
           }
         }
       }
@@ -324,6 +342,11 @@ export class HotkeyManager extends EventEmitter {
         // ambiguous and would otherwise leave the binding stuck.
         if (!down && nb.triggerKeys.includes(e.keycode)) {
           this.heldDown.delete(id);
+          // Bug: a non-modifier trigger keyup lost to the suppressUntil
+          // window skips the toggle branch above, which is where `toggleHeld`
+          // is normally cleared. Mirror the re-arm here so a toggle trigger
+          // doesn't stay permanently armed-off after such a keyup.
+          this.toggleHeld.delete(id);
           this.emit('stop', id);
           debug('HOTKEY', `force-stop ${id}: trigger keyup observed (non-modifier path)`);
         }

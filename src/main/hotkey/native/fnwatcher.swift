@@ -62,6 +62,16 @@ private let eventCallback: CGEventTapCallBack = { _, type, event, _ in
         if let tap = gEventTap {
             CGEvent.tapEnable(tap: tap, enable: true)
         }
+        // Bug: any Fn flagsChanged transition during the disabled window is
+        // dropped, so fnIsDown can desync from the hardware (a release lost
+        // here leaves fnIsDown stuck true → next press emits no FN_DOWN, and
+        // the eventual release emits a spurious FN_UP). Reconcile against the
+        // true hardware flag and emit the missing edge before returning.
+        let fnNow = (CGEventSource.flagsState(.combinedSessionState).rawValue & kFnFlagMask) != 0
+        if fnNow != fnIsDown {
+            fnIsDown = fnNow
+            emit(fnNow ? "FN_DOWN" : "FN_UP")
+        }
         return Unmanaged.passUnretained(event)
     }
 

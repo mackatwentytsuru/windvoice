@@ -97,6 +97,28 @@ describe('AudioDuck', () => {
     expect(hoisted.setVolume).not.toHaveBeenCalled();
   });
 
+  it('keeps state on failed restore so a later cycle restores the TRUE original', async () => {
+    const duck = new AudioDuck();
+    // First cycle: duck from 50 → 15, then a failing restore. State must be
+    // preserved (active + originalVolume=50) so the lowered value is never
+    // re-saved as the original (which would ratchet volume permanently down).
+    await duck.duck(0.3);
+    expect(hoisted.state.volume).toBe(15);
+    hoisted.setVolume.mockRejectedValueOnce(new Error('restore failed'));
+    await duck.restore();
+    // restore failed: volume still lowered, but state is intact.
+    expect(hoisted.state.volume).toBe(15);
+
+    // A second duck() must be a no-op (still active), NOT re-save 15 as original.
+    await duck.duck(0.3);
+    expect(hoisted.state.volume).toBe(15);
+
+    // A retried restore now succeeds and returns to the TRUE original (50).
+    await duck.restore();
+    expect(hoisted.setVolume).toHaveBeenLastCalledWith(50);
+    expect(hoisted.state.volume).toBe(50);
+  });
+
   describe('platform gating', () => {
     const originalPlatform = process.platform;
     const originalEnv = process.env['WINDVOICE_DUCK_MAC'];

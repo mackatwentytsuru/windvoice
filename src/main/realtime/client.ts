@@ -54,6 +54,7 @@ export interface RealtimeClientEvents {
   error: (err: Error) => void;
   close: () => void;
   reconnect: () => void;
+  reconnecting: () => void;
 }
 
 export declare interface RealtimeClient {
@@ -413,6 +414,12 @@ export class RealtimeClient extends EventEmitter {
       this.emit('close');
       return;
     }
+
+    // Announce the silent auto-reconnect (this path does NOT emit 'close')
+    // so a consumer with an active dictation can abort it: a reconnect starts
+    // a fresh session that discards the in-progress input_audio_buffer,
+    // making the dictation unrecoverable.
+    this.emit('reconnecting');
 
     const attempt = this.reconnectAttempts++;
     const backoff = Math.min(RECONNECT_BASE_MS * 2 ** attempt, RECONNECT_MAX_MS);

@@ -428,6 +428,58 @@ describe('DictationOrchestrator', () => {
     });
   });
 
+  // HIGH-2: a server error fired while stop() awaits pendingFinal in its
+  // commit-wait must leave the tray on 'error' — stop() must NOT resume and
+  // clobber it back to 'idle' (which dropped the partial silently).
+  it('server error during stop() commit-wait keeps status error (no idle clobber)', async () => {
+    await orch.start();
+    audio.feed(10);
+    // Seed a partial so a clobber would visibly drop real text.
+    hoisted.instances[0]!.emit('delta', 'half a sentence');
+
+    const stopP = orch.stop();
+    // Let stop() pass sleep(20) and reach the commit-wait (pendingFinal set).
+    await new Promise((r) => setTimeout(r, 60));
+    hoisted.instances[0]!.emit('error', new Error('server blew up mid-commit'));
+    await stopP;
+
+    const statuses = vi.mocked(setStatus).mock.calls.map((c) => c[0]);
+    expect(statuses).toContain('error');
+    // 'error' is the terminal status — not clobbered back to 'idle'.
+    expect(statuses[statuses.length - 1]).toBe('error');
+    expect(orch.isActive()).toBe(false);
+    // The dropped cycle must not paste anything (transcript resolved to '').
+    expect(pasteText).not.toHaveBeenCalled();
+    // SYSTEM_ERROR surfaced exactly once for this server error.
+    expect(broadcastToUiWindows).toHaveBeenCalledWith(IPC.SYSTEM_ERROR, {
+      source: 'transcription',
+      message: 'server blew up mid-commit'
+    });
+  });
+
+  // MEDIUM: a silent auto-reconnect mid-dictation ('reconnecting' emitted
+  // without a 'close') must abort the active cycle, not leave inFlight=true
+  // with the tray stuck on 'listening'.
+  it('reconnecting mid-dictation aborts the cycle and surfaces an error', async () => {
+    await orch.start();
+    audio.feed(10);
+    expect(orch.isActive()).toBe(true);
+    expect(audio.getChunkListener()).not.toBeNull();
+
+    hoisted.instances[0]!.emit('reconnecting');
+    await new Promise((r) => setTimeout(r, 10));
+
+    expect(orch.isActive()).toBe(false);
+    expect(vi.mocked(setStatus).mock.calls.map((c) => c[0])).toContain('error');
+    // Audio forwarding to the dead cycle is released.
+    expect(audio.getChunkListener()).toBeNull();
+    expect(broadcastToUiWindows).toHaveBeenCalledWith(IPC.SYSTEM_ERROR, {
+      source: 'transcription',
+      message: 'connection lost mid-dictation'
+    });
+    expect(pasteText).not.toHaveBeenCalled();
+  });
+
   it('connect failure (setup error) rejects start and broadcasts SYSTEM_ERROR', async () => {
     const original = hoisted.FakeRealtimeClient.prototype.connect;
     hoisted.FakeRealtimeClient.prototype.connect = function (): Promise<void> {

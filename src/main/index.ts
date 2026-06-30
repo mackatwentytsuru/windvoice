@@ -142,6 +142,13 @@ function startHotkeysWithAccessibilityRecovery(): void {
   try {
     hotkeys.start();
     setAccessibilityWarning(false);
+    // H-BUG2: the Fn sidecar (Swift) exit(1)s when Accessibility is denied
+    // and permanently gives up after MAX_RESTARTS (~10s), with no recovery
+    // path of its own. Now that uIOhook has confirmed Accessibility is
+    // granted, re-arm the sidecar too so granting permission late recovers
+    // Fn without a full app restart. No-op when fnWatcher is not yet created
+    // (first call) or still alive.
+    fnWatcher?.restart();
     if (accessibilityPollTimer) {
       clearInterval(accessibilityPollTimer);
       accessibilityPollTimer = null;

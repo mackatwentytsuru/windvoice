@@ -250,9 +250,15 @@ const audioBridge = {
     ipcRenderer.on(IPC.AUDIO_RESUME_CMD, handler);
     return () => ipcRenderer.removeListener(IPC.AUDIO_RESUME_CMD, handler);
   },
-  /** Main → hidden audio renderer: rebuild the capture stream after sleep/resume. */
-  onRecover: (cb: () => void): (() => void) => {
-    const handler = (): void => cb();
+  /**
+   * Main → hidden audio renderer: rebuild the capture stream after sleep/resume.
+   * `resumeAfterRebuild` is true when the rebuild fires during an active
+   * dictation, telling the renderer to resume the freshly built (and otherwise
+   * idle-suspended) AudioContext so THIS dictation still captures audio.
+   */
+  onRecover: (cb: (resumeAfterRebuild: boolean) => void): (() => void) => {
+    const handler = (_e: unknown, resumeAfterRebuild?: unknown): void =>
+      cb(resumeAfterRebuild === true);
     ipcRenderer.on(IPC.AUDIO_RECOVER_CMD, handler);
     return () => ipcRenderer.removeListener(IPC.AUDIO_RECOVER_CMD, handler);
   },

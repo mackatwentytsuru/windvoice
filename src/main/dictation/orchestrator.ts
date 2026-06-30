@@ -44,6 +44,10 @@ export class DictationOrchestrator {
   private pendingFinalTimer: NodeJS.Timeout | null = null;
   private cancelRequested = false;
   private duckedThisCycle = false;
+  // HIGH-2: set by onError when it tears a cycle down during stop()'s
+  // commit-wait. stop() checks it after the await so it does not clobber the
+  // 'error' status back to 'idle' (and silently drop the partial transcript).
+  private cycleErrored = false;
   private duckPromise: Promise<void> | null = null;
   private streamingActive = false;
   /** How many chars of `partial` have already been streaming-pasted. */
@@ -58,6 +62,7 @@ export class DictationOrchestrator {
     final?: (text: string) => void;
     error?: (err: Error) => void;
     close?: () => void;
+    reconnecting?: () => void;
   } = {};
   /**
    * Snapshot of UI-window webContents to receive TRANSCRIPT_DELTA events,
@@ -115,6 +120,7 @@ export class DictationOrchestrator {
     this.cancelRequested = false;
     this.partial = '';
     this.duckedThisCycle = false;
+    this.cycleErrored = false;
     this.streamingActive = false;
     this.streamedPrefixLen = 0;
     const myCycle = ++this.cycleId;
@@ -283,6 +289,10 @@ export class DictationOrchestrator {
       return;
     }
 
+    // onError already tore down this cycle and set 'error' status during the
+    // commit-wait; do not clobber it back to 'idle' or re-run teardown.
+    if (this.cycleErrored) return;
+
     this.inFlight = false;
     this.updateStatus('idle');
 
@@ -416,6 +426,32 @@ export class DictationOrchestrator {
     }
   }
 
+  /**
+   * Tear down an in-flight cycle interrupted by a transport-level failure
+   * (WS closed, or a silent auto-reconnect mid-dictation). Releases every
+   * resource the cycle grabbed and surfaces the error. Shared by onClose's
+   * mid-flight branch and onReconnecting so the two stay in lock-step.
+   */
+  private abortInFlightCycle(broadcastMsg: string, reportMsg: string): void {
+    this.inFlight = false;
+    this.duckedThisCycle = false;
+    this.audio.endForwarding(this.startCount);
+    this.audio.setChunkListener(null);
+    void audioDuck.restore();
+    if (this.streamingActive) {
+      void streamingTyper.end().catch((e) =>
+        debug(
+          'DICTATION',
+          `streamingTyper.end rejected: ${e instanceof Error ? e.message : String(e)}`
+        )
+      );
+      this.streamingActive = false;
+    }
+    this.updateStatus('error');
+    this.broadcast(IPC.TRANSCRIPT_FINAL, broadcastMsg);
+    this.reportTranscriptionError(reportMsg);
+  }
+
   private clearPendingFinalTimer(): void {
     if (this.pendingFinalTimer) {
       clearTimeout(this.pendingFinalTimer);
@@ -433,6 +469,8 @@ export class DictationOrchestrator {
       if (this.clientHandlers.final) client.off('final', this.clientHandlers.final);
       if (this.clientHandlers.error) client.off('error', this.clientHandlers.error);
       if (this.clientHandlers.close) client.off('close', this.clientHandlers.close);
+      if (this.clientHandlers.reconnecting)
+        client.off('reconnecting', this.clientHandlers.reconnecting);
     }
     this.clientHandlers = {};
     if (this.clientChunkListener) {
@@ -501,6 +539,27 @@ export class DictationOrchestrator {
   }
 
   private async _doConnect(): Promise<RealtimeClient> {
+    // Reclaim any stale prior client before building a replacement.
+    // ensureConnected's fast path already returns early when
+    // this.client.isOpen(), so _doConnect only runs when this.client is null
+    // or a non-open (reconnecting/closed) client. A silent auto-reconnect
+    // (handleClose schedules a retry WITHOUT emitting 'close', so onClose
+    // never nulls this.client) leaves this.client pointing at a non-open
+    // client whose reconnect timer + authenticated WS stay alive. Without
+    // detaching+disposing it here, the new client below orphans the old one
+    // and its onDelta/onClose keep firing into the active cycle (leak fix).
+    // detachClientListeners MUST run before this.clientHandlers is
+    // reassigned so it references the old handlers.
+    if (this.client) {
+      this.detachClientListeners(this.client);
+      try {
+        this.client.dispose();
+      } catch {
+        /* ignore */
+      }
+      this.client = null;
+    }
+
     let apiKey: string | null;
     try {
       apiKey = await secureStore.getApiKey();
@@ -540,6 +599,9 @@ export class DictationOrchestrator {
       }
       if (this.inFlight) {
         this.inFlight = false;
+        // HIGH-2: mark the cycle errored so a stop() awaiting pendingFinal in
+        // its commit-wait does not resume and clobber 'error' back to 'idle'.
+        this.cycleErrored = true;
         this.duckedThisCycle = false;
         this.audio.endForwarding(this.startCount);
         this.audio.setChunkListener(null);
@@ -554,6 +616,17 @@ export class DictationOrchestrator {
           this.streamingActive = false;
         }
         this.updateStatus('error');
+      }
+    };
+    const onReconnecting = (): void => {
+      // The WS dropped mid-dictation and the client is silently
+      // auto-reconnecting (handleClose emits 'reconnecting' without emitting
+      // 'close'). Because vadEnabled is false the server discards the
+      // in-progress input_audio_buffer on the fresh session, so this cycle is
+      // unrecoverable — abort it loudly instead of leaving inFlight=true with
+      // the tray stuck on 'listening'.
+      if (this.inFlight) {
+        this.abortInFlightCycle('[error] connection lost', 'connection lost mid-dictation');
       }
     };
     const onClose = (): void => {
@@ -575,23 +648,7 @@ export class DictationOrchestrator {
       // If the WS reconnects mid-flight, do not keep state — surface the
       // error and reset.
       if (this.inFlight && !this.pendingFinal) {
-        this.inFlight = false;
-        this.duckedThisCycle = false;
-        this.audio.endForwarding(this.startCount);
-        this.audio.setChunkListener(null);
-        void audioDuck.restore();
-        if (this.streamingActive) {
-          void streamingTyper.end().catch((e) =>
-            debug(
-              'DICTATION',
-              `streamingTyper.end rejected: ${e instanceof Error ? e.message : String(e)}`
-            )
-          );
-          this.streamingActive = false;
-        }
-        this.updateStatus('error');
-        this.broadcast(IPC.TRANSCRIPT_FINAL, '[error] connection closed');
-        this.reportTranscriptionError('connection closed mid-dictation');
+        this.abortInFlightCycle('[error] connection closed', 'connection closed mid-dictation');
       } else if (isOurClient) {
         // H7: WS closed (likely reconnect-attempts exhausted) while no
         // dictation was in flight. Previously the tray stayed on
@@ -606,12 +663,14 @@ export class DictationOrchestrator {
       delta: onDelta,
       final: onFinal,
       error: onError,
-      close: onClose
+      close: onClose,
+      reconnecting: onReconnecting
     };
     client.on('delta', onDelta);
     client.on('final', onFinal);
     client.on('error', onError);
     client.on('close', onClose);
+    client.on('reconnecting', onReconnecting);
 
     // The 'connecting' status emit lives in start(), not here: this method
     // also serves prewarm, and a prewarm-owned connect must neither flash

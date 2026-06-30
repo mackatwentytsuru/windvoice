@@ -54,7 +54,7 @@ declare global {
       onDeviceChange(cb: (deviceId: string) => void): () => void;
       onSuspend?(cb: () => void): () => void;
       onResume?(cb: () => void): () => void;
-      onRecover?(cb: () => void): () => void;
+      onRecover?(cb: (resumeAfterRebuild: boolean) => void): () => void;
       onBeep(cb: (kind: BeepKind) => void): () => void;
     };
   }

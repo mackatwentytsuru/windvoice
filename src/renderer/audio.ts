@@ -13,6 +13,13 @@ let source: MediaStreamAudioSourceNode | null = null;
 let workletUrl: string | null = null;
 let currentDeviceId: string | null = null;
 let beepCtx: AudioContext | null = null;
+// Synchronous in-flight guard for startCapture. `audioCtx` is only assigned
+// AFTER the awaited getUserMedia, so two interleaving callers both pass an
+// `if (audioCtx) return` check, each build a MediaStream + AudioContext, and
+// the second assignment overwrites the first without stopping its tracks —
+// leaking a live mic track. This boolean (set before any await, cleared in a
+// finally) closes that check-then-act gap.
+let starting = false;
 // Guards against overlapping recoveries: a sleep/resume can fire the power
 // monitor AND a `track.ended` event almost simultaneously, and each would
 // otherwise kick off its own stop→start cycle.
@@ -48,7 +55,11 @@ function isCaptureHealthy(): boolean {
 }
 
 async function startCapture(deviceId?: string): Promise<void> {
-  if (audioCtx) return;
+  // Reentrancy guard: `starting` is checked/set synchronously before any
+  // await so a second call cannot slip past while the first is mid-build
+  // (the `audioCtx` check alone is too late — see the flag's declaration).
+  if (starting || audioCtx) return;
+  starting = true;
   try {
     const constraints: MediaStreamConstraints = {
       audio: {
@@ -106,6 +117,8 @@ async function startCapture(deviceId?: string): Promise<void> {
     window.audio.reportError(msg);
     await stopCapture();
     throw err;
+  } finally {
+    starting = false;
   }
 }
 
@@ -266,8 +279,26 @@ window.audio.onResume?.(() => {
   }
 });
 // Power resume / device-loss recovery: rebuild the whole capture graph.
-window.audio.onRecover?.(() => {
-  void recapture();
+// `resumeAfterRebuild` is true only when the rebuild fires mid-dictation
+// (e.g. the main-process silence watchdog firing during active forwarding).
+// startCapture suspends every freshly built context (issue #7), so in that
+// case we must resume it after the async rebuild or the rest of the dictation
+// records silence. While IDLE (powerMonitor resume/unlock) the flag is false,
+// so the context correctly stays suspended until the next beginForwarding().
+// Mirror the onResume rebuild branch: resume AFTER awaiting recapture to avoid
+// cross-process races.
+// Param is optional so this stays assignable to the `() => void` callback type
+// declared in env.d.ts; the preload always sends an explicit boolean.
+window.audio.onRecover?.((resumeAfterRebuild?: boolean) => {
+  void recapture().then(() => {
+    if (resumeAfterRebuild && audioCtx) {
+      audioCtx.resume().catch((e: unknown) => {
+        window.audio.reportError(
+          `audioCtx.resume after recover failed: ${e instanceof Error ? e.message : String(e)}`
+        );
+      });
+    }
+  });
 });
 // Audio device topology changed (USB mic unplugged, Bluetooth headset
 // handoff, default device switched). `devicechange` fires for ANY add/remove

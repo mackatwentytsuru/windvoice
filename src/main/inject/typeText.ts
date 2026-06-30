@@ -109,6 +109,8 @@ export const __test = { inputsForCodeUnit, isHighSurrogate, setSendInputModuleFo
  * Fewer than requested means the rest were blocked (UIPI when the target
  * window is elevated, or another hook swallowed them) — surface that in
  * the debug log so a partial insertion is diagnosable instead of silent.
+ * The numeric return is also accumulated by the caller so a fully-blocked
+ * injection (cumulative 0) reports failure instead of false success.
  */
 function checkInjectedCount(sent: number, batch: KBDInput[]): void {
   if (typeof sent === 'number' && sent !== batch.length) {
@@ -122,8 +124,15 @@ function checkInjectedCount(sent: number, batch: KBDInput[]): void {
  * Returns true when the text was delivered (or partially delivered — once
  * some keystrokes have landed, the caller must NOT fall back to a paste,
  * or the text would be inserted twice). Returns false only when nothing
- * was injected at all (non-Windows, `sendinput` missing, or the very
- * first batch failed), so the caller can cleanly fall back to pasting.
+ * was injected at all (non-Windows, `sendinput` missing, nothing survived
+ * filtering, or every SendInput call was fully blocked and injected 0
+ * events), so the caller can cleanly fall back to pasting.
+ *
+ * HIGH: the return is based on the cumulative count of events SendInput
+ * actually injected, not merely on whether SendInput was *called*. When an
+ * input hook/UIPI blocks the whole injection (every call returns 0), the
+ * cumulative total stays 0 and we return false — letting the orchestrator
+ * fall back to paste rather than silently dropping the transcript.
  */
 export async function typeTextDirect(text: string): Promise<boolean> {
   if (process.platform !== 'win32' || !text) return false;
@@ -136,7 +145,7 @@ export async function typeTextDirect(text: string): Promise<boolean> {
   const hkm = getActiveHotkeyManager();
   if (hkm) await hkm.untilAllModifiersUp(600);
 
-  let sentAny = false;
+  let injectedTotal = 0;
   try {
     let batch: KBDInput[] = [];
     let charsInBatch = 0;
@@ -160,25 +169,29 @@ export async function typeTextDirect(text: string): Promise<boolean> {
       // across two SendInput calls (with the inter-batch sleep) would
       // break the character.
       if (charsInBatch >= BATCH_CHARS && !isHighSurrogate(cu)) {
-        checkInjectedCount(mod.SendInput(batch), batch);
-        sentAny = true;
+        const n = mod.SendInput(batch);
+        checkInjectedCount(n, batch);
+        if (typeof n === 'number' && n > 0) injectedTotal += n;
         batch = [];
         charsInBatch = 0;
         await sleep(BATCH_DELAY_MS);
       }
     }
     if (batch.length > 0) {
-      checkInjectedCount(mod.SendInput(batch), batch);
-      sentAny = true;
+      const n = mod.SendInput(batch);
+      checkInjectedCount(n, batch);
+      if (typeof n === 'number' && n > 0) injectedTotal += n;
     }
-    // `sentAny` is false only when nothing survived filtering (text was
-    // all CRs, or a single lone high surrogate); returning false lets the
-    // caller fall back to a paste in that case.
-    return sentAny;
+    // `injectedTotal` is 0 only when nothing survived filtering (text was
+    // all CRs, or a single lone high surrogate) OR every SendInput call was
+    // fully blocked (UIPI / another hook swallowed every event). Returning
+    // false in both cases lets the caller fall back to a paste — safe,
+    // because nothing was actually inserted.
+    return injectedTotal > 0;
   } catch (err) {
     debug('DICTATION', `type-mode SendInput failed: ${err instanceof Error ? err.message : String(err)}`);
     // If keystrokes already landed, report success so the caller does not
     // paste the same text on top of the partial insertion.
-    return sentAny;
+    return injectedTotal > 0;
   }
 }

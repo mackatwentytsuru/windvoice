@@ -13,6 +13,20 @@ export class SecureStoreUnavailableError extends Error {
   }
 }
 
+/**
+ * LOW: a rejected API key is a BAD-INPUT condition, not a keyring failure.
+ * Throwing a distinct error lets the IPC handler classify it as 'E_INVALID'
+ * instead of the misleading 'E_SECURE_STORE' (which previously surfaced a
+ * whitespace-padded too-short key as a keychain/keyring fault).
+ */
+export class InvalidApiKeyError extends Error {
+  code = 'E_INVALID' as const;
+  constructor(message: string) {
+    super(message);
+    this.name = 'InvalidApiKeyError';
+  }
+}
+
 let warnedGet = false;
 
 export class SecureStore {
@@ -31,7 +45,7 @@ export class SecureStore {
 
   async setApiKey(value: string): Promise<void> {
     if (!isValidApiKey(value)) {
-      throw new Error('API key looks invalid');
+      throw new InvalidApiKeyError('API key looks invalid');
     }
     const trimmed = value.trim();
     try {

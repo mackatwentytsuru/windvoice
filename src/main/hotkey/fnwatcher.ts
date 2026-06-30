@@ -81,6 +81,14 @@ export class FnWatcher extends EventEmitter {
           debug('HOTKEY', `fnwatcher exit code=${code} signal=${signal}`);
         }
         this.child = null;
+        // H-BUG1: a sidecar crash between FN_DOWN and FN_UP would leave a
+        // push-to-talk binding stuck in HotkeyManager.heldDown (Fn sets no
+        // modifier flag, so the stuck-key safety net can't recover it).
+        // Force-release any in-flight Fn press before restarting. Idempotent:
+        // index.ts maps 'up' → injectKey(FN_KEYCODE, false), and onKey only
+        // emits 'stop' when the binding is actually held, so emitting 'up'
+        // with no press in flight is a harmless no-op.
+        this.emit('up');
         if (this.stopped) return;
         this.scheduleRestart();
       });
@@ -92,6 +100,19 @@ export class FnWatcher extends EventEmitter {
       const message = err instanceof Error ? err.message : String(err);
       this.emit('error', `failed to spawn fnwatcher: ${message}`);
     }
+  }
+
+  /**
+   * H-BUG2: re-arm the sidecar after it gave up restarting. When the Swift
+   * binary exit(1)s because Accessibility was denied (before printing
+   * FN_READY), restartCount never resets, so scheduleRestart permanently
+   * gives up after MAX_RESTARTS. If the user grants Accessibility later, the
+   * uIOhook recovery poller calls this to reset the counter and start fresh.
+   * After give-up `stopped` is false and `child` is null, so start() works.
+   */
+  restart(): void {
+    this.restartCount = 0;
+    this.start();
   }
 
   stop(): void {
