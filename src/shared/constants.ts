@@ -32,6 +32,20 @@ export const BYTES_PER_SAMPLE = 2;
  */
 export const SILENCE_RMS_THRESHOLD = 0.001;
 
+/**
+ * Commit-time "did real speech actually register" threshold (peak RMS across a
+ * take). Higher than SILENCE_RMS_THRESHOLD because the watchdog's 0.001 only
+ * catches a near-ZERO dead mic — but a degraded/"live-but-silent" mic can sit
+ * around ~0.005 (observed in the field: a mic that collapsed from 0.8 to a
+ * stuck 0.0047 and transcribed nothing). Real dictation peaks well above this
+ * (observed working takes: 0.045–0.86), so a take whose peak never clears this
+ * bar is treated as "no audio captured" → mic guidance + recapture, instead of
+ * committing near-silence that transcribes to empty/garbage text. Used only at
+ * commit time (whole-take peak), NOT by the mid-take watchdog, so a pause
+ * before speaking can't trigger a spurious mid-take rebuild.
+ */
+export const SPEECH_RMS_THRESHOLD = 0.01;
+
 /** Hard timeout (ms) on awaiting a final transcript after `commit`. */
 export const FINAL_TIMEOUT_MS = 8_000;
 

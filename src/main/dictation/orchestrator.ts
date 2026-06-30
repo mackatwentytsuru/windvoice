@@ -23,7 +23,7 @@ import {
   CHUNK_MS,
   FINAL_TIMEOUT_MS,
   MIN_AUDIO_MS,
-  SILENCE_RMS_THRESHOLD
+  SPEECH_RMS_THRESHOLD
 } from '@shared/constants';
 
 const MIN_CHUNKS = Math.ceil(MIN_AUDIO_MS / CHUNK_MS);
@@ -302,7 +302,7 @@ export class DictationOrchestrator {
     // floor — the live-but-silent mic case (digital zeros). Don't even try
     // to commit those: transcribing silence wastes a round-trip and the
     // commit gate below would reject it anyway.
-    const silentTake = maxLevel < SILENCE_RMS_THRESHOLD;
+    const silentTake = maxLevel < SPEECH_RMS_THRESHOLD;
     const enoughChunks = delivered >= MIN_CHUNKS;
 
     // `commit()` returns false when less than 100 ms of audio actually

@@ -11,7 +11,12 @@ import { debug } from '@main/debug';
 import type { PostProcessContext, PostProcessor } from '@main/postprocess/pipeline';
 import { APP_PROFILE_INSTRUCTIONS_MAX, type DictionaryEntry, type Settings } from '@shared/types';
 
-const HARD_TIMEOUT_MS = 2_000;
+// gpt-5-mini formatting a short transcript routinely takes 2-4s; the old 2000ms
+// ceiling timed out on essentially every call (15 consecutive E_TIMEOUTs in the
+// field log), so formatting never actually applied. 5000ms lets it complete
+// while still bounding how long insertion waits before falling back to the raw
+// transcript on a genuinely stuck call.
+const HARD_TIMEOUT_MS = 5_000;
 const DEFAULT_MODEL = 'gpt-5-mini';
 const TEMPERATURE = 0.1;
 const MIN_OUTPUT_TOKENS = 256;
