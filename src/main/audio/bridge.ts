@@ -183,7 +183,14 @@ export class AudioBridge {
    */
   recapture(): void {
     if (!this.capturing) return;
-    this.win?.webContents.send(IPC.AUDIO_RECOVER_CMD);
+    // Pass the current forwarding state as `resumeAfterRebuild`. The renderer
+    // suspends every freshly built AudioContext (issue #7 idle optimization),
+    // so a recapture that fires DURING an active dictation must tell the
+    // renderer to resume the rebuilt context — otherwise the new context stays
+    // suspended for the rest of the dictation and records silence. While idle
+    // (powerMonitor resume/unlock), forwarding is false and the context
+    // correctly stays suspended until the next beginForwarding().
+    this.win?.webContents.send(IPC.AUDIO_RECOVER_CMD, this.forwarding);
     debug('AUDIO', 'recapture requested (power resume / track loss)');
   }
 
@@ -233,6 +240,14 @@ export class AudioBridge {
           `silent capture detected (delivered=${delivered} maxLevel=${this.maxLevelSinceForward.toFixed(4)}) — rebuilding mic`
         );
         this.recapture();
+        // Re-arm so a rebuild that is STILL silent is detected rather than the
+        // watchdog firing exactly once. Reset the baseline to the current
+        // chunkCount and clear the level high-water mark so the next window
+        // measures only post-rebuild energy. Only while still forwarding.
+        if (this.forwarding) {
+          this.maxLevelSinceForward = 0;
+          this.armSilenceWatchdog(this.chunkCount);
+        }
       }
     }, SILENCE_WATCHDOG_MS);
     if (typeof this.silenceWatchdog.unref === 'function') this.silenceWatchdog.unref();

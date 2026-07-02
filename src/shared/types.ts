@@ -86,7 +86,12 @@ export const SettingsSchema = z.object({
   replacements: z.array(ReplacementEntrySchema).default([]),
   audio: z
     .object({
-      device: z.string().default('default')
+      // MEDIUM: every nested scalar carries its own `.catch(default)` so a
+      // single corrupted/out-of-range persisted field falls back to its own
+      // default instead of failing the whole-object safeParse in
+      // store/settings.ts — which would reset EVERY setting (hotkeys,
+      // dictionary, replacements) to defaults over one bad value.
+      device: z.string().catch('default').default('default')
       // inputGain was scaffolded as `z.number().min(0).max(4)` but never
       // wired into the AudioWorklet pipeline (#16). OS-level microphone
       // gain (System Settings → Sound → Input on macOS, Privacy &
@@ -96,12 +101,12 @@ export const SettingsSchema = z.object({
       // fine — Zod ignores unknown properties unless `.strict()`.
     })
     .default({}),
-  language: z.string().default('ja'),
+  language: z.string().catch('ja').default('ja'),
   formatter: z
     .object({
-      model: z.string().default('gpt-5-mini'),
-      customInstructions: z.string().default(''),
-      enabled: z.boolean().default(true),
+      model: z.string().catch('gpt-5-mini').default('gpt-5-mini'),
+      customInstructions: z.string().catch('').default(''),
+      enabled: z.boolean().catch(true).default(true),
       /** Per-app formatter profiles, matched against the foreground app name. */
       appProfiles: z.array(AppProfileSchema).default([])
     })
@@ -118,9 +123,9 @@ export const SettingsSchema = z.object({
         .enum(['paste', 'type'])
         .catch('paste')
         .default('paste'),
-      restoreClipboard: z.boolean().default(true),
+      restoreClipboard: z.boolean().catch(true).default(true),
       /** When true, paste partial transcripts during recording instead of waiting for the final. */
-      streaming: z.boolean().default(false),
+      streaming: z.boolean().catch(false).default(false),
       /**
        * Paste timing profile. Controls how long WindVoice waits for the
        * target app to consume the synthesized Ctrl/Cmd+V before restoring
@@ -134,28 +139,28 @@ export const SettingsSchema = z.object({
        * clipboard history, so dictations don't flood the user's history.
        * No-op on macOS / Linux.
        */
-      excludeFromClipboardHistory: z.boolean().default(true)
+      excludeFromClipboardHistory: z.boolean().catch(true).default(true)
     })
     .default({}),
   ui: z
     .object({
-      startMinimized: z.boolean().default(true),
-      theme: z.enum(['light', 'dark', 'system']).default('system'),
-      uiLanguage: z.enum(['ja', 'en']).default('ja'),
-      overlayEnabled: z.boolean().default(true),
-      soundCuesEnabled: z.boolean().default(true),
-      duckOtherAudio: z.boolean().default(true),
-      duckLevel: z.number().min(0).max(1).default(0.3),
+      startMinimized: z.boolean().catch(true).default(true),
+      theme: z.enum(['light', 'dark', 'system']).catch('system').default('system'),
+      uiLanguage: z.enum(['ja', 'en']).catch('ja').default('ja'),
+      overlayEnabled: z.boolean().catch(true).default(true),
+      soundCuesEnabled: z.boolean().catch(true).default(true),
+      duckOtherAudio: z.boolean().catch(true).default(true),
+      duckLevel: z.number().min(0).max(1).catch(0.3).default(0.3),
       /** Launch WindVoice automatically when the OS starts. */
-      autoLaunch: z.boolean().default(false),
+      autoLaunch: z.boolean().catch(false).default(false),
       /** Auto-check + auto-download GitHub releases on startup. */
-      autoUpdate: z.boolean().default(true),
+      autoUpdate: z.boolean().catch(true).default(true),
       /**
        * Automatically file deduplicated, secret-scrubbed error reports as
        * GitHub issues on the project repo (via the local `gh` CLI). Never
        * includes transcripts or API keys — see main/report/githubReporter.
        */
-      errorReporting: z.boolean().default(true)
+      errorReporting: z.boolean().catch(true).default(true)
     })
     .default({})
 });

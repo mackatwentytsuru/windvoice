@@ -66,11 +66,16 @@ export class AudioDuck {
 
   async restore(): Promise<void> {
     if (!this.active || this.originalVolume == null) return;
+    // Await the restore BEFORE clearing state. If setVolume rejects, keep
+    // active=true + originalVolume so duck()'s `if (this.active) return` guard
+    // preserves the TRUE original (not the lowered value) and a later restore
+    // can retry — otherwise a failed restore would leave volume stuck low and
+    // the next duck() would re-save the lowered value, ratcheting it down.
     const original = this.originalVolume;
-    this.active = false;
-    this.originalVolume = null;
     try {
       await loudness.setVolume(original);
+      this.active = false;
+      this.originalVolume = null;
       debug('DUCK', `restored to ${original}`);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);

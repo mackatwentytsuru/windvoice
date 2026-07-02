@@ -228,6 +228,27 @@ describe('RealtimeClient', () => {
     expect(hoisted.instances.length).toBe(finalCount);
   });
 
+  it('emits "reconnecting" before scheduling a silent auto-reconnect after an abnormal close', async () => {
+    vi.useFakeTimers();
+    const client = new RealtimeClient({ apiKey: 'sk-x', vadEnabled: false });
+    const p = client.connect();
+    const inst = await openAndReady(p);
+
+    let reconnecting = 0;
+    let closed = 0;
+    client.on('reconnecting', () => reconnecting++);
+    client.on('close', () => closed++);
+
+    // Abnormal close (no .close() call → cleanClose false): the client
+    // schedules a reconnect and announces it via 'reconnecting' WITHOUT
+    // emitting 'close'.
+    inst.emit('close');
+    expect(reconnecting).toBe(1);
+    expect(closed).toBe(0);
+
+    client.dispose();
+  });
+
   it('dispose() clears reconnect timer and detaches listeners', async () => {
     vi.useFakeTimers();
     const client = new RealtimeClient({ apiKey: 'sk-x', vadEnabled: false });

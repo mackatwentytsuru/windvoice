@@ -126,13 +126,28 @@ describe('typeTextDirect batched send loop (win32)', () => {
     expect(sentBatches()).toHaveLength(0);
   });
 
-  it('logs a debug warning when SendInput injects fewer events than requested (UIPI block)', async () => {
+  it('returns false when SendInput injects 0 events (fully blocked → paste fallback, not silent data loss)', async () => {
+    // HIGH: a fully-blocked injection (UIPI / another hook swallows every
+    // event) used to return true, so the orchestrator skipped the paste
+    // fallback and the whole transcript was silently dropped. With nothing
+    // actually inserted, the function must report false so paste can recover.
     hoisted.sendInput.mockImplementationOnce(() => 0);
-    await expect(typeTextDirect('hi')).resolves.toBe(true);
+    await expect(typeTextDirect('hi')).resolves.toBe(false);
     expect(vi.mocked(debug)).toHaveBeenCalledWith(
       'DICTATION',
       expect.stringContaining('injected 0/4 events')
     );
+  });
+
+  it('returns true on a PARTIAL injection (one batch lands, another is blocked) to avoid double-insertion', async () => {
+    // 100 chars → three SendInput calls (80, 80, 40 events). Block only the
+    // first; the rest land. Because some keystrokes were inserted, returning
+    // true keeps the caller from pasting the same text on top of them.
+    hoisted.sendInput
+      .mockImplementationOnce(() => 0)
+      .mockImplementationOnce((inputs: unknown) => (Array.isArray(inputs) ? inputs.length : 1))
+      .mockImplementationOnce((inputs: unknown) => (Array.isArray(inputs) ? inputs.length : 1));
+    await expect(typeTextDirect('a'.repeat(100))).resolves.toBe(true);
   });
 });
 

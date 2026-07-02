@@ -60,6 +60,32 @@ describe('HotkeyManager modifier-self-match', () => {
     expect(stopped).toEqual(['t']);
   });
 
+  it('toggle mode de-bounces OS auto-repeat (repeated keydowns flip once, keyup re-arms)', () => {
+    // Bug: libuiohook forwards OS auto-repeat as repeated keydowns with no
+    // intervening keyup. A non-modifier toggle trigger must flip recording
+    // exactly ONCE while held, then re-arm on keyup so the next press flips
+    // again.
+    mgr.setBindings([{ id: 'tog', keys: ['Space'], mode: 'toggle', format: true }]);
+    const press = (down: boolean): void =>
+      dispatch(
+        mgr,
+        { keycode: 57, altKey: false, ctrlKey: false, shiftKey: false, metaKey: false },
+        down
+      );
+    // Three auto-repeat keydowns, no keyup between them → toggle ONCE.
+    press(true);
+    press(true);
+    press(true);
+    expect(started).toEqual(['tog']);
+    expect(stopped).toEqual([]);
+    // Keyup re-arms the trigger.
+    press(false);
+    // Next physical press toggles again (now stops recording).
+    press(true);
+    expect(started).toEqual(['tog']);
+    expect(stopped).toEqual(['tog']);
+  });
+
   it('requires exact modifier match for non-modifier triggers', () => {
     mgr.setBindings([{ id: 'c', keys: ['Ctrl', 'Shift', 'Space'], mode: 'toggle', format: true }]);
     // ctrl+shift+space → match

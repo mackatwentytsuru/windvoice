@@ -63,8 +63,18 @@ vi.mock('@main/store/secure', () => {
       this.name = 'SecureStoreUnavailableError';
     }
   }
+  // LOW-3: distinct bad-input error so the handler classifies a rejected key
+  // as 'E_INVALID' rather than the misleading 'E_SECURE_STORE'.
+  class InvalidApiKeyError extends Error {
+    code = 'E_INVALID' as const;
+    constructor(message: string) {
+      super(message);
+      this.name = 'InvalidApiKeyError';
+    }
+  }
   return {
     SecureStoreUnavailableError,
+    InvalidApiKeyError,
     secureStore: {
       setApiKey: (...args: unknown[]) => hoisted.secure.setApiKey(...args),
       clearApiKey: (...args: unknown[]) => hoisted.secure.clearApiKey(...args),
@@ -212,6 +222,25 @@ describe('IPC handlers — APIKEY_SET', () => {
     expect(result.code).toBe('E_INVALID');
   });
 
+  // LOW-3: a whitespace-padded too-short key must be reported as invalid
+  // INPUT (E_INVALID), not a keyring failure (E_SECURE_STORE). The schema
+  // now trims first, so the trimmed length (< 10) is measured here and the
+  // call is rejected at the IPC boundary before it ever reaches the keyring.
+  it('rejects a whitespace-padded short key as E_INVALID, not E_SECURE_STORE', async () => {
+    setTrustedSettingsSender(TRUSTED_ID);
+    let setApiKeyCalled = false;
+    hoisted.secure.setApiKey = () => {
+      setApiKeyCalled = true;
+      return Promise.resolve();
+    };
+    const handler = getHandler(IPC.APIKEY_SET);
+    const result = (await handler(fakeEvent(TRUSTED_ID), '   sk-tiny   ')) as MaybeOk;
+    expect(result.ok).toBe(false);
+    expect(result.code).toBe('E_INVALID');
+    // It never reached the secure store — this is a pure input rejection.
+    expect(setApiKeyCalled).toBe(false);
+  });
+
   it('rejects non-trusted sender when trusted id is set', async () => {
     setTrustedSettingsSender(42);
     const handler = getHandler(IPC.APIKEY_SET);
@@ -280,11 +309,13 @@ describe('IPC handlers — SETTINGS_SET', () => {
   it('returns { ok: false, error } on a truly invalid payload and does NOT broadcast', async () => {
     setTrustedSettingsSender(TRUSTED_ID);
     const handler = getHandler(IPC.SETTINGS_SET);
-    // v0.1.2: `hotkeys: 12345` now recovers via the schema's `.catch`
-    // fallback to the default RightCtrl binding instead of throwing.
-    // To force a real validation error we pass a payload that no `.catch`
-    // recovers (e.g. `ui.theme` not in the enum and no fallback wired).
-    const result = (await handler(fakeEvent(TRUSTED_ID), { ui: { theme: 'neon' } })) as MaybeOk;
+    // MEDIUM: every nested SCALAR now carries `.catch(default)` (so one bad
+    // value can't reset every setting), including `ui.theme`. To force a real
+    // validation error we use a structural failure that no `.catch` recovers:
+    // a `dictionary` entry whose `from` violates `.min(1)`.
+    const result = (await handler(fakeEvent(TRUSTED_ID), {
+      dictionary: [{ from: '', to: 'x' }]
+    })) as MaybeOk;
     expect(result.ok).toBe(false);
     expect(typeof result.error).toBe('string');
     expect(triggers.onSettingsChanged).not.toHaveBeenCalled();
