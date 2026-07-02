@@ -26,6 +26,7 @@ import { setAudioBackpressureListener } from '@main/realtime/client';
 import { flushHistory } from '@main/store/history';
 import { broadcastToUiWindows, setAudioWebContentsId } from '@main/broadcast';
 import { initErrorReporter } from '@main/report/githubReporter';
+import { debug } from '@main/debug';
 import { IPC } from '@shared/types';
 import { t } from '@shared/i18n';
 
@@ -58,14 +59,14 @@ async function openExternalSafe(url: string): Promise<void> {
     }
   }
   if (!allowed) {
-    process.stderr.write(`[security] openExternal blocked disallowed scheme: ${url}\n`);
+    debug('MAIN', `openExternal blocked disallowed scheme: ${url}`);
     return;
   }
   try {
     await shell.openExternal(url);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    process.stderr.write(`[security] openExternal failed: ${message}\n`);
+    debug('MAIN', `openExternal failed: ${message}`);
   }
 }
 
@@ -156,9 +157,7 @@ function startHotkeysWithAccessibilityRecovery(): void {
     }
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    process.stderr.write(
-      `[hotkey] start failed (likely missing Accessibility permission): ${message}\n`
-    );
+    debug('HOTKEY', `start failed (likely missing Accessibility permission): ${message}`);
     if (process.platform !== 'darwin') return;
     setAccessibilityWarning(true);
     if (accessibilityPollTimer) return;
@@ -176,8 +175,9 @@ function startHotkeysWithAccessibilityRecovery(): void {
             clearInterval(accessibilityPollTimer);
             accessibilityPollTimer = null;
           }
-          process.stderr.write(
-            '[hotkey] accessibility recovery poll disabled after 10 consecutive errors — re-grant Accessibility permission and restart WindVoice\n'
+          debug(
+            'HOTKEY',
+            'accessibility recovery poll disabled after 10 consecutive errors — re-grant Accessibility permission and restart WindVoice'
           );
         }
       }
@@ -363,7 +363,7 @@ app.whenReady().then(async () => {
   // initialized — issue #22).
   audio.setErrorListener((message) => {
     lastAudioError = message;
-    process.stderr.write(`[audio] ${message}\n`);
+    debug('AUDIO', message);
     broadcastToUiWindows(IPC.AUDIO_ERROR, message);
   });
 
@@ -373,7 +373,7 @@ app.whenReady().then(async () => {
   // the capture stream on resume. `unlock-screen` covers the case where the
   // display sleeps/locks without a full system suspend.
   powerMonitor.on('resume', () => {
-    process.stderr.write('[power] resume — re-acquiring microphone\n');
+    debug('AUDIO', 'power resume — re-acquiring microphone');
     audio?.recapture();
   });
   powerMonitor.on('unlock-screen', () => audio?.recapture());
@@ -396,10 +396,10 @@ app.whenReady().then(async () => {
   setActiveHotkeyManager(hotkeys);
   hotkeys.setBindings(settingsStore.get().hotkeys);
   hotkeys.on('start', () => {
-    void orchestrator?.start().catch((err) => process.stderr.write(`[hotkey] start: ${err}\n`));
+    void orchestrator?.start().catch((err) => debug('DICTATION', `hotkey start: ${err}`));
   });
   hotkeys.on('stop', () => {
-    void orchestrator?.stop().catch((err) => process.stderr.write(`[hotkey] stop: ${err}\n`));
+    void orchestrator?.stop().catch((err) => debug('DICTATION', `hotkey stop: ${err}`));
   });
 
   // Start global hotkey hook. uIOhook.start() throws on macOS when Accessibility
@@ -418,7 +418,7 @@ app.whenReady().then(async () => {
     fnWatcher = new FnWatcher();
     fnWatcher.on('down', () => hotkeys?.injectKey(FN_KEYCODE, true));
     fnWatcher.on('up', () => hotkeys?.injectKey(FN_KEYCODE, false));
-    fnWatcher.on('error', (msg) => process.stderr.write(`[fnwatcher] ${msg}\n`));
+    fnWatcher.on('error', (msg) => debug('HOTKEY', `fnwatcher: ${msg}`));
     fnWatcher.start();
   }
 
@@ -433,11 +433,11 @@ app.whenReady().then(async () => {
   // Forward background errors to the Settings UI so they don't vanish
   // into stderr (which is invisible in packaged builds — M10).
   onDuckError((phase, message) => {
-    process.stderr.write(`[duck:${phase}] ${message}\n`);
+    debug('DUCK', `${phase}: ${message}`);
     broadcastToUiWindows(IPC.SYSTEM_ERROR, { source: 'duck', message: `${phase}: ${message}` });
   });
   onAutoLaunchError((message) => {
-    process.stderr.write(`[autoLaunch] ${message}\n`);
+    debug('MAIN', `autoLaunch: ${message}`);
     broadcastToUiWindows(IPC.SYSTEM_ERROR, { source: 'autoLaunch', message });
   });
 
@@ -481,5 +481,5 @@ app.on('before-quit', () => {
 });
 
 process.on('unhandledRejection', (reason) => {
-  process.stderr.write(`[unhandledRejection] ${reason}\n`);
+  debug('MAIN', `unhandledRejection: ${reason}`);
 });

@@ -7,7 +7,7 @@ import { join } from 'node:path';
 
 const ALL = process.env['WINDVOICE_DEBUG'] === '1';
 
-const DOMAINS = ['HOTKEY', 'AUDIO', 'REALTIME', 'DICTATION', 'DUCK', 'OVERLAY'] as const;
+const DOMAINS = ['HOTKEY', 'AUDIO', 'REALTIME', 'DICTATION', 'DUCK', 'OVERLAY', 'MAIN'] as const;
 type Domain = (typeof DOMAINS)[number];
 
 // ─── persistent log file ────────────────────────────────────────────────────

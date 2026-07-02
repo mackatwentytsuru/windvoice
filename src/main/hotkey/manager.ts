@@ -231,9 +231,10 @@ export class HotkeyManager extends EventEmitter {
     this.modifierTimeoutTimes = this.modifierTimeoutTimes.filter((t) => now - t <= windowMs);
     this.modifierTimeoutTimes.push(now);
     if (this.modifierTimeoutTimes.length > 1) {
-      process.stderr.write(
-        `[windvoice] untilAllModifiersUp timed out ${this.modifierTimeoutTimes.length} times in ` +
-          `${windowMs / 1000}s — possible stuck-modifier from uIOhook missing keyup (issue #34)\n`
+      debug(
+        'HOTKEY',
+        `untilAllModifiersUp timed out ${this.modifierTimeoutTimes.length} times in ` +
+          `${windowMs / 1000}s — possible stuck-modifier from uIOhook missing keyup (issue #34)`
       );
     }
   }
