@@ -28,6 +28,12 @@ import {
 
 const MIN_CHUNKS = Math.ceil(MIN_AUDIO_MS / CHUNK_MS);
 const RECENT_AUDIO_ERROR_WINDOW_MS = 3_000;
+// The OpenAI Realtime server hard-kills sessions at 60 minutes ("Your
+// session hit the maximum duration of 60 minutes." — 22 occurrences in the
+// field log). Refresh the connection while idle once it ages past this,
+// so the cap can never land mid-dictation or spam error reconnects.
+const SESSION_REFRESH_AGE_MS = 50 * 60_000;
+const MAINTENANCE_INTERVAL_MS = 60_000;
 
 type ChunkLike = ChunkPayload | AudioChunk;
 
@@ -81,8 +87,39 @@ export class DictationOrchestrator {
    */
   private deltaTargets: WebContents[] = [];
 
+  private maintenanceTimer: NodeJS.Timeout | null = null;
+
   constructor(private audio: AudioBridge, overlay?: OverlayWindow) {
     this.overlay = overlay ?? null;
+    // Idle maintenance: refresh the realtime session before the server's
+    // 60-minute cap kills it. unref'd so it never holds the process open.
+    this.maintenanceTimer = setInterval(() => this.maintenanceTick(), MAINTENANCE_INTERVAL_MS);
+    if (typeof this.maintenanceTimer.unref === 'function') this.maintenanceTimer.unref();
+  }
+
+  /**
+   * Runs once a minute. When no dictation is in flight and the current
+   * session has aged past SESSION_REFRESH_AGE_MS, dispose the client and
+   * prewarm a fresh one — reusing the well-tested dispose/prewarm paths so
+   * the swap is invisible to the user. Skipped entirely mid-dictation; the
+   * next tick catches up after the take completes.
+   */
+  private maintenanceTick(): void {
+    if (this.disposed || this.inFlight) return;
+    const client = this.client;
+    if (!client || !client.isOpen()) return;
+    // Fakes in tests may not implement sessionAgeMs — treat as age 0.
+    if (typeof client.sessionAgeMs !== 'function') return;
+    if (client.sessionAgeMs() < SESSION_REFRESH_AGE_MS) return;
+    debug('DICTATION', 'proactive session refresh (approaching 60-min server cap)');
+    this.detachClientListeners(client);
+    this.client = null;
+    try {
+      client.dispose();
+    } catch {
+      /* ignore */
+    }
+    void this.prewarmConnection();
   }
 
   isActive(): boolean {
@@ -458,6 +495,10 @@ export class DictationOrchestrator {
     this.disposed = true;
     this.cancelRequested = true;
     this.cycleId++;
+    if (this.maintenanceTimer) {
+      clearInterval(this.maintenanceTimer);
+      this.maintenanceTimer = null;
+    }
     this.clearPendingFinalTimer();
     this.detachClientListeners();
     if (this.client) {

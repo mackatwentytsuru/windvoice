@@ -25,6 +25,7 @@ import { recoverClipboardIfPending, setPasteFailureListener } from '@main/inject
 import { setAudioBackpressureListener } from '@main/realtime/client';
 import { flushHistory } from '@main/store/history';
 import { broadcastToUiWindows, setAudioWebContentsId } from '@main/broadcast';
+import { initErrorReporter } from '@main/report/githubReporter';
 import { IPC } from '@shared/types';
 import { t } from '@shared/i18n';
 
@@ -441,6 +442,9 @@ app.whenReady().then(async () => {
     if (status === 'idle') notifyDictationIdle();
   });
   initAutoUpdater();
+  // Automatic GitHub error reporting (dedup + secret-scrub in the reporter).
+  // Wired to the setting so the General-page toggle applies immediately.
+  initErrorReporter(() => settingsStore.get().ui.errorReporting);
 
   await ensureApiKey();
 });

@@ -89,7 +89,10 @@ const ja: Dict = {
   'general.autoLaunch': 'OS起動時に自動起動',
   'general.autoLaunchHelper': 'Windows / macOS のログイン時に WindVoice を自動で起動します。',
   'general.autoUpdate': '自動アップデート',
-  'general.autoUpdateHelper': '起動時に GitHub Releases を確認し、更新があれば通知します。ダウンロードと再起動は手動です。',
+  'general.autoUpdateHelper': '起動時と4時間ごとに GitHub Releases を確認し、更新があれば通知します。ダウンロードと再起動はクリックで実行します。',
+  'general.errorReporting': 'エラーレポートの自動送信',
+  'general.errorReportingHelper':
+    'エラー発生時に GitHub リポジトリへ診断 issue を自動作成します（重複はまとめられます）。文字起こし本文や API キーは送信されません。',
   'general.checkForUpdate': '更新を確認',
   'general.updateAvailable': '新しいバージョンが利用可能',
   'general.updateDownload': 'ダウンロード',
@@ -264,7 +267,10 @@ const en: Dict = {
   'general.autoLaunch': 'Launch on login',
   'general.autoLaunchHelper': 'Start WindVoice automatically when Windows / macOS signs in.',
   'general.autoUpdate': 'Auto-update',
-  'general.autoUpdateHelper': 'Check GitHub Releases on startup and notify you when an update is available. Download and restart are manual.',
+  'general.autoUpdateHelper': 'Check GitHub Releases on startup and every 4 hours, and notify you when an update is available. Download and restart happen on click.',
+  'general.errorReporting': 'Automatic error reporting',
+  'general.errorReportingHelper':
+    'When an error occurs, automatically file a diagnostic issue on the GitHub repo (duplicates are merged). Transcripts and API keys are never sent.',
   'general.checkForUpdate': 'Check for update',
   'general.updateAvailable': 'A new version is available',
   'general.updateDownload': 'Download',

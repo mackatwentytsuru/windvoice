@@ -149,7 +149,13 @@ export const SettingsSchema = z.object({
       /** Launch WindVoice automatically when the OS starts. */
       autoLaunch: z.boolean().default(false),
       /** Auto-check + auto-download GitHub releases on startup. */
-      autoUpdate: z.boolean().default(true)
+      autoUpdate: z.boolean().default(true),
+      /**
+       * Automatically file deduplicated, secret-scrubbed error reports as
+       * GitHub issues on the project repo (via the local `gh` CLI). Never
+       * includes transcripts or API keys — see main/report/githubReporter.
+       */
+      errorReporting: z.boolean().default(true)
     })
     .default({})
 });

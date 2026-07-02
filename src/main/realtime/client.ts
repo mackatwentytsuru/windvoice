@@ -118,6 +118,11 @@ export class RealtimeClient extends EventEmitter {
   // audio was lost to a closed socket or to send-buffer backpressure.
   private droppedNotOpen = 0;
   private droppedBackpressure = 0;
+  // Timestamp of the most recent session.updated ack. The server enforces a
+  // 60-minute maximum session duration; the orchestrator polls sessionAgeMs()
+  // and proactively rebuilds the client while idle, so the cap is never hit
+  // mid-dictation (field log: 22 "maximum duration" errors).
+  private sessionReadyAt = 0;
   /**
    * Pending connect() settle while we wait for the server to ack our
    * `session.update` (FIX for the v0.1.8 dead-after-session.created class:
@@ -411,6 +416,16 @@ export class RealtimeClient extends EventEmitter {
     return this.opened && this.ws !== null && this.ws.readyState === WebSocket.OPEN;
   }
 
+  /**
+   * Milliseconds since the current server session was acknowledged
+   * (session.updated), or 0 when no session has been established. Used by
+   * the orchestrator's idle maintenance to refresh the connection before
+   * the server's 60-minute session cap kills it mid-use.
+   */
+  sessionAgeMs(): number {
+    return this.sessionReadyAt === 0 ? 0 : Date.now() - this.sessionReadyAt;
+  }
+
   close(): void {
     this.opened = false;
     this.cleanClose = true;
@@ -577,6 +592,7 @@ export class RealtimeClient extends EventEmitter {
       // `session.updated`. Accept both (events.ts SessionUpdatedEvent).
       case 'transcription_session.updated':
       case 'session.updated': {
+        this.sessionReadyAt = Date.now();
         // Fresh / reconfigured session ⇒ empty server-side input buffer.
         // Drop any byte count carried over (e.g. from a take interrupted by a
         // reconnect) so the commit gate judges only audio appended to THIS

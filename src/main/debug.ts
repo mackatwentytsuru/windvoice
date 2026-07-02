@@ -87,7 +87,9 @@ const SECRET_PATTERNS: ReadonlyArray<RegExp> = [
   /Bearer\s+[A-Za-z0-9._-]+/g
 ];
 
-function scrub(message: string): string {
+/** Redact API keys / bearer tokens. Exported for the GitHub error reporter,
+ * which must apply the same policy before any text leaves the machine. */
+export function scrubSecrets(message: string): string {
   let out = message;
   for (const re of SECRET_PATTERNS) {
     out = out.replace(re, '***REDACTED***');
@@ -96,7 +98,7 @@ function scrub(message: string): string {
 }
 
 export function debug(domain: Domain, message: string): void {
-  const scrubbed = scrub(message);
+  const scrubbed = scrubSecrets(message);
   // Always persist to the log file (diagnostics survive across runs); the env
   // gates only control the noisier live stderr stream.
   fileLog(domain, scrubbed);

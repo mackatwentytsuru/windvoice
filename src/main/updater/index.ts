@@ -6,11 +6,14 @@
 import { BrowserWindow, app, ipcMain } from 'electron';
 import pkg from 'electron-updater';
 import { debug } from '@main/debug';
+import { reportError } from '@main/report/githubReporter';
 import { settingsStore } from '@main/store/settings';
 import { refuseUntrusted } from '@main/ipc/handlers';
 import { IPC, type UpdaterState } from '@shared/ipc';
 
 const { autoUpdater } = pkg;
+
+const UPDATE_CHECK_INTERVAL_MS = 4 * 60 * 60 * 1000;
 
 let lastState: UpdaterState = { phase: 'idle' };
 let initialized = false;
@@ -110,9 +113,10 @@ export function initAutoUpdater(): void {
   autoUpdater.on('update-downloaded', (info: { version: string }) =>
     broadcast({ phase: 'downloaded', version: info.version })
   );
-  autoUpdater.on('error', (err: Error) =>
-    broadcast({ phase: 'error', message: err.message })
-  );
+  autoUpdater.on('error', (err: Error) => {
+    reportError('updater', err.message);
+    broadcast({ phase: 'error', message: err.message });
+  });
 
   ipcMain.handle(IPC.UPDATER_CHECK, async (event) => {
     const refusal = refuseUntrusted(event);
@@ -167,4 +171,17 @@ export function initAutoUpdater(): void {
       debug('DICTATION', `auto-update startup check failed: ${msg}`);
     });
   }
+
+  // WindVoice typically stays resident for days, so a startup-only check
+  // would miss any release published while it runs. Re-check periodically;
+  // the setting is read on every tick so toggling it applies immediately.
+  // Still notify-only: download/install remain explicit user clicks.
+  const periodic = setInterval(() => {
+    if (!settingsStore.get().ui.autoUpdate) return;
+    autoUpdater.checkForUpdates().catch((err: unknown) => {
+      const msg = err instanceof Error ? err.message : String(err);
+      debug('DICTATION', `auto-update periodic check failed: ${msg}`);
+    });
+  }, UPDATE_CHECK_INTERVAL_MS);
+  if (typeof periodic.unref === 'function') periodic.unref();
 }

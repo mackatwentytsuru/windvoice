@@ -8,15 +8,26 @@
 import crypto from 'node:crypto';
 import OpenAI from 'openai';
 import { debug } from '@main/debug';
+import { reportError } from '@main/report/githubReporter';
 import type { PostProcessContext, PostProcessor } from '@main/postprocess/pipeline';
 import { APP_PROFILE_INSTRUCTIONS_MAX, type DictionaryEntry, type Settings } from '@shared/types';
 
 // gpt-5-mini formatting a short transcript routinely takes 2-4s; the old 2000ms
 // ceiling timed out on essentially every call (15 consecutive E_TIMEOUTs in the
-// field log), so formatting never actually applied. 5000ms lets it complete
-// while still bounding how long insertion waits before falling back to the raw
-// transcript on a genuinely stuck call.
-const HARD_TIMEOUT_MS = 5_000;
+// field log), so formatting never actually applied. A flat 5000ms fixed the
+// short case but still timed out on long dictations (17 E_TIMEOUTs in the
+// field log — completion time grows with transcript length). The ceiling now
+// scales with input size, bounded so insertion never waits absurdly long
+// before falling back to the raw transcript on a genuinely stuck call.
+const BASE_TIMEOUT_MS = 5_000;
+const PER_CHAR_TIMEOUT_MS = 25;
+const MAX_TIMEOUT_MS = 12_000;
+
+/** Adaptive formatter deadline: 5s floor + 25ms per input char, 12s cap.
+ * Exported for tests. */
+export function formatterTimeoutMs(textLength: number): number {
+  return Math.min(BASE_TIMEOUT_MS + textLength * PER_CHAR_TIMEOUT_MS, MAX_TIMEOUT_MS);
+}
 const DEFAULT_MODEL = 'gpt-5-mini';
 const TEMPERATURE = 0.1;
 const MIN_OUTPUT_TOKENS = 256;
@@ -403,6 +414,8 @@ export const gptFormatter: PostProcessor = {
     const systemPrompt = buildSystemPrompt(ctx.settings, ctx.activeWindowApp);
     const model = ctx.settings.formatter?.model || DEFAULT_MODEL;
 
+    const startedAt = Date.now();
+    const timeoutMs = formatterTimeoutMs(text.length);
     try {
       const result = await withTimeout(
         (signal) =>
@@ -413,7 +426,13 @@ export const gptFormatter: PostProcessor = {
             text,
             signal
           }),
-        HARD_TIMEOUT_MS
+        timeoutMs
+      );
+      // Duration is logged on success so the adaptive timeout can be tuned
+      // from field logs instead of guessed.
+      debug(
+        'DICTATION',
+        `formatter ok in ${Date.now() - startedAt}ms (len=${text.length} timeout=${timeoutMs}ms)`
       );
       const trimmed = result.trim();
       if (trimmed.length === 0) {
@@ -424,6 +443,11 @@ export const gptFormatter: PostProcessor = {
     } catch (err) {
       const classified = classifyFormatterError(err);
       debug('DICTATION', `formatter failed [${classified.code}]: ${classified.message}`);
+      // Transient failures (timeout, rate limit, network) never reach the
+      // FORMATTER_ERROR banner (the raw transcript is still inserted), so
+      // they'd otherwise be invisible to the GitHub reporter's banner choke
+      // point. Queue them explicitly; dedup/scrubbing happen in the reporter.
+      reportError(`formatter:${classified.code}`, classified.message);
       if (classified.permanent) {
         permanentFailureReason = classified.message;
         permanentFailureCode = classified.code;
