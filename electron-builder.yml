@@ -61,10 +61,15 @@ mac:
   gatekeeperAssess: false
   entitlements: build/entitlements.mac.plist
   entitlementsInherit: build/entitlements.mac.plist
-  # Signing/notarizing is OFF by default; set CSC_LINK + APPLE_ID env vars
-  # at build time to enable. Without signing, users must right-click → Open
-  # the first time on macOS.
-  identity: null
+  # Sign with the stable Apple Development identity from the local Keychain.
+  # A stable identity is what keeps macOS TCC grants (Accessibility / Input
+  # Monitoring / Microphone) valid across rebuilds — ad-hoc signing changes
+  # the cdhash every build and silently revokes them. For public distribution
+  # swap this for a "Developer ID Application" cert + notarization
+  # (APPLE_ID / APPLE_APP_SPECIFIC_PASSWORD / APPLE_TEAM_ID env vars).
+  # On machines without this cert, override with CSC_IDENTITY_AUTO_DISCOVERY
+  # =false or edit back to `identity: null`.
+  identity: "Apple Development: Yuki Tsuruoka (ZFDPLA8275)"
   extendInfo:
     NSMicrophoneUsageDescription: "WindVoice uses your microphone to transcribe speech via the OpenAI Realtime API."
     NSAppleEventsUsageDescription: "WindVoice uses Apple Events (osascript) to temporarily lower system output volume while you dictate. This is opt-in on macOS."

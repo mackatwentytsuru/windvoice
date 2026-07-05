@@ -120,11 +120,13 @@ describe('RealtimeClient (live ws server)', () => {
       }
     });
 
-    client.appendAudio('AAAA');
+    // Append ≥100 ms of PCM (4 800 bytes @ 24 kHz PCM16) so the client-side
+    // commit gate (MIN_COMMIT_BYTES) lets the commit through.
+    client.appendAudio(Buffer.alloc(4800));
     expect(client.isOpen()).toBe(true);
 
     const finalP = new Promise<string>((resolve) => client.once('final', resolve));
-    client.commit();
+    expect(client.commit()).toBe(true);
     const final = await finalP;
     expect(final).toBe('mock transcript');
 

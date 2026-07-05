@@ -67,6 +67,19 @@ describe('SecureStore', () => {
       expect(hoisted.setPassword).not.toHaveBeenCalled();
     });
 
+    // LOW-3: defense in depth — a rejected key (here, whitespace-padded and
+    // too short once trimmed) throws the distinct InvalidApiKeyError, NOT a
+    // SecureStoreUnavailableError. This is what lets the IPC handler report
+    // 'E_INVALID' rather than misclassifying it as a keyring failure.
+    it('rejects a padded short key with InvalidApiKeyError (not a secure-store failure)', async () => {
+      const { secureStore, InvalidApiKeyError, SecureStoreUnavailableError } = await freshStore();
+      await expect(secureStore.setApiKey('   short   ')).rejects.toBeInstanceOf(InvalidApiKeyError);
+      await expect(secureStore.setApiKey('   short   ')).rejects.not.toBeInstanceOf(
+        SecureStoreUnavailableError
+      );
+      expect(hoisted.setPassword).not.toHaveBeenCalled();
+    });
+
     it('trims whitespace before storing', async () => {
       hoisted.setPassword.mockResolvedValue(undefined);
       const { secureStore } = await freshStore();

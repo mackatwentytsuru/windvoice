@@ -3,6 +3,7 @@ import path from 'node:path';
 import { is } from './env';
 import { debug, isDebug } from '@main/debug';
 import { IPC, type AudioChunk, type BeepKind } from '@shared/types';
+import { SILENCE_RMS_THRESHOLD } from '@shared/constants';
 
 export interface ChunkPayload {
   /** Either base64-encoded PCM or raw bytes (Buffer/Uint8Array/ArrayBuffer). */
@@ -23,10 +24,6 @@ export interface ChunkPayload {
 // worklet already computes per chunk as `level` (RMS). After each dictation
 // starts we watch that energy and force a microphone rebuild if it stays flat.
 const SILENCE_WATCHDOG_MS = 600;
-// RMS levels are small floats (a quiet room's noise floor is typically well
-// above this). True device-dead capture delivers exact zeros, so a low
-// threshold catches the dead-pipeline case without tripping on quiet speech.
-const SILENCE_LEVEL_THRESHOLD = 0.001;
 
 /** Public listener signature exposed by `setChunkListener`. */
 export type ChunkListener = (chunk: ChunkPayload | AudioChunk) => void;
@@ -186,7 +183,14 @@ export class AudioBridge {
    */
   recapture(): void {
     if (!this.capturing) return;
-    this.win?.webContents.send(IPC.AUDIO_RECOVER_CMD);
+    // Pass the current forwarding state as `resumeAfterRebuild`. The renderer
+    // suspends every freshly built AudioContext (issue #7 idle optimization),
+    // so a recapture that fires DURING an active dictation must tell the
+    // renderer to resume the rebuilt context — otherwise the new context stays
+    // suspended for the rest of the dictation and records silence. While idle
+    // (powerMonitor resume/unlock), forwarding is false and the context
+    // correctly stays suspended until the next beginForwarding().
+    this.win?.webContents.send(IPC.AUDIO_RECOVER_CMD, this.forwarding);
     debug('AUDIO', 'recapture requested (power resume / track loss)');
   }
 
@@ -201,14 +205,18 @@ export class AudioBridge {
     return { startCount: this.chunkCount };
   }
 
-  endForwarding(startCount: number): { delivered: number } {
+  endForwarding(startCount: number): { delivered: number; maxLevel: number } {
     this.forwarding = false;
     this.clearSilenceWatchdog();
     // Suspend the AudioContext so the worklet stops generating 50ms
     // chunks (issue #7). Saves ~20 IPC crossings + Buffer.from copies
     // per idle second.
     this.win?.webContents.send(IPC.AUDIO_SUSPEND_CMD);
-    return { delivered: this.chunkCount - startCount };
+    // `maxLevel` is the peak RMS seen across this take. The orchestrator
+    // uses it to tell "the user actually spoke" from a live-but-silent mic
+    // delivering digital zeros, and to surface mic guidance instead of a
+    // raw server commit error.
+    return { delivered: this.chunkCount - startCount, maxLevel: this.maxLevelSinceForward };
   }
 
   /**
@@ -225,13 +233,21 @@ export class AudioBridge {
       this.silenceWatchdog = null;
       if (!this.forwarding) return;
       const delivered = this.chunkCount - startCount;
-      const silent = delivered === 0 || this.maxLevelSinceForward < SILENCE_LEVEL_THRESHOLD;
+      const silent = delivered === 0 || this.maxLevelSinceForward < SILENCE_RMS_THRESHOLD;
       if (silent) {
         debug(
           'AUDIO',
           `silent capture detected (delivered=${delivered} maxLevel=${this.maxLevelSinceForward.toFixed(4)}) — rebuilding mic`
         );
         this.recapture();
+        // Re-arm so a rebuild that is STILL silent is detected rather than the
+        // watchdog firing exactly once. Reset the baseline to the current
+        // chunkCount and clear the level high-water mark so the next window
+        // measures only post-rebuild energy. Only while still forwarding.
+        if (this.forwarding) {
+          this.maxLevelSinceForward = 0;
+          this.armSilenceWatchdog(this.chunkCount);
+        }
       }
     }, SILENCE_WATCHDOG_MS);
     if (typeof this.silenceWatchdog.unref === 'function') this.silenceWatchdog.unref();

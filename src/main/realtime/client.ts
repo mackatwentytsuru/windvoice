@@ -6,9 +6,20 @@ import {
   TranscriptionCompletedEvent,
   ErrorEvent
 } from './events';
+import {
+  BYTES_PER_SAMPLE,
+  MIN_COMMIT_AUDIO_MS,
+  TARGET_SAMPLE_RATE
+} from '@shared/constants';
 
 const REALTIME_BASE = 'wss://api.openai.com/v1/realtime';
 const DEFAULT_MODEL = 'gpt-realtime-whisper';
+
+// Minimum PCM bytes that must reach the server before a commit can succeed.
+// 100 ms × 24 000 Hz × 2 bytes/sample = 4 800 bytes. Committing below this
+// draws the server's "buffer too small … 0.00ms of audio" error, so the
+// client refuses client-side instead (see `commit`).
+const MIN_COMMIT_BYTES = Math.ceil((MIN_COMMIT_AUDIO_MS / 1000) * TARGET_SAMPLE_RATE) * BYTES_PER_SAMPLE;
 
 const RECONNECT_BASE_MS = 250;
 const RECONNECT_MAX_MS = 5_000;
@@ -40,6 +51,21 @@ export function setAudioBackpressureListener(cb: (() => void) | null): void {
   onAudioBackpressureCb = cb;
 }
 
+/**
+ * Decoded byte length of a base64 string without allocating a Buffer.
+ * Used to count PCM bytes when `appendAudio` is handed a pre-encoded string
+ * (legacy/test path) so the commit gate sees the same byte total as the
+ * binary path.
+ */
+function base64DecodedBytes(b64: string): number {
+  const len = b64.length;
+  if (len === 0) return 0;
+  let padding = 0;
+  if (b64.charCodeAt(len - 1) === 61 /* '=' */) padding++;
+  if (len > 1 && b64.charCodeAt(len - 2) === 61) padding++;
+  return Math.max(0, Math.floor((len * 3) / 4) - padding);
+}
+
 export interface RealtimeClientOptions {
   apiKey: string;
   model?: string;
@@ -54,6 +80,7 @@ export interface RealtimeClientEvents {
   error: (err: Error) => void;
   close: () => void;
   reconnect: () => void;
+  reconnecting: () => void;
 }
 
 export declare interface RealtimeClient {
@@ -79,6 +106,24 @@ export class RealtimeClient extends EventEmitter {
   // age out and a brief network blip does not stay "armed" forever.
   private dropTimestamps: number[] = [];
   private lastBackpressureNotifyAt = 0;
+  // PCM bytes successfully pushed to the server since the last commit/clear.
+  // Counts only bytes that actually left over the socket (post backpressure
+  // and open-state checks), so it reflects what the server's input buffer
+  // really holds — the authoritative gate for `commit` (see MIN_COMMIT_BYTES).
+  // Reset on commit, clear, and on each fresh `session.updated` ack so a
+  // mid-take reconnect (which starts a new, empty server buffer) cannot let a
+  // stale count wave through a commit against an empty buffer.
+  private appendedBytesSinceCommit = 0;
+  // Diagnostics: how many appends were dropped since the last commit/clear, by
+  // cause. Logged at commit time so a failed take's log line shows whether the
+  // audio was lost to a closed socket or to send-buffer backpressure.
+  private droppedNotOpen = 0;
+  private droppedBackpressure = 0;
+  // Timestamp of the most recent session.updated ack. The server enforces a
+  // 60-minute maximum session duration; the orchestrator polls sessionAgeMs()
+  // and proactively rebuilds the client while idle, so the cap is never hit
+  // mid-dictation (field log: 22 "maximum duration" errors).
+  private sessionReadyAt = 0;
   /**
    * Pending connect() settle while we wait for the server to ack our
    * `session.update` (FIX for the v0.1.8 dead-after-session.created class:
@@ -276,8 +321,12 @@ export class RealtimeClient extends EventEmitter {
 
   /** Append a PCM chunk. Accepts a Buffer/Uint8Array/ArrayBuffer or pre-encoded base64 string. */
   appendAudio(buf: Buffer | Uint8Array | ArrayBuffer | string): void {
-    if (!this.opened || !this.ws) return;
+    if (!this.opened || !this.ws) {
+      this.droppedNotOpen++;
+      return;
+    }
     if (this.ws.bufferedAmount > AUDIO_BACKPRESSURE_BYTES) {
+      this.droppedBackpressure++;
       debug('REALTIME', 'audio backpressure drop');
       // MEDIUM-4: silent drop was previously invisible to the user. At
       // 24 kHz mono PCM16 with ~50 ms chunks each drop ≈ 50 ms of audio,
@@ -290,25 +339,104 @@ export class RealtimeClient extends EventEmitter {
       return;
     }
     let base64: string;
+    let pcmBytes: number;
     if (typeof buf === 'string') {
       base64 = buf;
+      pcmBytes = base64DecodedBytes(buf);
     } else if (Buffer.isBuffer(buf)) {
       base64 = buf.toString('base64');
+      pcmBytes = buf.byteLength;
     } else if (buf instanceof Uint8Array) {
       base64 = Buffer.from(buf.buffer, buf.byteOffset, buf.byteLength).toString('base64');
+      pcmBytes = buf.byteLength;
     } else {
       base64 = Buffer.from(new Uint8Array(buf)).toString('base64');
+      pcmBytes = buf.byteLength;
     }
     this.send({ type: 'input_audio_buffer.append', audio: base64 });
+    // Count only what we actually sent: backpressure/closed-socket drops
+    // returned early above, so this mirrors the server-side buffer length.
+    this.appendedBytesSinceCommit += pcmBytes;
   }
 
-  commit(): void {
-    if (!this.opened) return;
+  /**
+   * Commit the buffered audio for transcription. Returns `true` only when a
+   * commit was actually sent. When less than 100 ms (MIN_COMMIT_BYTES) has
+   * reached the server, the commit is REFUSED client-side and `false` is
+   * returned — committing here is what produces the server's "buffer too
+   * small … 0.00ms of audio" error after a silent or dropped take. The
+   * caller decides how to surface the empty take (see the orchestrator's
+   * `handleEmptyTake`) and may call `clearInput()` to discard the partial
+   * buffer.
+   */
+  commit(): boolean {
+    // Honest result: only claim a commit when the frame can actually be sent.
+    // The socket can transition OPEN → CLOSING between the orchestrator's
+    // isOpen() check and here; without the readyState check, send() would be a
+    // silent no-op yet commit() returned true, stalling the take for the full
+    // FINAL_TIMEOUT. Reset the drop counters here too so a closed-socket take
+    // doesn't bleed stale counts into the next take's diagnostic line.
+    if (!this.opened || !this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      debug('REALTIME', 'commit refused: socket not open');
+      this.resetAppendCounters();
+      return false;
+    }
+    debug(
+      'REALTIME',
+      `commit gate: buffered=${this.appendedBytesSinceCommit}B (floor ${MIN_COMMIT_BYTES}B) ` +
+        `droppedNotOpen=${this.droppedNotOpen} droppedBackpressure=${this.droppedBackpressure} ` +
+        `wsBuffered=${this.ws?.bufferedAmount ?? -1}`
+    );
+    if (this.appendedBytesSinceCommit < MIN_COMMIT_BYTES) {
+      this.resetAppendCounters();
+      return false;
+    }
     this.send({ type: 'input_audio_buffer.commit' });
+    this.resetAppendCounters();
+    return true;
+  }
+
+  private resetAppendCounters(): void {
+    this.appendedBytesSinceCommit = 0;
+    this.droppedNotOpen = 0;
+    this.droppedBackpressure = 0;
+  }
+
+  /**
+   * Discard the server-side input buffer without transcribing it. Used to
+   * drop a sub-threshold / silent take so its leftover audio does not bleed
+   * into the next dictation's commit.
+   */
+  clearInput(): void {
+    if (!this.opened) return;
+    this.send({ type: 'input_audio_buffer.clear' });
+    this.resetAppendCounters();
   }
 
   isOpen(): boolean {
     return this.opened && this.ws !== null && this.ws.readyState === WebSocket.OPEN;
+  }
+
+  /**
+   * Bytes sitting in the local socket send buffer that the peer has not yet
+   * drained. A healthy idle connection reports 0. A socket orphaned by
+   * system sleep (half-open TCP: the peer is gone but no FIN/RST ever
+   * arrives) keeps reporting isOpen() while every appended chunk piles up
+   * here — the orchestrator uses this to detect and recycle such stale
+   * connections before capturing a take into them (issue #54).
+   */
+  pendingBufferedBytes(): number {
+    return this.ws?.bufferedAmount ?? 0;
+  }
+
+  /**
+   * Milliseconds since the current server session was acknowledged
+   * (session.updated), or 0 when no session has been established. Used by
+   * the orchestrator's idle maintenance to refresh the connection before
+   * the server's 60-minute session cap kills it mid-use.
+   */
+  sessionAgeMs(): number {
+    return this.sessionReadyAt === 0 ? 0 : Date.now() - this.sessionReadyAt;
   }
 
   close(): void {
@@ -414,6 +542,12 @@ export class RealtimeClient extends EventEmitter {
       return;
     }
 
+    // Announce the silent auto-reconnect (this path does NOT emit 'close')
+    // so a consumer with an active dictation can abort it: a reconnect starts
+    // a fresh session that discards the in-progress input_audio_buffer,
+    // making the dictation unrecoverable.
+    this.emit('reconnecting');
+
     const attempt = this.reconnectAttempts++;
     const backoff = Math.min(RECONNECT_BASE_MS * 2 ** attempt, RECONNECT_MAX_MS);
     const jitter = Math.floor(Math.random() * 100);
@@ -453,7 +587,11 @@ export class RealtimeClient extends EventEmitter {
     if (typeof parsed !== 'object' || parsed === null) return;
     const obj = parsed as { type?: string };
 
-    debug('REALTIME', `${obj.type ?? 'unknown'}`);
+    // Skip the 10-20 Hz streaming delta in the log — it floods the hot path and
+    // the per-take 'commit gate' / 'take result' lines already capture the flow.
+    if (obj.type !== 'conversation.item.input_audio_transcription.delta') {
+      debug('REALTIME', `${obj.type ?? 'unknown'}`);
+    }
 
     switch (obj.type) {
       case 'conversation.item.input_audio_transcription.delta': {
@@ -473,6 +611,12 @@ export class RealtimeClient extends EventEmitter {
       // `session.updated`. Accept both (events.ts SessionUpdatedEvent).
       case 'transcription_session.updated':
       case 'session.updated': {
+        this.sessionReadyAt = Date.now();
+        // Fresh / reconfigured session ⇒ empty server-side input buffer.
+        // Drop any byte count carried over (e.g. from a take interrupted by a
+        // reconnect) so the commit gate judges only audio appended to THIS
+        // session and can't wave a commit through against an empty buffer.
+        this.resetAppendCounters();
         const pending = this.setupPending;
         if (pending) {
           this.setupPending = null;

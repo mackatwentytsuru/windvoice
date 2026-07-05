@@ -36,7 +36,7 @@ let onPasteFailedCb: ((message: string) => void) | null = null;
 export function setPasteFailureListener(cb: ((message: string) => void) | null): void {
   onPasteFailedCb = cb;
 }
-function notifyPasteFailed(message: string): void {
+export function notifyPasteFailed(message: string): void {
   try {
     onPasteFailedCb?.(message);
   } catch {

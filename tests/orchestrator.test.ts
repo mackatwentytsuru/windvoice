@@ -35,13 +35,18 @@ const hoisted = vi.hoisted(() => {
       });
     }
 
+    cleared = false;
     appendAudio(b64: string): void {
       if (!this.opened) return;
       this.appended.push(b64);
     }
-    commit(): void {
-      if (!this.opened) return;
+    commit(): boolean {
+      if (!this.opened) return false;
       this.committed = true;
+      return true;
+    }
+    clearInput(): void {
+      this.cleared = true;
     }
     close(): void {
       this.opened = false;
@@ -54,6 +59,12 @@ const hoisted = vi.hoisted(() => {
     }
     isOpen(): boolean {
       return this.opened;
+    }
+    /** Simulated ws.bufferedAmount — nonzero models a half-open socket
+     * left over from system sleep (issue #54). */
+    pendingBuffered = 0;
+    pendingBufferedBytes(): number {
+      return this.pendingBuffered;
     }
   }
   return {
@@ -109,6 +120,14 @@ vi.mock('@main/inject/typer', () => ({
   pasteText: vi.fn().mockResolvedValue(undefined)
 }));
 
+// Keep the REAL isAsciiTypeable (the routing decision under test) but stub
+// typeTextDirect so a 'type'-mode test never injects real keystrokes into the
+// focused window on a Windows CI host.
+vi.mock('@main/inject/typeText', async (importActual) => {
+  const actual = await importActual<typeof import('@main/inject/typeText')>();
+  return { ...actual, typeTextDirect: vi.fn().mockResolvedValue(false) };
+});
+
 vi.mock('@main/tray', () => ({
   setStatus: vi.fn()
 }));
@@ -143,9 +162,11 @@ class FakeAudioBridge {
   private chunkListener: ((c: { base64: string; samples: number }) => void) | null = null;
   private levelListener: ((level: number) => void) | null = null;
   private chunkCount = 0;
+  private maxLevel = 0;
   beeps: Array<'start' | 'stop'> = [];
   devices: string[] = [];
   recentAudioError: string | null = null;
+  recaptures = 0;
 
   setChunkListener(cb: ((c: { base64: string; samples: number }) => void) | null): void {
     this.chunkListener = cb;
@@ -157,10 +178,14 @@ class FakeAudioBridge {
     this.levelListener = cb;
   }
   beginForwarding(): { startCount: number } {
+    this.maxLevel = 0;
     return { startCount: this.chunkCount };
   }
-  endForwarding(start: number): { delivered: number } {
-    return { delivered: this.chunkCount - start };
+  endForwarding(start: number): { delivered: number; maxLevel: number } {
+    return { delivered: this.chunkCount - start, maxLevel: this.maxLevel };
+  }
+  recapture(): void {
+    this.recaptures++;
   }
   playBeep(kind: 'start' | 'stop'): void {
     this.beeps.push(kind);
@@ -185,12 +210,15 @@ class FakeAudioBridge {
       this.chunkCount++;
       this.chunkListener?.({ base64: 'AAA=', samples: 1200 });
       this.levelListener?.(level);
+      if (level > this.maxLevel) this.maxLevel = level;
     }
   }
 }
 
 import { DictationOrchestrator } from '../src/main/dictation/orchestrator';
+import { settingsStore } from '@main/store/settings';
 import { pasteText } from '@main/inject/typer';
+import { typeTextDirect } from '@main/inject/typeText';
 import { historyStore } from '@main/store/history';
 import { broadcastToUiWindows } from '@main/broadcast';
 import { setStatus } from '@main/tray';
@@ -269,6 +297,55 @@ describe('DictationOrchestrator', () => {
     expect(hoisted.instances).toHaveLength(1);
     expect(pasteText).toHaveBeenNthCalledWith(1, 'first', true, 'balanced', true);
     expect(pasteText).toHaveBeenNthCalledWith(2, 'second', true, 'balanced', true);
+  });
+
+  it('rebuilds the connection when an open client has undrained send-buffer bytes at take start', async () => {
+    // First take establishes instance[0] and leaves it open.
+    await orch.start();
+    await orch.stop();
+    expect(hoisted.instances).toHaveLength(1);
+
+    // Model a half-open socket after system sleep: still isOpen(), but the
+    // send buffer never drains (issue #54).
+    hoisted.instances[0]!.pendingBuffered = 262144;
+
+    await orch.start();
+    audio.feed(10);
+    const stop = orch.stop();
+    await new Promise((r) => setTimeout(r, 100));
+    hoisted.instances[1]!.emit('final', 'after sleep');
+    await stop;
+
+    expect(hoisted.instances).toHaveLength(2);
+    expect(hoisted.instances[0]!.disposed).toBe(true);
+    expect(pasteText).toHaveBeenCalledWith('after sleep', true, 'balanced', true);
+  });
+
+  it('recycleConnection disposes the idle client and prewarms a replacement', async () => {
+    await orch.prewarmConnection();
+    expect(hoisted.instances).toHaveLength(1);
+
+    orch.recycleConnection('power resume');
+    await new Promise((r) => setTimeout(r, 100));
+
+    expect(hoisted.instances[0]!.disposed).toBe(true);
+    expect(hoisted.instances).toHaveLength(2);
+    expect(hoisted.instances[1]!.opened).toBe(true);
+  });
+
+  it('recycleConnection is a no-op while a dictation is in flight', async () => {
+    await orch.start();
+    audio.feed(5);
+
+    orch.recycleConnection('power resume');
+    expect(hoisted.instances).toHaveLength(1);
+    expect(hoisted.instances[0]!.disposed).toBe(false);
+
+    const stop = orch.stop();
+    await new Promise((r) => setTimeout(r, 100));
+    hoisted.instances[0]!.emit('final', 'kept');
+    await stop;
+    expect(pasteText).toHaveBeenCalledWith('kept', true, 'balanced', true);
   });
 
   it('surfaces connect failures without throwing', async () => {
@@ -428,6 +505,58 @@ describe('DictationOrchestrator', () => {
     });
   });
 
+  // HIGH-2: a server error fired while stop() awaits pendingFinal in its
+  // commit-wait must leave the tray on 'error' — stop() must NOT resume and
+  // clobber it back to 'idle' (which dropped the partial silently).
+  it('server error during stop() commit-wait keeps status error (no idle clobber)', async () => {
+    await orch.start();
+    audio.feed(10);
+    // Seed a partial so a clobber would visibly drop real text.
+    hoisted.instances[0]!.emit('delta', 'half a sentence');
+
+    const stopP = orch.stop();
+    // Let stop() pass sleep(20) and reach the commit-wait (pendingFinal set).
+    await new Promise((r) => setTimeout(r, 60));
+    hoisted.instances[0]!.emit('error', new Error('server blew up mid-commit'));
+    await stopP;
+
+    const statuses = vi.mocked(setStatus).mock.calls.map((c) => c[0]);
+    expect(statuses).toContain('error');
+    // 'error' is the terminal status — not clobbered back to 'idle'.
+    expect(statuses[statuses.length - 1]).toBe('error');
+    expect(orch.isActive()).toBe(false);
+    // The dropped cycle must not paste anything (transcript resolved to '').
+    expect(pasteText).not.toHaveBeenCalled();
+    // SYSTEM_ERROR surfaced exactly once for this server error.
+    expect(broadcastToUiWindows).toHaveBeenCalledWith(IPC.SYSTEM_ERROR, {
+      source: 'transcription',
+      message: 'server blew up mid-commit'
+    });
+  });
+
+  // MEDIUM: a silent auto-reconnect mid-dictation ('reconnecting' emitted
+  // without a 'close') must abort the active cycle, not leave inFlight=true
+  // with the tray stuck on 'listening'.
+  it('reconnecting mid-dictation aborts the cycle and surfaces an error', async () => {
+    await orch.start();
+    audio.feed(10);
+    expect(orch.isActive()).toBe(true);
+    expect(audio.getChunkListener()).not.toBeNull();
+
+    hoisted.instances[0]!.emit('reconnecting');
+    await new Promise((r) => setTimeout(r, 10));
+
+    expect(orch.isActive()).toBe(false);
+    expect(vi.mocked(setStatus).mock.calls.map((c) => c[0])).toContain('error');
+    // Audio forwarding to the dead cycle is released.
+    expect(audio.getChunkListener()).toBeNull();
+    expect(broadcastToUiWindows).toHaveBeenCalledWith(IPC.SYSTEM_ERROR, {
+      source: 'transcription',
+      message: 'connection lost mid-dictation'
+    });
+    expect(pasteText).not.toHaveBeenCalled();
+  });
+
   it('connect failure (setup error) rejects start and broadcasts SYSTEM_ERROR', async () => {
     const original = hoisted.FakeRealtimeClient.prototype.connect;
     hoisted.FakeRealtimeClient.prototype.connect = function (): Promise<void> {
@@ -480,5 +609,132 @@ describe('DictationOrchestrator', () => {
     expect(hoisted.instances).toHaveLength(1);
     expect(setStatus).toHaveBeenCalledWith('connecting');
     expect(setStatus).toHaveBeenCalledWith('listening');
+  });
+
+  // Live-but-silent mic: chunks arrive (enough by count) but carry no energy.
+  // The take must NOT commit (that would draw the raw "0.00ms" server error);
+  // instead it clears the server buffer and surfaces a friendly notice.
+  it('abandons a silent take: no commit, clears buffer, surfaces a notice', async () => {
+    await orch.start();
+    audio.feed(10, 0); // 10 chunks, zero energy → silent
+    await orch.stop();
+
+    expect(hoisted.instances[0]?.committed).toBe(false);
+    expect(hoisted.instances[0]?.cleared).toBe(true);
+    expect(pasteText).not.toHaveBeenCalled();
+    expect(broadcastToUiWindows).toHaveBeenCalledWith(IPC.SYSTEM_ERROR, {
+      source: 'notice',
+      message: expect.any(String)
+    });
+    expect(orch.isActive()).toBe(false);
+  });
+
+  it('escalates and forces a recapture after a second consecutive silent take', async () => {
+    await orch.start();
+    audio.feed(10, 0);
+    await orch.stop();
+    await orch.start();
+    audio.feed(10, 0);
+    await orch.stop();
+
+    // Recapture is only forced on the escalation (2nd consecutive), not the 1st.
+    expect(audio.recaptures).toBe(1);
+  });
+
+  it('a committed take resets the silent-take streak', async () => {
+    // One silent take...
+    await orch.start();
+    audio.feed(10, 0);
+    await orch.stop();
+    // ...then a real one commits and clears the streak.
+    await orch.start();
+    audio.feed(10, 0.5);
+    const stop = orch.stop();
+    await new Promise((r) => setTimeout(r, 100));
+    hoisted.instances[0]!.emit('final', 'back to normal');
+    await stop;
+    // A third, silent take is therefore the FIRST of a new streak → no recapture.
+    await orch.start();
+    audio.feed(10, 0);
+    await orch.stop();
+    expect(audio.recaptures).toBe(0);
+  });
+
+  function withTypeMode(): () => void {
+    const orig = vi.mocked(settingsStore.get).getMockImplementation();
+    const base = settingsStore.get();
+    vi.mocked(settingsStore.get).mockReturnValue({
+      ...base,
+      insertion: { ...base.insertion, method: 'type' },
+      formatter: { ...base.formatter, enabled: false } // skip the network formatter
+    } as never);
+    return () => vi.mocked(settingsStore.get).mockImplementation(orig!);
+  }
+
+  it('type mode: non-ASCII (Japanese) text routes to the IME-safe paste path', async () => {
+    // KEYEVENTF_UNICODE is garbled by an active Japanese IME for non-ASCII, so
+    // the orchestrator must NOT type it — typeTextDirect is never invoked and
+    // the text is pasted instead.
+    const restore = withTypeMode();
+    vi.mocked(typeTextDirect).mockClear();
+    try {
+      await orch.start();
+      audio.feed(10, 0.5);
+      const stop = orch.stop();
+      await new Promise((r) => setTimeout(r, 100));
+      hoisted.instances[0]!.emit('final', 'こんにちは世界');
+      await stop;
+
+      expect(typeTextDirect).not.toHaveBeenCalled();
+      expect(pasteText).toHaveBeenCalledWith('こんにちは世界', true, 'balanced', true);
+    } finally {
+      restore();
+    }
+  });
+
+  it('type mode: pure-ASCII text is typed via typeTextDirect, not pasted', async () => {
+    const restore = withTypeMode();
+    vi.mocked(typeTextDirect).mockClear();
+    vi.mocked(typeTextDirect).mockResolvedValueOnce(true); // simulate a successful type
+    vi.mocked(pasteText).mockClear();
+    try {
+      await orch.start();
+      audio.feed(10, 0.5);
+      const stop = orch.stop();
+      await new Promise((r) => setTimeout(r, 100));
+      hoisted.instances[0]!.emit('final', 'echo hello');
+      await stop;
+
+      expect(typeTextDirect).toHaveBeenCalledWith('echo hello');
+      expect(pasteText).not.toHaveBeenCalled();
+    } finally {
+      restore();
+    }
+  });
+
+  it('surfaces a connection notice when audio had energy but commit is refused', async () => {
+    await orch.start();
+    audio.feed(10, 0.5); // real energy
+    // Client refuses commit (e.g. appends dropped by a blip → <100ms server-side).
+    hoisted.instances[0]!.commit = (): boolean => false;
+    await orch.stop();
+
+    expect(pasteText).not.toHaveBeenCalled();
+    expect(hoisted.instances[0]?.cleared).toBe(true);
+    expect(broadcastToUiWindows).toHaveBeenCalledWith(IPC.SYSTEM_ERROR, {
+      source: 'notice',
+      message: expect.any(String)
+    });
+    // A connection refusal is not a silent mic → no recapture escalation.
+    expect(audio.recaptures).toBe(0);
+    // The dead socket is torn down so a future take can reconnect fresh.
+    expect(hoisted.instances[0]?.disposed).toBe(true);
+
+    // Next dictation builds a brand-new client (reconnect recovery) instead of
+    // reusing the dead one — this is what un-sticks "became unusable".
+    const before = hoisted.instances.length;
+    await orch.start();
+    expect(hoisted.instances.length).toBe(before + 1);
+    await orch.stop();
   });
 });

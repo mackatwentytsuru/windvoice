@@ -65,7 +65,11 @@ export function App(): JSX.Element {
       setBanner((prev) => (prev?.permanent ? null : prev));
     });
     const offSystem = window.windvoice.onSystemError((p) => {
-      showBanner({ message: `${p.source}: ${p.message}`, permanent: false });
+      // 'notice' carries already-localized, user-facing guidance (e.g. mic
+      // not capturing) — show it verbatim. Technical sources (transcription,
+      // paste, duck, …) keep the "source:" prefix for debuggability.
+      const message = p.source === 'notice' ? p.message : `${p.source}: ${p.message}`;
+      showBanner({ message, permanent: false });
     });
     const offFormatter = window.windvoice.onFormatterError((p) => {
       showBanner({ message: p.message, permanent: p.permanent });

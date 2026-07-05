@@ -212,6 +212,59 @@ describe('historyStore', () => {
       expect(list[0]!.transcript).toBe('secret-content');
       expect(hoisted.safeStorage.decryptString).toHaveBeenCalled();
     });
+
+    // HIGH: a transient keyring lock at load (isEncryptionAvailable() === false)
+    // must NOT blank pre-existing ciphertext. The undecryptable entry is hidden
+    // from the UI list, but its original ciphertext is preserved verbatim on the
+    // next flush — even though a brand-new add() re-serializes the WHOLE cache.
+    it('does NOT overwrite undecryptable ciphertext when encryption is transiently unavailable', async () => {
+      const cipher = 'enc:v1:' + Buffer.from('enc:still valid secret', 'utf8').toString('base64');
+      hoisted.data.set('entries', [
+        { id: 'enc-old', timestamp: 1700000000000, transcript: cipher }
+      ]);
+      hoisted.safeStorage.isEncryptionAvailable.mockReturnValue(false);
+      vi.useFakeTimers();
+      const { historyStore, flushHistory } = await freshModule();
+
+      // The undecryptable entry is hidden from the UI (its plaintext is unknown).
+      expect(historyStore.list()).toHaveLength(0);
+
+      // A new dictation arrives and triggers a full-cache re-serialization.
+      historyStore.add({ transcript: 'new dictation' });
+      flushHistory();
+
+      const persisted = hoisted.data.get('entries') as Array<{ id: string; transcript: string }>;
+      const old = persisted.find((p) => p.id === 'enc-old');
+      // Original ciphertext re-emitted UNCHANGED — not blanked, not re-encrypted.
+      expect(old).toBeDefined();
+      expect(old!.transcript).toBe(cipher);
+      // The new entry is still persisted alongside it.
+      expect(persisted.some((p) => p.transcript === 'new dictation')).toBe(true);
+    });
+
+    // HIGH: same guarantee when decryptString THROWS (corrupt buffer / keyring
+    // hiccup) even though isEncryptionAvailable() reports true.
+    it('preserves ciphertext when decryptString throws at load', async () => {
+      const cipher = 'enc:v1:' + Buffer.from('enc:secret', 'utf8').toString('base64');
+      hoisted.data.set('entries', [
+        { id: 'enc-throw', timestamp: 1700000000000, transcript: cipher }
+      ]);
+      hoisted.safeStorage.isEncryptionAvailable.mockReturnValue(true);
+      hoisted.safeStorage.decryptString.mockImplementation(() => {
+        throw new Error('decrypt failed');
+      });
+      vi.useFakeTimers();
+      const { historyStore, flushHistory } = await freshModule();
+
+      expect(historyStore.list()).toHaveLength(0);
+
+      historyStore.add({ transcript: 'fresh' });
+      flushHistory();
+
+      const persisted = hoisted.data.get('entries') as Array<{ id: string; transcript: string }>;
+      const stuck = persisted.find((p) => p.id === 'enc-throw');
+      expect(stuck!.transcript).toBe(cipher);
+    });
   });
 
   describe('truncation', () => {

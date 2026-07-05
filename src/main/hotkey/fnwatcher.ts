@@ -3,7 +3,7 @@ import { EventEmitter } from 'node:events';
 import fs from 'node:fs';
 import path from 'node:path';
 import { app } from 'electron';
-import { debug, isDebug } from '@main/debug';
+import { debug } from '@main/debug';
 import { FN_KEYCODE } from '@main/hotkey/keycodes';
 
 export { FN_KEYCODE };
@@ -71,27 +71,49 @@ export class FnWatcher extends EventEmitter {
 
       child.stderr.setEncoding('utf8');
       child.stderr.on('data', (chunk: string) => {
-        // Surface child diagnostics on the parent's stderr so they show up
-        // in `electron .` dev runs and the packaged app's Console output.
-        process.stderr.write(`[fnwatcher] ${chunk}`);
+        // Surface child diagnostics in the persistent log (and, when the
+        // HOTKEY debug gate is on, the parent's stderr) so a sidecar crash
+        // is diagnosable after the fact from a packaged build.
+        debug('HOTKEY', `fnwatcher stderr: ${chunk.trimEnd()}`);
       });
 
       child.on('exit', (code, signal) => {
-        if (isDebug('HOTKEY')) {
-          debug('HOTKEY', `fnwatcher exit code=${code} signal=${signal}`);
-        }
+        // Unconditional: a sidecar exit is the primary clue when Fn
+        // push-to-talk silently stops working.
+        debug('HOTKEY', `fnwatcher exit code=${code} signal=${signal}`);
         this.child = null;
+        // H-BUG1: a sidecar crash between FN_DOWN and FN_UP would leave a
+        // push-to-talk binding stuck in HotkeyManager.heldDown (Fn sets no
+        // modifier flag, so the stuck-key safety net can't recover it).
+        // Force-release any in-flight Fn press before restarting. Idempotent:
+        // index.ts maps 'up' → injectKey(FN_KEYCODE, false), and onKey only
+        // emits 'stop' when the binding is actually held, so emitting 'up'
+        // with no press in flight is a harmless no-op.
+        this.emit('up');
         if (this.stopped) return;
         this.scheduleRestart();
       });
 
       child.on('error', (err) => {
-        process.stderr.write(`[fnwatcher] spawn error: ${err.message}\n`);
+        debug('HOTKEY', `fnwatcher spawn error: ${err.message}`);
       });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       this.emit('error', `failed to spawn fnwatcher: ${message}`);
     }
+  }
+
+  /**
+   * H-BUG2: re-arm the sidecar after it gave up restarting. When the Swift
+   * binary exit(1)s because Accessibility was denied (before printing
+   * FN_READY), restartCount never resets, so scheduleRestart permanently
+   * gives up after MAX_RESTARTS. If the user grants Accessibility later, the
+   * uIOhook recovery poller calls this to reset the counter and start fresh.
+   * After give-up `stopped` is false and `child` is null, so start() works.
+   */
+  restart(): void {
+    this.restartCount = 0;
+    this.start();
   }
 
   stop(): void {
@@ -125,22 +147,22 @@ export class FnWatcher extends EventEmitter {
   private handleLine(line: string): void {
     switch (line) {
       case 'FN_DOWN':
-        if (isDebug('HOTKEY')) debug('HOTKEY', 'fnwatcher: FN_DOWN');
+        debug('HOTKEY', 'fnwatcher: FN_DOWN');
         this.emit('down');
         return;
       case 'FN_UP':
-        if (isDebug('HOTKEY')) debug('HOTKEY', 'fnwatcher: FN_UP');
+        debug('HOTKEY', 'fnwatcher: FN_UP');
         this.emit('up');
         return;
       case 'FN_READY':
         // Reset the restart counter — we made it past the tap-install step,
         // so future crashes are independent of "child can't start at all".
         this.restartCount = 0;
-        if (isDebug('HOTKEY')) debug('HOTKEY', 'fnwatcher: READY');
+        debug('HOTKEY', 'fnwatcher: READY');
         this.emit('ready');
         return;
       default:
-        process.stderr.write(`[fnwatcher] unknown line: ${line}\n`);
+        debug('HOTKEY', `fnwatcher unknown line: ${line}`);
     }
   }
 

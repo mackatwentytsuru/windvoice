@@ -5,7 +5,7 @@ import { sendCtrlVAtomic } from '@main/inject/pasteWin32';
 import { getActiveHotkeyManager } from '@main/hotkey/manager';
 import { pasteTiming, type PasteCompatibility, type PasteTiming } from '@main/inject/pasteTiming';
 import { writeClipboardText } from '@main/inject/clipboardWrite';
-import { clipboardHasText } from '@main/inject/typer';
+import { clipboardHasText, notifyPasteFailed } from '@main/inject/typer';
 import { sleep } from '@main/util/sleep';
 
 const DEBOUNCE_MS = 80;
@@ -161,8 +161,14 @@ export class StreamingTyper {
       if (this.flushSeq > 0) await sleep(this.timing.streamRestoreDelayMs);
       try {
         writeClipboardText(this.originalClipboard, this.excludeHistory);
-      } catch {
-        /* ignore */
+      } catch (err) {
+        // M11: clipboard restore failure was previously completely silent
+        // here — the streaming path regressed the non-streaming fix in
+        // typer.ts. Surface it to debug + UI so the user knows their
+        // pre-dictation clipboard was replaced.
+        const m = err instanceof Error ? err.message : String(err);
+        debug('DICTATION', `clipboard restore failed: ${m}`);
+        notifyPasteFailed(`clipboard restore failed: ${m}`);
       }
       this.originalClipboard = null;
     }

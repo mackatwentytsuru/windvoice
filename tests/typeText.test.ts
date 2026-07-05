@@ -14,7 +14,7 @@ const hoisted = vi.hoisted(() => ({
 vi.mock('@main/debug', () => ({ debug: vi.fn() }));
 vi.mock('@main/hotkey/manager', () => ({ getActiveHotkeyManager: () => null }));
 
-import { typeTextDirect, __test } from '@main/inject/typeText';
+import { typeTextDirect, isAsciiTypeable, __test } from '@main/inject/typeText';
 import { debug } from '@main/debug';
 
 const { inputsForCodeUnit, isHighSurrogate, setSendInputModuleForTest } = __test;
@@ -126,13 +126,28 @@ describe('typeTextDirect batched send loop (win32)', () => {
     expect(sentBatches()).toHaveLength(0);
   });
 
-  it('logs a debug warning when SendInput injects fewer events than requested (UIPI block)', async () => {
+  it('returns false when SendInput injects 0 events (fully blocked → paste fallback, not silent data loss)', async () => {
+    // HIGH: a fully-blocked injection (UIPI / another hook swallows every
+    // event) used to return true, so the orchestrator skipped the paste
+    // fallback and the whole transcript was silently dropped. With nothing
+    // actually inserted, the function must report false so paste can recover.
     hoisted.sendInput.mockImplementationOnce(() => 0);
-    await expect(typeTextDirect('hi')).resolves.toBe(true);
+    await expect(typeTextDirect('hi')).resolves.toBe(false);
     expect(vi.mocked(debug)).toHaveBeenCalledWith(
       'DICTATION',
       expect.stringContaining('injected 0/4 events')
     );
+  });
+
+  it('returns true on a PARTIAL injection (one batch lands, another is blocked) to avoid double-insertion', async () => {
+    // 100 chars → three SendInput calls (80, 80, 40 events). Block only the
+    // first; the rest land. Because some keystrokes were inserted, returning
+    // true keeps the caller from pasting the same text on top of them.
+    hoisted.sendInput
+      .mockImplementationOnce(() => 0)
+      .mockImplementationOnce((inputs: unknown) => (Array.isArray(inputs) ? inputs.length : 1))
+      .mockImplementationOnce((inputs: unknown) => (Array.isArray(inputs) ? inputs.length : 1));
+    await expect(typeTextDirect('a'.repeat(100))).resolves.toBe(true);
   });
 });
 
@@ -150,6 +165,28 @@ describe('inputsForCodeUnit', () => {
       { up: false, val: 0x0d, type: 0 },
       { up: true, val: 0x0d, type: 0 }
     ]);
+  });
+});
+
+describe('isAsciiTypeable', () => {
+  it('is true for pure ASCII (typed reliably regardless of IME mode)', () => {
+    expect(isAsciiTypeable('hello world 123 !@#')).toBe(true);
+    expect(isAsciiTypeable('git commit -m "wip"')).toBe(true);
+    expect(isAsciiTypeable('line1\nline2\t end')).toBe(true);
+    expect(isAsciiTypeable('')).toBe(true);
+  });
+
+  it('is false when any non-ASCII char is present (must paste — IME garbles VK_PACKET)', () => {
+    expect(isAsciiTypeable('こんにちは')).toBe(false);
+    expect(isAsciiTypeable('OK です')).toBe(false); // mixed ASCII + Japanese
+    expect(isAsciiTypeable('café')).toBe(false); // Latin-1 accent
+    expect(isAsciiTypeable('「全角」')).toBe(false); // U+3000–U+30FF range
+    expect(isAsciiTypeable('😀')).toBe(false);
+  });
+
+  it('treats U+007F as the inclusive ASCII boundary', () => {
+    expect(isAsciiTypeable('\x7f')).toBe(true); // DEL, still ≤ 0x7F
+    expect(isAsciiTypeable('')).toBe(false); // U+0080, first non-ASCII code point
   });
 });
 

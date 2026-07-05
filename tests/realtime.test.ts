@@ -228,6 +228,27 @@ describe('RealtimeClient', () => {
     expect(hoisted.instances.length).toBe(finalCount);
   });
 
+  it('emits "reconnecting" before scheduling a silent auto-reconnect after an abnormal close', async () => {
+    vi.useFakeTimers();
+    const client = new RealtimeClient({ apiKey: 'sk-x', vadEnabled: false });
+    const p = client.connect();
+    const inst = await openAndReady(p);
+
+    let reconnecting = 0;
+    let closed = 0;
+    client.on('reconnecting', () => reconnecting++);
+    client.on('close', () => closed++);
+
+    // Abnormal close (no .close() call → cleanClose false): the client
+    // schedules a reconnect and announces it via 'reconnecting' WITHOUT
+    // emitting 'close'.
+    inst.emit('close');
+    expect(reconnecting).toBe(1);
+    expect(closed).toBe(0);
+
+    client.dispose();
+  });
+
   it('dispose() clears reconnect timer and detaches listeners', async () => {
     vi.useFakeTimers();
     const client = new RealtimeClient({ apiKey: 'sk-x', vadEnabled: false });
@@ -325,5 +346,82 @@ describe('RealtimeClient', () => {
     inst._open();
     inst.emit('close');
     await expect(p).rejects.toThrow('connection closed during session setup');
+  });
+
+  // Commit gate (the "buffer too small … 0.00ms of audio" fix): the client
+  // refuses to commit unless ≥100 ms (4 800 bytes @ 24 kHz PCM16) has actually
+  // reached the server, so that server error can never surface to the user.
+  it('commit() refuses and sends nothing under the 100ms / 4800-byte floor', async () => {
+    const client = new RealtimeClient({ apiKey: 'sk-x', vadEnabled: false });
+    const p = client.connect();
+    const inst = await openAndReady(p);
+    client.appendAudio(Buffer.alloc(2400)); // 50 ms — half the floor
+    inst.sent.length = 0; // ignore the append frame
+
+    expect(client.commit()).toBe(false);
+    expect(inst.sent.length).toBe(0);
+    client.dispose();
+  });
+
+  it('commit() sends the commit once ≥100ms is buffered, then resets the gate', async () => {
+    const client = new RealtimeClient({ apiKey: 'sk-x', vadEnabled: false });
+    const p = client.connect();
+    const inst = await openAndReady(p);
+    client.appendAudio(Buffer.alloc(4800)); // exactly 100 ms
+    inst.sent.length = 0;
+
+    expect(client.commit()).toBe(true);
+    expect(inst.sent.length).toBe(1);
+    expect(JSON.parse(inst.sent[0]!).type).toBe('input_audio_buffer.commit');
+
+    // Counter reset on commit: a second commit with no fresh audio is refused.
+    inst.sent.length = 0;
+    expect(client.commit()).toBe(false);
+    expect(inst.sent.length).toBe(0);
+    client.dispose();
+  });
+
+  it('clearInput() sends input_audio_buffer.clear and resets the commit gate', async () => {
+    const client = new RealtimeClient({ apiKey: 'sk-x', vadEnabled: false });
+    const p = client.connect();
+    const inst = await openAndReady(p);
+    client.appendAudio(Buffer.alloc(9600)); // plenty
+    inst.sent.length = 0;
+
+    client.clearInput();
+    expect(inst.sent.length).toBe(1);
+    expect(JSON.parse(inst.sent[0]!).type).toBe('input_audio_buffer.clear');
+
+    // Cleared bytes no longer count toward the next commit.
+    inst.sent.length = 0;
+    expect(client.commit()).toBe(false);
+    client.dispose();
+  });
+
+  it('commit() returns false (not true) when the socket dropped to CLOSING', async () => {
+    const client = new RealtimeClient({ apiKey: 'sk-x', vadEnabled: false });
+    const p = client.connect();
+    const inst = await openAndReady(p);
+    client.appendAudio(Buffer.alloc(9600)); // plenty buffered
+    inst.sent.length = 0;
+
+    // Socket transitions OPEN → CLOSING after isOpen() but before send().
+    inst.readyState = 2; // CLOSING
+    expect(client.commit()).toBe(false);
+    expect(inst.sent.length).toBe(0); // no commit frame sent
+    client.dispose();
+  });
+
+  it('a fresh session.updated ack clears buffered bytes (reconnect safety)', async () => {
+    const client = new RealtimeClient({ apiKey: 'sk-x', vadEnabled: false });
+    const p = client.connect();
+    const inst = await openAndReady(p);
+    client.appendAudio(Buffer.alloc(9600)); // would otherwise pass the gate
+
+    // Simulate a mid-take reconnect ack: the server buffer is now empty, so
+    // the stale byte count must not let a commit through against it.
+    ackSessionUpdate(inst);
+    expect(client.commit()).toBe(false);
+    client.dispose();
   });
 });

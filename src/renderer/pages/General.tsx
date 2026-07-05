@@ -358,6 +358,18 @@ export function GeneralPage({ settings, update }: Props): JSX.Element {
           <span>{t('general.autoUpdate')}</span>
         </label>
         <div className="helper" style={{ marginBottom: 8 }}>{t('general.autoUpdateHelper')}</div>
+
+        <label className="row" style={{ cursor: 'pointer' }}>
+          <input
+            type="checkbox"
+            checked={settings.ui.errorReporting}
+            onChange={(e) =>
+              void update({ ui: { ...settings.ui, errorReporting: e.target.checked } })
+            }
+          />
+          <span>{t('general.errorReporting')}</span>
+        </label>
+        <div className="helper" style={{ marginBottom: 8 }}>{t('general.errorReportingHelper')}</div>
         <div className="row">
           <button onClick={() => void checkForUpdate()} disabled={checkingUpdate}>
             {t('general.checkForUpdate')}
