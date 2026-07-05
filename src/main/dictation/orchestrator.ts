@@ -131,6 +131,29 @@ export class DictationOrchestrator {
     return this.inFlight;
   }
 
+  /**
+   * Dispose the current client and prewarm a fresh one. Called on power
+   * resume / screen unlock: system sleep kills the TCP connection under the
+   * socket without a FIN/RST, so the client keeps reporting isOpen() while
+   * every appended chunk piles up in the send buffer and the take is lost
+   * (issue #54). No-op mid-dictation and when there is no client to
+   * recycle — the stale-socket gate in ensureConnected() covers those.
+   */
+  recycleConnection(reason: string): void {
+    if (this.disposed || this.inFlight) return;
+    const client = this.client;
+    if (!client) return;
+    debug('DICTATION', `recycle realtime connection (${reason})`);
+    this.detachClientListeners(client);
+    this.client = null;
+    try {
+      client.dispose();
+    } catch {
+      /* ignore */
+    }
+    void this.prewarmConnection();
+  }
+
   async prewarmConnection(): Promise<void> {
     try {
       await this.ensureConnected();
@@ -711,8 +734,20 @@ export class DictationOrchestrator {
   }
 
   private ensureConnected(): Promise<RealtimeClient> {
-    // Fast path: an already-open client serves all callers.
-    if (this.client && this.client.isOpen()) return Promise.resolve(this.client);
+    // Fast path: an already-open client serves all callers — unless its
+    // send buffer holds undrained bytes at take start (nothing has been
+    // appended yet, so a healthy socket reports 0). That signature means a
+    // half-open TCP connection left over from sleep or a network drop
+    // (issue #54): fall through to _doConnect, which disposes it and
+    // builds a replacement. Fakes in tests may not implement
+    // pendingBufferedBytes — treat as 0 (healthy).
+    if (this.client && this.client.isOpen()) {
+      const stale =
+        typeof this.client.pendingBufferedBytes === 'function' &&
+        this.client.pendingBufferedBytes() > 0;
+      if (!stale) return Promise.resolve(this.client);
+      debug('DICTATION', 'stale realtime socket (undrained send buffer) — rebuilding connection');
+    }
     // Coalesce concurrent callers onto the SAME in-flight connect attempt.
     // The promise is cleared inside _doConnect's finally — never here —
     // so a second caller cannot observe a null `connectPromise` mid-build

@@ -60,6 +60,12 @@ const hoisted = vi.hoisted(() => {
     isOpen(): boolean {
       return this.opened;
     }
+    /** Simulated ws.bufferedAmount — nonzero models a half-open socket
+     * left over from system sleep (issue #54). */
+    pendingBuffered = 0;
+    pendingBufferedBytes(): number {
+      return this.pendingBuffered;
+    }
   }
   return {
     FakeRealtimeClient,
@@ -291,6 +297,55 @@ describe('DictationOrchestrator', () => {
     expect(hoisted.instances).toHaveLength(1);
     expect(pasteText).toHaveBeenNthCalledWith(1, 'first', true, 'balanced', true);
     expect(pasteText).toHaveBeenNthCalledWith(2, 'second', true, 'balanced', true);
+  });
+
+  it('rebuilds the connection when an open client has undrained send-buffer bytes at take start', async () => {
+    // First take establishes instance[0] and leaves it open.
+    await orch.start();
+    await orch.stop();
+    expect(hoisted.instances).toHaveLength(1);
+
+    // Model a half-open socket after system sleep: still isOpen(), but the
+    // send buffer never drains (issue #54).
+    hoisted.instances[0]!.pendingBuffered = 262144;
+
+    await orch.start();
+    audio.feed(10);
+    const stop = orch.stop();
+    await new Promise((r) => setTimeout(r, 100));
+    hoisted.instances[1]!.emit('final', 'after sleep');
+    await stop;
+
+    expect(hoisted.instances).toHaveLength(2);
+    expect(hoisted.instances[0]!.disposed).toBe(true);
+    expect(pasteText).toHaveBeenCalledWith('after sleep', true, 'balanced', true);
+  });
+
+  it('recycleConnection disposes the idle client and prewarms a replacement', async () => {
+    await orch.prewarmConnection();
+    expect(hoisted.instances).toHaveLength(1);
+
+    orch.recycleConnection('power resume');
+    await new Promise((r) => setTimeout(r, 100));
+
+    expect(hoisted.instances[0]!.disposed).toBe(true);
+    expect(hoisted.instances).toHaveLength(2);
+    expect(hoisted.instances[1]!.opened).toBe(true);
+  });
+
+  it('recycleConnection is a no-op while a dictation is in flight', async () => {
+    await orch.start();
+    audio.feed(5);
+
+    orch.recycleConnection('power resume');
+    expect(hoisted.instances).toHaveLength(1);
+    expect(hoisted.instances[0]!.disposed).toBe(false);
+
+    const stop = orch.stop();
+    await new Promise((r) => setTimeout(r, 100));
+    hoisted.instances[0]!.emit('final', 'kept');
+    await stop;
+    expect(pasteText).toHaveBeenCalledWith('kept', true, 'balanced', true);
   });
 
   it('surfaces connect failures without throwing', async () => {

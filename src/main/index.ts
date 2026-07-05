@@ -372,11 +372,19 @@ app.whenReady().then(async () => {
   // freezes and dictation captures nothing until the app restarts. Rebuild
   // the capture stream on resume. `unlock-screen` covers the case where the
   // display sleeps/locks without a full system suspend.
+  // The realtime WebSocket dies the same way but half-open (no FIN/RST ever
+  // arrives), so it still reports open while every audio chunk piles up in
+  // the send buffer and the take is silently lost (issue #54) — recycle it
+  // proactively alongside the microphone.
   powerMonitor.on('resume', () => {
     debug('AUDIO', 'power resume — re-acquiring microphone');
     audio?.recapture();
+    orchestrator?.recycleConnection('power resume');
   });
-  powerMonitor.on('unlock-screen', () => audio?.recapture());
+  powerMonitor.on('unlock-screen', () => {
+    audio?.recapture();
+    orchestrator?.recycleConnection('unlock-screen');
+  });
 
   // Register post-processors. Order matters: formatter first (cleans
   // hallucinations + applies dictionary via prompt), then deterministic

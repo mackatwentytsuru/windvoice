@@ -418,6 +418,18 @@ export class RealtimeClient extends EventEmitter {
   }
 
   /**
+   * Bytes sitting in the local socket send buffer that the peer has not yet
+   * drained. A healthy idle connection reports 0. A socket orphaned by
+   * system sleep (half-open TCP: the peer is gone but no FIN/RST ever
+   * arrives) keeps reporting isOpen() while every appended chunk piles up
+   * here — the orchestrator uses this to detect and recycle such stale
+   * connections before capturing a take into them (issue #54).
+   */
+  pendingBufferedBytes(): number {
+    return this.ws?.bufferedAmount ?? 0;
+  }
+
+  /**
    * Milliseconds since the current server session was acknowledged
    * (session.updated), or 0 when no session has been established. Used by
    * the orchestrator's idle maintenance to refresh the connection before
