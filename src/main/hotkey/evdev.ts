@@ -22,7 +22,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { EventEmitter } from 'node:events';
-import { debug, isDebug } from '@main/debug';
+import { debug } from '@main/debug';
 
 const DEV_INPUT = '/dev/input';
 const PROC_DEVICES = '/proc/bus/input/devices';
@@ -266,7 +266,7 @@ export class EvdevKeyboardMonitor extends EventEmitter {
     // Synthesize releases only for keys no other keyboard still holds.
     // This keeps HotkeyManager's own heldDown state in sync on unplug.
     for (const code of released) {
-      if (!this.isHeld(code)) this.emitKey(code, false, 0);
+      if (!this.isHeld(code)) this.emitKey(code, false);
     }
 
     if (this.started && this.streams.size === 0 && this.readyEmitted) {
@@ -300,7 +300,7 @@ export class EvdevKeyboardMonitor extends EventEmitter {
     if (!held) return;
     const down = value !== 0;
     if (value === 2) {
-      this.emitKey(code, true, value);
+      this.emitKey(code, true);
       return;
     }
     const wasDown = this.isHeld(code);
@@ -310,14 +310,13 @@ export class EvdevKeyboardMonitor extends EventEmitter {
     // Multiple keyboards can report the same key. Only forward the global
     // up/down transition so releasing B cannot release a key still held on A.
     if (wasDown === isDown) return;
-    this.emitKey(code, isDown, value);
+    this.emitKey(code, isDown);
   }
 
-  private emitKey(code: number, down: boolean, value: number): void {
+  private emitKey(code: number, down: boolean): void {
     const modifiers = this.currentModifiers();
-    if (isDebug('HOTKEY')) {
-      debug('HOTKEY', `evdev ${down ? 'down' : 'up  '} code=${code} value=${value}`);
-    }
+    // Never log raw key transitions. Even numeric codes plus timing form a
+    // recoverable keystroke trace and the debug log persists across sessions.
     this.emit('key', { keycode: evdevToUiohookKeycode(code), down, modifiers });
   }
 }

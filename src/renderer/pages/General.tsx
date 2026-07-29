@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import type { AudioInputDevice, Settings } from '../../shared/types';
+import type { ErrorReportPreview, UpdaterState } from '../../shared/ipc';
 import { UI_LANGS, type UiLang } from '../../shared/i18n';
 import { useI18n } from '../useI18n';
 
@@ -22,12 +23,18 @@ export function GeneralPage({ settings, update }: Props): JSX.Element {
   const [deviceError, setDeviceError] = useState<string | null>(null);
   const [updateMsg, setUpdateMsg] = useState<string | null>(null);
   const [checkingUpdate, setCheckingUpdate] = useState(false);
+  const [updaterState, setUpdaterState] = useState<UpdaterState>({ phase: 'idle' });
+  const [reportPreview, setReportPreview] = useState<ErrorReportPreview | null>(null);
+  const [showReportPreview, setShowReportPreview] = useState(false);
+  const [reportResult, setReportResult] = useState<string | null>(null);
+  const [reportBusy, setReportBusy] = useState(false);
 
   async function checkForUpdate(): Promise<void> {
     setCheckingUpdate(true);
     setUpdateMsg(t('general.updateChecking'));
     try {
       const s = await window.windvoice.checkForUpdate();
+      setUpdaterState(s);
       if (s.phase === 'not-available') setUpdateMsg(t('general.updateUpToDate'));
       else if (s.phase === 'available') setUpdateMsg(`${t('general.updateAvailable')} (v${s.version})`);
       else if (s.phase === 'error') setUpdateMsg(`${t('general.updateError')}: ${s.message}`);
@@ -42,6 +49,91 @@ export function GeneralPage({ settings, update }: Props): JSX.Element {
   useEffect(() => {
     void window.windvoice.hasApiKey().then(setHasKey);
   }, []);
+
+  useEffect(() => {
+    void window.windvoice
+      .getUpdaterState()
+      .then(setUpdaterState)
+      .catch(() => undefined);
+    const offUpdater = window.windvoice.onUpdaterState(setUpdaterState);
+    void window.windvoice
+      .getErrorReportPreview()
+      .then(setReportPreview)
+      .catch(() => undefined);
+    const offReport = window.windvoice.onErrorReportPending(setReportPreview);
+    return () => {
+      offUpdater();
+      offReport();
+    };
+  }, []);
+
+  async function runUpdateAction(): Promise<void> {
+    if (updaterState.phase === 'available') {
+      setUpdaterState(await window.windvoice.downloadUpdate());
+    } else if (updaterState.phase === 'downloaded') {
+      await window.windvoice.restartToUpdate();
+    } else if (updaterState.phase === 'error') {
+      if (updaterState.retry === 'download') {
+        setUpdaterState(await window.windvoice.downloadUpdate());
+      } else {
+        await checkForUpdate();
+      }
+    }
+  }
+
+  async function setErrorReporting(enabled: boolean): Promise<void> {
+    await update({
+      ui: {
+        ...settings.ui,
+        errorReporting: enabled,
+        errorReportingConsent: enabled ? 'enabled' : 'disabled',
+        errorReportingPrompted: true
+      }
+    });
+    if (!enabled) {
+      setReportPreview(await window.windvoice.discardErrorReport(true));
+      setShowReportPreview(false);
+    }
+  }
+
+  async function sendReport(): Promise<void> {
+    setReportBusy(true);
+    setReportResult(null);
+    try {
+      await setErrorReporting(true);
+      const result = await window.windvoice.sendErrorReport();
+      if (result.status === 'sent') setReportResult(t('general.reportSent'));
+      else if (result.status === 'manual') setReportResult(t('general.reportManual'));
+      else if (result.status === 'rate-limited') setReportResult(t('general.reportRateLimited'));
+      else if (result.status === 'failed') setReportResult(`${t('general.reportFailed')}: ${result.message}`);
+      setReportPreview(await window.windvoice.getErrorReportPreview());
+      setShowReportPreview(false);
+    } finally {
+      setReportBusy(false);
+    }
+  }
+
+  async function discardReport(): Promise<void> {
+    setReportBusy(true);
+    try {
+      const undecided = settings.ui.errorReportingConsent === 'undecided';
+      setReportPreview(await window.windvoice.discardErrorReport(undecided));
+      if (undecided) {
+        await update({
+          ui: {
+            ...settings.ui,
+            errorReporting: false,
+            errorReportingConsent: 'disabled',
+            errorReportingPrompted: true
+          }
+        });
+      }
+      setShowReportPreview(false);
+      setReportResult(t('general.reportDiscarded'));
+    } finally {
+      setReportBusy(false);
+    }
+  }
 
   useEffect(() => {
     const offFinal = window.windvoice.onTranscriptFinal((text) => {
@@ -346,7 +438,10 @@ export function GeneralPage({ settings, update }: Props): JSX.Element {
           <span>{t('general.autoLaunch')}</span>
         </label>
         <div className="helper" style={{ marginBottom: 8 }}>{t('general.autoLaunchHelper')}</div>
+      </div>
 
+      <div className="field" style={{ paddingTop: 12, borderTop: '1px solid var(--border)' }}>
+        <span className="field-label">{t('general.updates')}</span>
         <label className="row" style={{ cursor: 'pointer' }}>
           <input
             type="checkbox"
@@ -358,26 +453,81 @@ export function GeneralPage({ settings, update }: Props): JSX.Element {
           <span>{t('general.autoUpdate')}</span>
         </label>
         <div className="helper" style={{ marginBottom: 8 }}>{t('general.autoUpdateHelper')}</div>
-
-        <label className="row" style={{ cursor: 'pointer' }}>
-          <input
-            type="checkbox"
-            checked={settings.ui.errorReporting}
-            onChange={(e) =>
-              void update({ ui: { ...settings.ui, errorReporting: e.target.checked } })
-            }
-          />
-          <span>{t('general.errorReporting')}</span>
-        </label>
-        <div className="helper" style={{ marginBottom: 8 }}>{t('general.errorReportingHelper')}</div>
+        <div className="helper" style={{ marginBottom: 8 }}>
+          {t('general.currentVersion')}: {updaterState.currentVersion ?? '—'}
+        </div>
+        <div className="helper" style={{ marginBottom: 8 }} role="status">
+          {updaterStatusLabel(updaterState, t)}
+        </div>
         <div className="row">
           <button onClick={() => void checkForUpdate()} disabled={checkingUpdate}>
             {t('general.checkForUpdate')}
           </button>
+          {(updaterState.phase === 'available' ||
+            updaterState.phase === 'downloaded' ||
+            updaterState.phase === 'error') && (
+            <button className="primary" onClick={() => void runUpdateAction()}>
+              {updaterActionLabel(updaterState, t)}
+            </button>
+          )}
           {updateMsg && (
             <span className="helper" style={{ marginTop: 0 }}>{updateMsg}</span>
           )}
         </div>
+      </div>
+
+      <div className="field" style={{ paddingTop: 12, borderTop: '1px solid var(--border)' }}>
+        <span className="field-label">{t('general.errorReports')}</span>
+        <label className="row" style={{ cursor: 'pointer' }}>
+          <input
+            type="checkbox"
+            checked={settings.ui.errorReporting}
+            onChange={(e) => void setErrorReporting(e.target.checked)}
+          />
+          <span>{t('general.errorReporting')}</span>
+        </label>
+        <div className="helper" style={{ marginBottom: 8 }}>{t('general.errorReportingHelper')}</div>
+        {reportPreview && (
+          <div
+            role="status"
+            style={{
+              padding: 10,
+              border: '1px solid var(--border)',
+              borderRadius: 6,
+              marginTop: 8
+            }}
+          >
+            <div style={{ marginBottom: 8 }}>
+              {settings.ui.errorReportingConsent === 'undecided'
+                ? t('general.reportConsentQuestion')
+                : t('general.reportPending')}
+            </div>
+            <button onClick={() => setShowReportPreview((shown) => !shown)}>
+              {t('general.reportPreview')}
+            </button>
+            {showReportPreview && (
+              <>
+                <div className="helper" style={{ marginTop: 8 }}>{reportPreview.title}</div>
+                <textarea
+                  readOnly
+                  value={reportPreview.body}
+                  rows={12}
+                  style={{ width: '100%', marginTop: 8, fontFamily: 'monospace' }}
+                  aria-label={t('general.reportPreview')}
+                />
+                <div className="row" style={{ marginTop: 8 }}>
+                  <button className="primary" disabled={reportBusy} onClick={() => void sendReport()}>
+                    {t('general.reportSend')}
+                  </button>
+                  <button disabled={reportBusy} onClick={() => void discardReport()}>
+                    {t('general.reportDiscard')}
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
+        )}
+        {reportResult && <div className="helper" style={{ marginTop: 8 }}>{reportResult}</div>}
       </div>
 
       <div className="field" style={{ marginTop: 24, paddingTop: 16, borderTop: '1px solid var(--border)' }}>
@@ -403,6 +553,39 @@ export function GeneralPage({ settings, update }: Props): JSX.Element {
       </div>
     </>
   );
+}
+
+function updaterStatusLabel(
+  state: UpdaterState,
+  t: (key: string) => string
+): string {
+  switch (state.phase) {
+    case 'idle':
+      return t('general.updateIdle');
+    case 'checking':
+      return t('general.updateChecking');
+    case 'not-available':
+      return t('general.updateUpToDate');
+    case 'available':
+      return `${t('general.updateAvailable')} ${state.version}`;
+    case 'downloading':
+      return `${t('general.updateDownloading')} ${state.percent}%`;
+    case 'downloaded':
+      return `${t('general.updateDownloaded')} (${state.version})`;
+    case 'error':
+      return `${t('general.updateError')}: ${state.message}`;
+  }
+}
+
+function updaterActionLabel(
+  state: Extract<UpdaterState, { phase: 'available' | 'downloaded' | 'error' }>,
+  t: (key: string) => string
+): string {
+  if (state.phase === 'downloaded') return t('general.updateRestart');
+  if (state.phase === 'error') return t('general.updateRetry');
+  return state.delivery === 'manual'
+    ? t('general.updateOpenRelease')
+    : t('general.updateDownload');
 }
 
 async function enumerateMicrophones(): Promise<AudioInputDevice[]> {

@@ -7,7 +7,12 @@ import type {
   OverlayState,
   BeepKind
 } from '../shared/types';
-import type { UpdaterState } from '../shared/ipc';
+import type {
+  ErrorKind,
+  ErrorReportPreview,
+  ErrorReportSendResult,
+  UpdaterState
+} from '../shared/ipc';
 
 declare module '*?raw' {
   const content: string;
@@ -27,9 +32,9 @@ declare global {
       onTranscriptDelta(cb: (text: string) => void): () => void;
       onTranscriptFinal(cb: (text: string) => void): () => void;
       onAudioError(cb: (msg: string) => void): () => void;
-      onSystemError(cb: (payload: { source: string; message: string }) => void): () => void;
+      onSystemError(cb: (payload: { source: string; message: string; kind: ErrorKind }) => void): () => void;
       onFormatterError(
-        cb: (payload: { code: string; message: string; permanent: boolean }) => void
+        cb: (payload: { code: string; message: string; permanent: boolean; kind: ErrorKind }) => void
       ): () => void;
       getLastAudioError(): Promise<string | null>;
       onOverlayState(cb: (s: OverlayState) => void): () => void;
@@ -44,6 +49,10 @@ declare global {
       restartToUpdate(): Promise<{ deferred: boolean }>;
       getUpdaterState(): Promise<UpdaterState>;
       onUpdaterState(cb: (s: UpdaterState) => void): () => void;
+      getErrorReportPreview(): Promise<ErrorReportPreview | null>;
+      sendErrorReport(): Promise<ErrorReportSendResult>;
+      discardErrorReport(disableReporting: boolean): Promise<ErrorReportPreview | null>;
+      onErrorReportPending(cb: (preview: ErrorReportPreview | null) => void): () => void;
     };
     audio: {
       ready(): void;

@@ -30,20 +30,19 @@ export function setAudioWebContentsId(id: number | null): void {
  */
 export function broadcastToUiWindows(channel: string, payload: unknown): void {
   // Single choke point for user-visible errors: everything surfaced as a
-  // SYSTEM_ERROR / FORMATTER_ERROR banner is also queued for the automatic
-  // GitHub issue reporter (deduplicated + scrubbed there; fire-and-forget).
+  // Only explicitly classified bugs become local report previews. External
+  // transmission still requires the user's Send action in Settings.
   if (channel === IPC.SYSTEM_ERROR || channel === IPC.FORMATTER_ERROR) {
     const p = payload as {
       source?: unknown;
       code?: unknown;
       message?: unknown;
-      setup?: unknown;
+      kind?: unknown;
     };
-    // `setup: true` marks environment/setup guidance (join the input group,
-    // approve the Wayland portal, …) — actionable by the user, not a bug.
-    // Show the banner but do not file a GitHub issue for it (issues #72/#75
-    // were auto-filed noise of this kind).
-    if (p?.setup === true) {
+    // Setup guidance is sticky so it survives a closed Settings window.
+    // Transient conditions remain visible but are neither sticky nor
+    // reportable. Unknown/missing classifications fail closed as transient.
+    if (channel === IPC.SYSTEM_ERROR && p?.kind === 'setup') {
       const source = typeof p.source === 'string' ? p.source : 'setup';
       stickySetupErrors.set(source, payload);
       broadcastOnly(channel, payload);
@@ -55,7 +54,9 @@ export function broadcastToUiWindows(channel: string, payload: unknown): void {
         : typeof p?.code === 'string'
           ? `formatter:${p.code}`
           : 'formatter';
-    if (typeof p?.message === 'string') reportError(source, p.message);
+    if (p?.kind === 'bug' && typeof p?.message === 'string') {
+      reportError(source, p.message, 'bug');
+    }
   }
   broadcastOnly(channel, payload);
 }

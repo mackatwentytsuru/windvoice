@@ -61,7 +61,12 @@ export const IPC = {
   UPDATER_DOWNLOAD: 'updater:download',
   UPDATER_RESTART: 'updater:restart',
   UPDATER_STATE: 'updater:state',
-  UPDATER_LAST_STATE: 'updater:lastState'
+  UPDATER_LAST_STATE: 'updater:lastState',
+  // consent-based error reporting (renderer ↔ main)
+  ERROR_REPORT_PREVIEW: 'errorReport:preview',
+  ERROR_REPORT_SEND: 'errorReport:send',
+  ERROR_REPORT_DISCARD: 'errorReport:discard',
+  ERROR_REPORT_PENDING: 'errorReport:pending'
 } as const;
 
 /**
@@ -70,17 +75,35 @@ export const IPC = {
  * renderer UI can import it without pulling in main-process modules.
  */
 export type UpdaterState =
-  | { phase: 'idle' }
-  | { phase: 'checking' }
-  | { phase: 'available'; version: string }
-  | { phase: 'not-available' }
-  | { phase: 'downloading'; percent: number }
-  | { phase: 'downloaded'; version: string }
-  | { phase: 'error'; message: string };
+  | { phase: 'idle'; currentVersion?: string }
+  | { phase: 'checking'; currentVersion?: string }
+  | { phase: 'available'; version: string; releaseName?: string; delivery: UpdateDelivery; currentVersion?: string }
+  | { phase: 'not-available'; currentVersion?: string }
+  | { phase: 'downloading'; version: string; percent: number; currentVersion?: string }
+  | { phase: 'downloaded'; version: string; currentVersion?: string }
+  | { phase: 'error'; message: string; version?: string; retry: 'check' | 'download'; currentVersion?: string };
+
+export type UpdateDelivery = 'self-update' | 'manual';
+
+export type ErrorKind = 'bug' | 'setup' | 'transient';
+
+export interface ErrorReportPreview {
+  signature: string;
+  title: string;
+  body: string;
+}
+
+export type ErrorReportSendResult =
+  | { status: 'sent'; issue?: number }
+  | { status: 'manual'; copied: true }
+  | { status: 'rate-limited' }
+  | { status: 'failed'; message: string }
+  | { status: 'empty' };
 
 export interface FormatterErrorPayload {
   code: string;
   message: string;
+  kind: ErrorKind;
   /** Whether subsequent dictation will continue with this failure
    * sticky (true → user must update the API key / model to recover). */
   permanent: boolean;
@@ -99,8 +122,11 @@ export interface SystemErrorPayload {
     | 'paste'
     | 'storage'
     | 'audio-backpressure'
-    | 'transcription';
+    | 'transcription'
+    | 'hotkey'
+    | 'notice';
   message: string;
+  kind: ErrorKind;
 }
 
 export interface AudioInputDevice {

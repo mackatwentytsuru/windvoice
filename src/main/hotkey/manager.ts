@@ -291,9 +291,8 @@ export class HotkeyManager extends EventEmitter {
       }
     }
 
-    if (isDebug('HOTKEY')) {
-      debug('HOTKEY', `${down ? 'down' : 'up  '} keycode=${e.keycode} alt=${e.altKey} ctrl=${e.ctrlKey} shift=${e.shiftKey} meta=${e.metaKey}`);
-    }
+    // Raw down/up events are deliberately not logged. Binding matches below
+    // remain diagnosable without persisting a full keystroke timeline.
 
     // Suppression window: skip the binding loop, but ALWAYS run the
     // physical-release safety check below — otherwise a user releasing

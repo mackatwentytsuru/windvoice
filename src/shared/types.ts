@@ -153,14 +153,21 @@ export const SettingsSchema = z.object({
       duckLevel: z.number().min(0).max(1).catch(0.3).default(0.3),
       /** Launch WindVoice automatically when the OS starts. */
       autoLaunch: z.boolean().catch(false).default(false),
-      /** Auto-check + auto-download GitHub releases on startup. */
+      /** Check GitHub releases on startup and periodically; never auto-download. */
       autoUpdate: z.boolean().catch(true).default(true),
+      /** Last versions notified for each stage, persisted across restarts. */
+      notifiedUpdateVersion: z.string().catch('').default(''),
+      notifiedDownloadedVersion: z.string().catch('').default(''),
       /**
-       * Automatically file deduplicated, secret-scrubbed error reports as
-       * GitHub issues on the project repo (via the local `gh` CLI). Never
-       * includes transcripts or API keys — see main/report/githubReporter.
+       * Opt-in only. Reports remain local previews until the user explicitly
+       * sends or discards them.
        */
-      errorReporting: z.boolean().catch(true).default(true)
+      errorReporting: z.boolean().catch(false).default(false),
+      errorReportingConsent: z
+        .enum(['undecided', 'enabled', 'disabled'])
+        .catch('undecided')
+        .default('undecided'),
+      errorReportingPrompted: z.boolean().catch(false).default(false)
     })
     .default({})
 });
@@ -200,5 +207,3 @@ export type HistoryEntry = z.infer<typeof HistoryEntrySchema>;
 export { IPC, type AudioInputDevice, type AudioChunk, type OverlayState, type BeepKind } from './ipc';
 
 // ─── IPC channels ──────────────────────────────────────────────────────────
-
-

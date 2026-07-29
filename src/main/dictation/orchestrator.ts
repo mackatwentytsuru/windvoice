@@ -654,7 +654,11 @@ export class DictationOrchestrator {
    * main/index.ts's paste/duck/autoLaunch error surfacing.
    */
   private reportTranscriptionError(message: string): void {
-    broadcastToUiWindows(IPC.SYSTEM_ERROR, { source: 'transcription', message });
+    broadcastToUiWindows(IPC.SYSTEM_ERROR, {
+      source: 'transcription',
+      message,
+      kind: 'transient'
+    });
   }
 
   /**
@@ -697,7 +701,7 @@ export class DictationOrchestrator {
    * without the technical "source:" prefix applied to real errors.
    */
   private reportNotice(message: string): void {
-    broadcastToUiWindows(IPC.SYSTEM_ERROR, { source: 'notice', message });
+    broadcastToUiWindows(IPC.SYSTEM_ERROR, { source: 'notice', message, kind: 'transient' });
   }
 
   /**

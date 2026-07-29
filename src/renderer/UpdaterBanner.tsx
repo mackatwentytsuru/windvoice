@@ -22,10 +22,8 @@ import { useI18n } from './useI18n';
 let lastKnownBusy = false;
 
 /**
- * Surfaces auto-updater state. The updater never downloads or installs on
- * its own (builds are unsigned — see main/updater) so this banner is the
- * only path to an update: it shows an explicit "Download" then "Restart"
- * button, each driven by a deliberate user click.
+ * Mirrors the resident notification/tray flow inside Settings. The updater
+ * never downloads on a check; every download/restart remains user initiated.
  */
 export function UpdaterBanner(): JSX.Element | null {
   const { t } = useI18n();
@@ -67,7 +65,10 @@ export function UpdaterBanner(): JSX.Element | null {
   if (state.phase === 'available') {
     message = `${t('general.updateAvailable')} (v${state.version})`;
     action = {
-      label: t('general.updateDownload'),
+      label:
+        state.delivery === 'manual'
+          ? t('general.updateOpenRelease')
+          : t('general.updateDownload'),
       run: () => {
         setBusy(true);
         // Clear `busy` when the call settles even if no further state

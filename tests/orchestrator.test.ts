@@ -501,7 +501,8 @@ describe('DictationOrchestrator', () => {
 
     expect(broadcastToUiWindows).toHaveBeenCalledWith(IPC.SYSTEM_ERROR, {
       source: 'transcription',
-      message: 'The server had an error'
+      message: 'The server had an error',
+      kind: 'transient'
     });
   });
 
@@ -530,7 +531,8 @@ describe('DictationOrchestrator', () => {
     // SYSTEM_ERROR surfaced exactly once for this server error.
     expect(broadcastToUiWindows).toHaveBeenCalledWith(IPC.SYSTEM_ERROR, {
       source: 'transcription',
-      message: 'server blew up mid-commit'
+      message: 'server blew up mid-commit',
+      kind: 'transient'
     });
   });
 
@@ -552,7 +554,8 @@ describe('DictationOrchestrator', () => {
     expect(audio.getChunkListener()).toBeNull();
     expect(broadcastToUiWindows).toHaveBeenCalledWith(IPC.SYSTEM_ERROR, {
       source: 'transcription',
-      message: 'connection lost mid-dictation'
+      message: 'connection lost mid-dictation',
+      kind: 'transient'
     });
     expect(pasteText).not.toHaveBeenCalled();
   });
@@ -568,7 +571,8 @@ describe('DictationOrchestrator', () => {
       expect(orch.isActive()).toBe(false);
       expect(broadcastToUiWindows).toHaveBeenCalledWith(IPC.SYSTEM_ERROR, {
         source: 'transcription',
-        message: 'mock connect failure'
+        message: 'mock connect failure',
+        kind: 'transient'
       });
       // The failed client must have been disposed, not left dangling.
       expect(hoisted.instances[0]?.disposed).toBe(true);
@@ -624,7 +628,8 @@ describe('DictationOrchestrator', () => {
     expect(pasteText).not.toHaveBeenCalled();
     expect(broadcastToUiWindows).toHaveBeenCalledWith(IPC.SYSTEM_ERROR, {
       source: 'notice',
-      message: expect.any(String)
+      message: expect.any(String),
+      kind: 'transient'
     });
     expect(orch.isActive()).toBe(false);
   });
@@ -723,7 +728,8 @@ describe('DictationOrchestrator', () => {
     expect(hoisted.instances[0]?.cleared).toBe(true);
     expect(broadcastToUiWindows).toHaveBeenCalledWith(IPC.SYSTEM_ERROR, {
       source: 'notice',
-      message: expect.any(String)
+      message: expect.any(String),
+      kind: 'transient'
     });
     // A connection refusal is not a silent mic → no recapture escalation.
     expect(audio.recaptures).toBe(0);

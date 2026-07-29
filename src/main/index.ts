@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, powerMonitor, session, shell, systemPreferences } from 'electron';
+import { app, BrowserWindow, dialog, powerMonitor, session, systemPreferences } from 'electron';
 import path from 'node:path';
 import { is } from '@main/audio/env';
 import { settingsStore } from '@main/store/settings';
@@ -45,46 +45,9 @@ import { EvdevKeyboardMonitor } from '@main/hotkey/evdev';
 import { portalSidecar } from '@main/linux/portalSidecar';
 import { IPC } from '@shared/types';
 import { t } from '@shared/i18n';
+import { openExternalSafe } from '@main/util/openExternal';
 
 const PRELOAD_PATH = path.join(__dirname, '../preload/index.js');
-
-/**
- * Issue #46: guard `shell.openExternal` behind a small, explicit scheme
- * allowlist. Today the single call site uses a compile-time-known
- * `x-apple.systempreferences:` URL, so this is purely defense-in-depth:
- * any future code path that pipes a user/network-derived URL into this
- * helper (e.g. a deep-link from settings, an HTTP redirect target) is
- * limited to schemes we have explicitly vetted. Anything else logs a
- * warning to stderr and returns without invoking the shell — preventing
- * abuse of openExternal to launch arbitrary handlers (file:, vbscript:,
- * smb:, etc.).
- */
-const ALLOWED_EXTERNAL_SCHEMES = new Set([
-  'x-apple.systempreferences:',
-  'https:',
-  'mailto:'
-]);
-
-async function openExternalSafe(url: string): Promise<void> {
-  const lower = url.toLowerCase();
-  let allowed = false;
-  for (const scheme of ALLOWED_EXTERNAL_SCHEMES) {
-    if (lower.startsWith(scheme)) {
-      allowed = true;
-      break;
-    }
-  }
-  if (!allowed) {
-    debug('MAIN', `openExternal blocked disallowed scheme: ${url}`);
-    return;
-  }
-  try {
-    await shell.openExternal(url);
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    debug('MAIN', `openExternal failed: ${message}`);
-  }
-}
 
 let settingsWindow: BrowserWindow | null = null;
 let audio: AudioBridge | null = null;
@@ -295,7 +258,12 @@ app.whenReady().then(async () => {
   // UI gets an IPC event with a code so it can render an inline message.
   setFormatterFailureListener((code, message) => {
     setStatus('error');
-    broadcastToUiWindows(IPC.FORMATTER_ERROR, { code, message, permanent: true });
+    broadcastToUiWindows(IPC.FORMATTER_ERROR, {
+      code,
+      message,
+      permanent: true,
+      kind: 'setup'
+    });
   });
 
   // Surface paste failures (H6/M11) — the user has a working transcript
@@ -303,7 +271,7 @@ app.whenReady().then(async () => {
   // to that fact without this event.
   setPasteFailureListener((message) => {
     setStatus('error');
-    broadcastToUiWindows(IPC.SYSTEM_ERROR, { source: 'paste', message });
+    broadcastToUiWindows(IPC.SYSTEM_ERROR, { source: 'paste', message, kind: 'transient' });
   });
 
   // MEDIUM-4: surface sustained audio backpressure (drops > threshold in a
@@ -314,6 +282,7 @@ app.whenReady().then(async () => {
   setAudioBackpressureListener(() => {
     broadcastToUiWindows(IPC.SYSTEM_ERROR, {
       source: 'audio-backpressure',
+      kind: 'transient',
       message:
         'Network is slow — audio chunks are being dropped. Some words may be missing from the transcript.'
     });
@@ -460,7 +429,7 @@ app.whenReady().then(async () => {
         'Add your user to the `input` group (`sudo usermod -aG input $USER`), then log out and back in.';
       debug('HOTKEY', message);
       setSetupWarning('hotkey', true);
-      broadcastToUiWindows(IPC.SYSTEM_ERROR, { source: 'hotkey', message, setup: true });
+      broadcastToUiWindows(IPC.SYSTEM_ERROR, { source: 'hotkey', message, kind: 'setup' });
     });
     evdevMonitor.on('ready', (count) => {
       debug('HOTKEY', `evdev monitor ready (${count} keyboard device(s))`);
@@ -471,7 +440,11 @@ app.whenReady().then(async () => {
       const message =
         'Keyboard devices became unavailable — the global hotkey is paused while WindVoice reconnects.';
       setSetupWarning('hotkey', true);
-      broadcastToUiWindows(IPC.SYSTEM_ERROR, { source: 'hotkey', message, setup: true });
+      broadcastToUiWindows(IPC.SYSTEM_ERROR, {
+        source: 'hotkey',
+        message,
+        kind: 'transient'
+      });
     });
     evdevMonitor.start();
     // Start the portal sidecar up front so the one-time consent dialog
@@ -483,12 +456,12 @@ app.whenReady().then(async () => {
       setSetupWarning('paste', true);
       broadcastToUiWindows(IPC.SYSTEM_ERROR, {
         source: 'paste',
+        kind: denied ? 'setup' : 'transient',
         message: denied
           ? 'Wayland input-injection permission was denied — pasting will not work. ' +
             'Re-enable WindVoice under Settings > Apps > Remote Desktop and restart.'
           : 'Wayland paste backend unavailable (python3-gi missing, portal too old, or the screen was ' +
             'locked at launch) — pasting will only reach X11 apps until it recovers.',
-        setup: true
       });
     });
     portalSidecar.setReadyListener(() => {
@@ -526,11 +499,15 @@ app.whenReady().then(async () => {
   // into stderr (which is invisible in packaged builds — M10).
   onDuckError((phase, message) => {
     debug('DUCK', `${phase}: ${message}`);
-    broadcastToUiWindows(IPC.SYSTEM_ERROR, { source: 'duck', message: `${phase}: ${message}` });
+    broadcastToUiWindows(IPC.SYSTEM_ERROR, {
+      source: 'duck',
+      message: `${phase}: ${message}`,
+      kind: 'transient'
+    });
   });
   onAutoLaunchError((message) => {
     debug('MAIN', `autoLaunch: ${message}`);
-    broadcastToUiWindows(IPC.SYSTEM_ERROR, { source: 'autoLaunch', message });
+    broadcastToUiWindows(IPC.SYSTEM_ERROR, { source: 'autoLaunch', message, kind: 'setup' });
   });
 
   applyAutoLaunch(settingsStore.get().ui.autoLaunch);
@@ -541,9 +518,15 @@ app.whenReady().then(async () => {
     if (status === 'idle') notifyDictationIdle();
   });
   initAutoUpdater();
-  // Automatic GitHub error reporting (dedup + secret-scrub in the reporter).
-  // Wired to the setting so the General-page toggle applies immediately.
-  initErrorReporter(() => settingsStore.get().ui.errorReporting);
+  // Consent-based GitHub error previews. No `gh` command runs until the user
+  // reviews a preview and presses Send in Settings.
+  initErrorReporter({
+    openSettings: () => {
+      void createSettingsWindow();
+    },
+    broadcastPending: (preview) =>
+      broadcastToUiWindows(IPC.ERROR_REPORT_PENDING, preview)
+  });
 
   await ensureApiKey();
 

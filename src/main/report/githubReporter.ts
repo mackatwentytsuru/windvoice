@@ -1,23 +1,25 @@
-// Automatic error reporting to GitHub Issues.
+// Consent-based GitHub error reporting.
 //
-// Every user-visible error (SYSTEM_ERROR / FORMATTER_ERROR broadcasts,
-// formatter failures, updater failures) is funneled here. Errors are
-// deduplicated by a stable signature (source + digit-normalized message)
-// and filed as issues on the project repo via the locally-installed and
-// locally-authenticated `gh` CLI — no token is ever stored or shipped in
-// the app. When `gh` is unavailable the report is queued on disk and
-// retried on the next error / next app start.
-//
-// Privacy: transcripts never reach debug() or this module; message + log
-// tail are passed through scrubSecrets() (same policy as the debug log)
-// before leaving the machine. Reporting can be disabled with the
-// ui.errorReporting setting or WINDVOICE_REPORT=0.
+// A classified bug is first stored as a local preview. Nothing invokes `gh`
+// until the user reviews that title/body and presses Send in Settings. Setup
+// and transient errors never enter this module.
 
 import { execFile } from 'node:child_process';
 import crypto from 'node:crypto';
 import { readFileSync, writeFileSync } from 'node:fs';
+import os from 'node:os';
 import { join } from 'node:path';
+import { Notification, app, clipboard, ipcMain } from 'electron';
 import { debug, scrubSecrets } from '@main/debug';
+import { refuseUntrusted } from '@main/ipc/handlers';
+import { settingsStore } from '@main/store/settings';
+import { openExternalSafe } from '@main/util/openExternal';
+import {
+  IPC,
+  type ErrorKind,
+  type ErrorReportPreview,
+  type ErrorReportSendResult
+} from '@shared/ipc';
 
 const REPO = 'mackatwentytsuru/windvoice';
 const LABEL = 'auto-report';
@@ -25,49 +27,70 @@ const STATE_FILE = 'error-reports.json';
 const LOG_FILE = 'windvoice-debug.log';
 const LOG_TAIL_LINES = 40;
 const GH_TIMEOUT_MS = 20_000;
-// Spam guards: at most this many NEW issues per rolling hour, and a
-// recurrence comment on an existing issue at most once per day.
 const MAX_CREATES_PER_HOUR = 5;
 const CREATE_WINDOW_MS = 60 * 60 * 1000;
 const RECUR_COMMENT_MIN_INTERVAL_MS = 24 * 60 * 60 * 1000;
+const PREVIEW_VERSION = 2;
 
-interface ReportRecord {
+export interface ReportRecord {
   title: string;
   count: number;
   firstSeenAt: string;
   lastSeenAt: string;
-  /** Last time anything was posted to GitHub for this signature. */
   lastPostedAt?: string;
-  /** Issue number once created. */
   issue?: number;
-  /** Body waiting to be filed (gh unavailable / rate-capped at the time). */
   pendingBody?: string;
+  previewVersion?: number;
 }
 
-type StateMap = Record<string, ReportRecord>;
+export type ReportStateMap = Record<string, ReportRecord>;
 
-/** Wired from main/index.ts to the ui.errorReporting setting. Defaults to
- * enabled so wiring order can't silently drop early-startup errors. */
-let isEnabled: () => boolean = () => true;
+interface ReporterBindings {
+  openSettings?: () => void;
+  broadcastPending?: (preview: ErrorReportPreview | null) => void;
+}
 
+let bindings: ReporterBindings = {};
+let initialized = false;
 let createTimestamps: number[] = [];
-// Serialize flushes so two rapid-fire errors can't double-create an issue.
-let flushChain: Promise<void> = Promise.resolve();
+let sendChain: Promise<ErrorReportSendResult> = Promise.resolve({ status: 'empty' });
 
-export function initErrorReporter(enabledCheck: () => boolean): void {
-  isEnabled = enabledCheck;
-  // Retry anything queued from a previous run, off the startup path.
-  const timer = setTimeout(() => enqueueFlush(), 30_000);
-  if (typeof timer.unref === 'function') timer.unref();
+export function initErrorReporter(nextBindings: ReporterBindings = {}): void {
+  bindings = nextBindings;
+  if (initialized) return;
+  initialized = true;
+
+  ipcMain.handle(IPC.ERROR_REPORT_PREVIEW, (event): ErrorReportPreview | null => {
+    const refusal = refuseUntrusted(event);
+    if (refusal) return null;
+    return getPendingPreview();
+  });
+  ipcMain.handle(IPC.ERROR_REPORT_SEND, (event): Promise<ErrorReportSendResult> => {
+    const refusal = refuseUntrusted(event);
+    if (refusal?.ok === false) {
+      return Promise.resolve({ status: 'failed', message: refusal.error });
+    }
+    sendChain = sendChain.then(() => sendPendingReport()).catch((err: unknown) => ({
+      status: 'failed',
+      message: errMsg(err)
+    }));
+    return sendChain;
+  });
+  ipcMain.handle(
+    IPC.ERROR_REPORT_DISCARD,
+    (event, disableReporting: unknown): ErrorReportPreview | null => {
+      const refusal = refuseUntrusted(event);
+      if (refusal) return null;
+      discardPendingReport(disableReporting === true);
+      return getPendingPreview();
+    }
+  );
 }
 
-/** Digit-normalize + collapse whitespace so "timed out after 5000ms" and
- * "timed out after 5012ms" share one signature. Exported for tests. */
 export function normalizeMessage(message: string): string {
   return message.replace(/\d+/g, 'N').replace(/\s+/g, ' ').trim().slice(0, 160);
 }
 
-/** Stable 10-hex-char dedup signature. Exported for tests. */
 export function signatureOf(source: string, message: string): string {
   return crypto
     .createHash('sha256')
@@ -76,84 +99,280 @@ export function signatureOf(source: string, message: string): string {
     .slice(0, 10);
 }
 
+export function mergeReportOccurrence(
+  state: ReportStateMap,
+  source: string,
+  message: string,
+  seenAt: string,
+  previewBody: string
+): { state: ReportStateMap; signature: string } {
+  const signature = signatureOf(source, message);
+  const existing = state[signature];
+  if (existing) {
+    const shouldQueueRecurrence =
+      existing.issue === undefined ||
+      !existing.lastPostedAt ||
+      Date.parse(seenAt) - Date.parse(existing.lastPostedAt) >= RECUR_COMMENT_MIN_INTERVAL_MS;
+    state[signature] = {
+      ...existing,
+      count: existing.count + 1,
+      lastSeenAt: seenAt,
+      ...(shouldQueueRecurrence && !existing.pendingBody
+        ? { pendingBody: previewBody, previewVersion: PREVIEW_VERSION }
+        : {})
+    };
+  } else {
+    state[signature] = {
+      title: `[report ${signature}] ${source}: ${normalizeMessage(message)}`,
+      count: 1,
+      firstSeenAt: seenAt,
+      lastSeenAt: seenAt,
+      pendingBody: previewBody,
+      previewVersion: PREVIEW_VERSION
+    };
+  }
+  return { state, signature };
+}
+
+export function rateLimitCreates(
+  timestamps: readonly number[],
+  now = Date.now()
+): { allowed: boolean; timestamps: number[] } {
+  const active = timestamps.filter((time) => now - time < CREATE_WINDOW_MS);
+  if (active.length >= MAX_CREATES_PER_HOUR) {
+    return { allowed: false, timestamps: active };
+  }
+  return { allowed: true, timestamps: [...active, now] };
+}
+
 /**
- * Report an error. Fire-and-forget and exception-free: reporting must never
- * take down the path that surfaced the error in the first place.
+ * A deliberately narrow log allowlist. Free-form failures, hotkeys, portal
+ * stderr, transcript-bearing payloads, clipboard operations, paths, and
+ * device identifiers are excluded even if they were scrubbed.
  */
-export function reportError(source: string, message: string): void {
+const ALLOWED_LOG_LINES: readonly RegExp[] = [
+  /^\S+ \[realtime\] audio backpressure drop$/,
+  /^\S+ \[realtime\] commit refused: socket not open$/,
+  /^\S+ \[realtime\] commit gate: buffered=\d+B \(floor \d+B\) droppedNotOpen=\d+ droppedBackpressure=\d+ wsBuffered=\d+$/,
+  /^\S+ \[dictation\] delivered=\d+ chunks maxLevel=\d+(?:\.\d+)?$/,
+  /^\S+ \[dictation\] skip commit: delivered=\d+ \(<\d+\)$/,
+  /^\S+ \[audio\] renderer reported ready$/,
+  /^\S+ \[audio\] hidden window loaded$/,
+  /^\S+ \[audio\] recapture requested \(power resume \/ track loss\)$/
+];
+
+export function filterAllowedLogLines(raw: string): string {
+  const allowed = raw
+    .split(/\r?\n/)
+    .filter((line) => ALLOWED_LOG_LINES.some((pattern) => pattern.test(line)))
+    .slice(-LOG_TAIL_LINES)
+    .map(scrubSensitiveText);
+  return allowed.length > 0 ? allowed.join('\n') : '(no allowlisted log lines)';
+}
+
+/**
+ * Queue a local preview. The `kind` argument is required so future call sites
+ * cannot accidentally treat an unclassified environment failure as a bug.
+ */
+export function reportError(source: string, message: string, kind: ErrorKind): void {
   try {
-    if (!reportingActive()) return;
-    const scrubbed = scrubSecrets(message);
-    const sig = signatureOf(source, scrubbed);
-    const now = new Date().toISOString();
+    if (kind !== 'bug' || !captureAllowed()) return;
+    const preference = reportingPreference();
+    if (preference === 'disabled') return;
+
+    const safeMessage = scrubSensitiveText(message);
+    const seenAt = new Date().toISOString();
     const state = readState();
-    const existing = state[sig];
-    if (existing) {
-      state[sig] = { ...existing, count: existing.count + 1, lastSeenAt: now };
-    } else {
-      state[sig] = {
-        title: `[auto ${sig}] ${source}: ${normalizeMessage(scrubbed)}`,
-        count: 1,
-        firstSeenAt: now,
-        lastSeenAt: now,
-        pendingBody: buildIssueBody(source, scrubbed, now)
-      };
-    }
-    writeState(state);
-    enqueueFlush();
+    const alreadyHadPending = Object.values(state).some(
+      (record) => record.pendingBody && record.previewVersion === PREVIEW_VERSION
+    );
+    const merged = mergeReportOccurrence(
+      state,
+      source,
+      safeMessage,
+      seenAt,
+      buildIssueBody(source, safeMessage, seenAt)
+    );
+    writeState(merged.state);
+    broadcastPending();
+
+    if (preference === 'undecided') requestConsentOnce();
+    else if (!alreadyHadPending) notifyPreviewReady();
   } catch (err) {
     debug('DICTATION', `error-report queue failed: ${errMsg(err)}`);
   }
 }
 
-function reportingActive(): boolean {
+function notifyPreviewReady(): void {
+  if (!Notification.isSupported()) return;
+  const notification = new Notification({
+    title: 'WindVoice',
+    body: '確認待ちのエラーレポートがあります。クリックして送信内容を確認できます。'
+  });
+  notification.on('click', () => bindings.openSettings?.());
+  notification.show();
+}
+
+function reportingPreference(): 'enabled' | 'undecided' | 'disabled' {
+  try {
+    const ui = settingsStore.get().ui;
+    return resolveReportingPreference(ui);
+  } catch {
+    return 'disabled';
+  }
+}
+
+export function resolveReportingPreference(ui: {
+  errorReporting: boolean;
+  errorReportingConsent: 'undecided' | 'enabled' | 'disabled';
+}): 'enabled' | 'undecided' | 'disabled' {
+  // Existing installations that explicitly persisted the former boolean
+  // `true` remain enabled even before the new consent enum exists.
+  if (ui.errorReporting || ui.errorReportingConsent === 'enabled') return 'enabled';
+  if (ui.errorReportingConsent === 'disabled') return 'disabled';
+  return 'undecided';
+}
+
+function captureAllowed(): boolean {
   if (process.env['WINDVOICE_REPORT'] === '0') return false;
-  // Dev runs (vitest, electron-vite dev) must not file issues unless
-  // explicitly forced with WINDVOICE_REPORT=1.
-  if (!isPackaged() && process.env['WINDVOICE_REPORT'] !== '1') return false;
-  try {
-    return isEnabled();
-  } catch {
-    return true;
-  }
+  if (!app.isPackaged && process.env['WINDVOICE_REPORT'] !== '1') return false;
+  return true;
 }
 
-function isPackaged(): boolean {
-  if (!process.versions.electron) return false;
-  try {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const { app } = require('electron') as typeof import('electron');
-    return app.isPackaged;
-  } catch {
-    return false;
-  }
+function requestConsentOnce(): void {
+  const settings = settingsStore.get();
+  if (settings.ui.errorReportingPrompted) return;
+  settingsStore.set({
+    ui: {
+      ...settings.ui,
+      errorReportingPrompted: true
+    }
+  });
+
+  if (!Notification.isSupported()) return;
+  const notification = new Notification({
+    title: 'WindVoice',
+    body: 'エラーレポートを開発者に送りますか？ クリックして送信内容を確認できます。'
+  });
+  notification.on('click', () => bindings.openSettings?.());
+  notification.show();
 }
 
-function userDataDir(): string | null {
-  if (!process.versions.electron) return null;
-  try {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const { app } = require('electron') as typeof import('electron');
-    return app.getPath('userData');
-  } catch {
-    return null;
+function getPendingPreview(): ErrorReportPreview | null {
+  const state = readState();
+  for (const [signature, record] of Object.entries(state)) {
+    if (record.pendingBody && record.previewVersion === PREVIEW_VERSION) {
+      return { signature, title: record.title, body: record.pendingBody };
+    }
   }
+  return null;
 }
 
-function readState(): StateMap {
+function setReportingPreference(enabled: boolean): void {
+  const settings = settingsStore.get();
+  settingsStore.set({
+    ui: {
+      ...settings.ui,
+      errorReporting: enabled,
+      errorReportingConsent: enabled ? 'enabled' : 'disabled',
+      errorReportingPrompted: true
+    }
+  });
+}
+
+async function sendPendingReport(): Promise<ErrorReportSendResult> {
+  const preview = getPendingPreview();
+  if (!preview) return { status: 'empty' };
+  // The Send click is the opt-in decision and is persisted before invoking
+  // any external process.
+  setReportingPreference(true);
+
+  const state = readState();
+  const record = state[preview.signature];
+  if (!record?.pendingBody) return { status: 'empty' };
+
+  if (record.issue === undefined) {
+    const limit = rateLimitCreates(createTimestamps);
+    if (!limit.allowed) return { status: 'rate-limited' };
+
+    const result = await ghCreateIssue(record.title, record.pendingBody);
+    if (result.kind === 'missing') {
+      await manualIssueFallback(record.title, record.pendingBody);
+      createTimestamps = limit.timestamps;
+      clearPending(state, preview.signature, new Date().toISOString());
+      return { status: 'manual', copied: true };
+    }
+    if (result.kind === 'failed') return { status: 'failed', message: result.message };
+
+    createTimestamps = limit.timestamps;
+    state[preview.signature] = {
+      ...record,
+      issue: result.issue,
+      lastPostedAt: new Date().toISOString()
+    };
+    delete state[preview.signature]!.pendingBody;
+    writeState(state);
+    broadcastPending();
+    return { status: 'sent', issue: result.issue };
+  }
+
+  const comment = recurrenceBody(record);
+  const result = await ghComment(record.issue, comment);
+  if (result.kind === 'missing') {
+    await manualIssueFallback(record.title, record.pendingBody);
+    clearPending(state, preview.signature, new Date().toISOString());
+    return { status: 'manual', copied: true };
+  }
+  if (result.kind === 'failed') return { status: 'failed', message: result.message };
+  clearPending(state, preview.signature, new Date().toISOString());
+  return { status: 'sent', issue: record.issue };
+}
+
+function discardPendingReport(disableReporting: boolean): void {
+  const preview = getPendingPreview();
+  if (preview) {
+    const state = readState();
+    const record = state[preview.signature];
+    if (record) {
+      delete record.pendingBody;
+      writeState(state);
+    }
+  }
+  if (disableReporting) setReportingPreference(false);
+  broadcastPending();
+}
+
+function clearPending(state: ReportStateMap, signature: string, postedAt: string): void {
+  const record = state[signature];
+  if (!record) return;
+  state[signature] = { ...record, lastPostedAt: postedAt };
+  delete state[signature]!.pendingBody;
+  writeState(state);
+  broadcastPending();
+}
+
+function broadcastPending(): void {
+  bindings.broadcastPending?.(getPendingPreview());
+}
+
+function readState(): ReportStateMap {
   const dir = userDataDir();
   if (!dir) return {};
   try {
-    const raw = readFileSync(join(dir, STATE_FILE), 'utf8');
-    const parsed: unknown = JSON.parse(raw);
+    const parsed: unknown = JSON.parse(readFileSync(join(dir, STATE_FILE), 'utf8'));
     if (typeof parsed !== 'object' || parsed === null) return {};
-    return parsed as StateMap;
+    const state = parsed as ReportStateMap;
+    // Never send a body generated by the old unrestricted-log reporter.
+    for (const record of Object.values(state)) {
+      if (record.previewVersion !== PREVIEW_VERSION) delete record.pendingBody;
+    }
+    return state;
   } catch {
     return {};
   }
 }
 
-function writeState(state: StateMap): void {
+function writeState(state: ReportStateMap): void {
   const dir = userDataDir();
   if (!dir) return;
   try {
@@ -163,101 +382,107 @@ function writeState(state: StateMap): void {
   }
 }
 
-function logTail(): string {
+function userDataDir(): string | null {
+  try {
+    return app.getPath('userData');
+  } catch {
+    return null;
+  }
+}
+
+function allowlistedLogTail(): string {
   const dir = userDataDir();
   if (!dir) return '(no log)';
   try {
-    const raw = readFileSync(join(dir, LOG_FILE), 'utf8');
-    const lines = raw.split('\n');
-    return scrubSecrets(lines.slice(-LOG_TAIL_LINES).join('\n').trim());
+    return filterAllowedLogLines(readFileSync(join(dir, LOG_FILE), 'utf8'));
   } catch {
     return '(no log)';
   }
 }
 
 function buildIssueBody(source: string, message: string, seenAt: string): string {
-  return [
-    '## 自動エラーレポート (auto-generated)',
-    '',
-    `- version: ${appVersion()}`,
-    `- platform: ${process.platform} ${process.getSystemVersion?.() ?? ''}`,
-    `- source: \`${source}\``,
-    `- first seen: ${seenAt}`,
-    '',
-    '### message',
-    '```',
-    message,
-    '```',
-    '',
-    '<details><summary>直近のデバッグログ (secrets scrubbed)</summary>',
-    '',
-    '```',
-    logTail(),
-    '```',
-    '',
-    '</details>'
-  ].join('\n');
+  return scrubSecrets(
+    [
+      '## WindVoice error report (user reviewed)',
+      '',
+      `- version: ${appVersion()}`,
+      `- OS: ${osDescription()}`,
+      `- session: ${sessionType()}`,
+      `- desktop: ${desktopEnvironment()}`,
+      `- Electron: ${process.versions.electron ?? 'unknown'}`,
+      `- Node: ${process.versions.node}`,
+      `- source: \`${source}\``,
+      `- first seen: ${seenAt}`,
+      '',
+      '### scrubbed message',
+      '```',
+      message,
+      '```',
+      '',
+      '### allowlisted operational log lines',
+      '```',
+      allowlistedLogTail(),
+      '```'
+    ].join('\n')
+  );
 }
 
 function appVersion(): string {
-  if (!process.versions.electron) return 'dev';
   try {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const { app } = require('electron') as typeof import('electron');
     return app.getVersion();
   } catch {
     return 'unknown';
   }
 }
 
-function enqueueFlush(): void {
-  flushChain = flushChain.then(() => flushOnce()).catch(() => undefined);
-}
-
-async function flushOnce(): Promise<void> {
-  if (!reportingActive()) return;
-  const state = readState();
-  let dirty = false;
-  for (const [sig, rec] of Object.entries(state)) {
-    if (rec.pendingBody && rec.issue === undefined) {
-      if (!allowCreate()) break;
-      const issue = await ghCreateIssue(rec.title, rec.pendingBody);
-      if (issue === null) break; // gh unavailable — retry later, keep pending
-      const next: ReportRecord = { ...rec, issue, lastPostedAt: new Date().toISOString() };
-      delete next.pendingBody;
-      state[sig] = next;
-      dirty = true;
-      debug('DICTATION', `error-report filed as issue #${issue} (${sig})`);
-    } else if (rec.issue !== undefined && shouldPostRecurrence(rec)) {
-      const ok = await ghComment(
-        rec.issue,
-        `再発しています: 累計 ${rec.count} 回 (最終 ${rec.lastSeenAt}, version ${appVersion()})`
-      );
-      if (!ok) break;
-      state[sig] = { ...rec, lastPostedAt: new Date().toISOString() };
-      dirty = true;
-    }
+function osDescription(): string {
+  if (process.platform !== 'linux') {
+    return scrubSensitiveText(`${process.platform} ${os.release()}`);
   }
-  if (dirty) writeState(state);
+  try {
+    const raw = readFileSync('/etc/os-release', 'utf8');
+    const pretty = raw.match(/^PRETTY_NAME=(?:"([^"]+)"|([^\n]+))$/m);
+    return scrubSensitiveText(pretty?.[1] ?? pretty?.[2] ?? `linux ${os.release()}`);
+  } catch {
+    return scrubSensitiveText(`linux ${os.release()}`);
+  }
 }
 
-function shouldPostRecurrence(rec: ReportRecord): boolean {
-  if (!rec.lastPostedAt) return false;
-  if (rec.lastSeenAt <= rec.lastPostedAt) return false;
-  const sincePost = Date.now() - Date.parse(rec.lastPostedAt);
-  return Number.isFinite(sincePost) && sincePost >= RECUR_COMMENT_MIN_INTERVAL_MS;
+function sessionType(): 'wayland' | 'x11' | 'unknown' {
+  const value = process.env['XDG_SESSION_TYPE']?.toLowerCase();
+  return value === 'wayland' || value === 'x11' ? value : 'unknown';
 }
 
-function allowCreate(): boolean {
-  const now = Date.now();
-  createTimestamps = createTimestamps.filter((t) => now - t < CREATE_WINDOW_MS);
-  if (createTimestamps.length >= MAX_CREATES_PER_HOUR) return false;
-  createTimestamps.push(now);
-  return true;
+function desktopEnvironment(): string {
+  const value = process.env['XDG_CURRENT_DESKTOP'] ?? process.env['DESKTOP_SESSION'] ?? 'unknown';
+  return /^[A-Za-z0-9_.:+ -]{1,80}$/.test(value) ? value : 'unknown';
 }
 
-async function ghCreateIssue(title: string, body: string): Promise<number | null> {
-  const out = await gh([
+function scrubSensitiveText(value: string): string {
+  const home = os.homedir();
+  let output = scrubSecrets(value);
+  if (home && home !== '/') output = output.split(home).join('~');
+  return output
+    .replace(/\/home\/[^/\s]+/gi, '/home/***')
+    .replace(/\/Users\/[^/\s]+/g, '/Users/***')
+    .replace(/([A-Za-z]:\\Users\\)[^\\\s]+/gi, '$1***')
+    .replace(/((?:transcript|clipboard)(?:Text|Content)?\s*[:=]\s*)[^\n]+/gi, '$1***REDACTED***');
+}
+
+function recurrenceBody(record: ReportRecord): string {
+  return `再発しています: 累計 ${record.count} 回 (最終 ${record.lastSeenAt}, version ${appVersion()})`;
+}
+
+type GhResult =
+  | { kind: 'ok'; stdout: string }
+  | { kind: 'missing' }
+  | { kind: 'failed'; message: string };
+
+async function ghCreateIssue(
+  title: string,
+  body: string
+): Promise<{ kind: 'ok'; issue: number } | Exclude<GhResult, { kind: 'ok' }>> {
+  const result = await gh([
     'api',
     `repos/${REPO}/issues`,
     '-f',
@@ -267,24 +492,32 @@ async function ghCreateIssue(title: string, body: string): Promise<number | null
     '-f',
     `labels[]=${LABEL}`
   ]);
-  if (out === null) return null;
+  if (result.kind !== 'ok') return result;
   try {
-    const parsed: unknown = JSON.parse(out);
-    const num = (parsed as { number?: unknown }).number;
-    return typeof num === 'number' ? num : null;
+    const parsed: unknown = JSON.parse(result.stdout);
+    const issue = (parsed as { number?: unknown }).number;
+    return typeof issue === 'number'
+      ? { kind: 'ok', issue }
+      : { kind: 'failed', message: 'gh returned no issue number' };
   } catch {
-    return null;
+    return { kind: 'failed', message: 'gh returned invalid JSON' };
   }
 }
 
-async function ghComment(issue: number, body: string): Promise<boolean> {
-  const out = await gh(['api', `repos/${REPO}/issues/${issue}/comments`, '-f', `body=${body}`]);
-  return out !== null;
+async function ghComment(
+  issue: number,
+  body: string
+): Promise<{ kind: 'ok' } | Exclude<GhResult, { kind: 'ok' }>> {
+  const result = await gh([
+    'api',
+    `repos/${REPO}/issues/${issue}/comments`,
+    '-f',
+    `body=${body}`
+  ]);
+  return result.kind === 'ok' ? { kind: 'ok' } : result;
 }
 
-/** Run `gh` with args; resolve stdout, or null on any failure (missing
- * binary, not authenticated, network down, non-zero exit). */
-function gh(args: string[]): Promise<string | null> {
+function gh(args: string[]): Promise<GhResult> {
   return new Promise((resolve) => {
     execFile(
       'gh',
@@ -292,17 +525,26 @@ function gh(args: string[]): Promise<string | null> {
       { timeout: GH_TIMEOUT_MS, windowsHide: true, maxBuffer: 4 * 1024 * 1024 },
       (err, stdout, stderr) => {
         if (err) {
-          debug(
-            'DICTATION',
-            `gh ${args[0]} failed: ${errMsg(err)} ${scrubSecrets(String(stderr)).slice(0, 200)}`
-          );
-          resolve(null);
+          const code = (err as NodeJS.ErrnoException).code;
+          if (code === 'ENOENT') {
+            resolve({ kind: 'missing' });
+            return;
+          }
+          const detail = scrubSensitiveText(`${errMsg(err)} ${String(stderr)}`).slice(0, 200);
+          debug('DICTATION', `gh ${args[0]} failed: ${detail}`);
+          resolve({ kind: 'failed', message: 'gh command failed' });
           return;
         }
-        resolve(stdout);
+        resolve({ kind: 'ok', stdout });
       }
     );
   });
+}
+
+async function manualIssueFallback(title: string, body: string): Promise<void> {
+  clipboard.writeText(`${title}\n\n${body}`);
+  const url = `https://github.com/${REPO}/issues/new?title=${encodeURIComponent(title)}`;
+  await openExternalSafe(url);
 }
 
 function errMsg(err: unknown): string {

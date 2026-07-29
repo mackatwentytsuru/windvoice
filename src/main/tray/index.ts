@@ -1,6 +1,7 @@
 import { Tray, Menu, nativeImage, app, BrowserWindow } from 'electron';
 import path from 'node:path';
 import { IPC, type DictationStatus } from '@shared/types';
+import type { UpdaterState } from '@shared/ipc';
 import { t } from '@shared/i18n';
 import { settingsStore } from '@main/store/settings';
 
@@ -54,6 +55,16 @@ const STATUS_LABEL_KEY: Record<DictationStatus, TrayLabelKey> = {
 };
 
 let currentStatus: DictationStatus = 'idle';
+let updaterState: UpdaterState | null = null;
+
+export interface UpdaterTrayActions {
+  download: () => void;
+  restart: () => void;
+  retry: () => void;
+  openRelease: () => void;
+}
+
+let updaterActions: UpdaterTrayActions | null = null;
 
 export interface TrayBindings {
   openSettings: () => void;
@@ -74,6 +85,16 @@ export function setSetupWarning(source: string, active: boolean): void {
     tray.setToolTip(statusLabel(currentStatus));
     refreshMenu();
   }
+}
+
+/** Keep the resident tray in lockstep with every updater transition. */
+export function setUpdaterTrayState(
+  state: UpdaterState,
+  actions?: UpdaterTrayActions
+): void {
+  updaterState = state;
+  if (actions) updaterActions = actions;
+  refreshMenu();
 }
 
 export function createTray(b: TrayBindings): void {
@@ -128,9 +149,12 @@ function statusLabel(status: DictationStatus): string {
 function refreshMenu(): void {
   if (!tray || !bindings) return;
   const lang = settingsStore.get().ui.uiLanguage;
-  const template: Electron.MenuItemConstructorOptions[] = [
-    { label: statusLabel(currentStatus), enabled: false }
-  ];
+  const template: Electron.MenuItemConstructorOptions[] = [];
+  const updateItem = buildUpdaterMenuItem();
+  if (updateItem) {
+    template.push(updateItem, { type: 'separator' });
+  }
+  template.push({ label: statusLabel(currentStatus), enabled: false });
   if (setupWarnings.size > 0) {
     const accessibility = setupWarnings.has('accessibility') && bindings.openAccessibility;
     template.push(
@@ -149,6 +173,35 @@ function refreshMenu(): void {
     { label: t('tray.quit', lang), click: () => bindings?.quit() }
   );
   tray.setContextMenu(Menu.buildFromTemplate(template));
+}
+
+function buildUpdaterMenuItem(): Electron.MenuItemConstructorOptions | null {
+  const state = updaterState;
+  if (!state || !updaterActions) return null;
+  switch (state.phase) {
+    case 'available':
+      return {
+        label: `⬆ バージョン ${state.version} に更新`,
+        click: updaterActions.download
+      };
+    case 'downloading':
+      return {
+        label: `⬇ ダウンロード中… ${state.percent}%`,
+        enabled: false
+      };
+    case 'downloaded':
+      return {
+        label: `✅ 再起動して更新 (${state.version})`,
+        click: updaterActions.restart
+      };
+    case 'error':
+      return {
+        label: '⚠ 更新に失敗しました（クリックで再試行）',
+        click: updaterActions.retry
+      };
+    default:
+      return null;
+  }
 }
 
 function loadIcon(name: string): Electron.NativeImage {

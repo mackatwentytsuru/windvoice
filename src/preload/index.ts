@@ -10,7 +10,10 @@ import {
   type HistoryEntry,
   type OverlayState,
   type BeepKind,
-  type UpdaterState
+  type UpdaterState,
+  type ErrorKind,
+  type ErrorReportPreview,
+  type ErrorReportSendResult
 } from '../shared/ipc';
 
 type IpcResult<T> =
@@ -131,13 +134,13 @@ const api = {
     ipcRenderer.on(IPC.AUDIO_ERROR, handler);
     return () => ipcRenderer.removeListener(IPC.AUDIO_ERROR, handler);
   },
-  onSystemError: (cb: (payload: { source: string; message: string }) => void): (() => void) => {
-    const handler = (_e: unknown, p: { source: string; message: string }): void => cb(p);
+  onSystemError: (cb: (payload: { source: string; message: string; kind: ErrorKind }) => void): (() => void) => {
+    const handler = (_e: unknown, p: { source: string; message: string; kind: ErrorKind }): void => cb(p);
     ipcRenderer.on(IPC.SYSTEM_ERROR, handler);
     return () => ipcRenderer.removeListener(IPC.SYSTEM_ERROR, handler);
   },
-  onFormatterError: (cb: (payload: { code: string; message: string; permanent: boolean }) => void): (() => void) => {
-    const handler = (_e: unknown, p: { code: string; message: string; permanent: boolean }): void => cb(p);
+  onFormatterError: (cb: (payload: { code: string; message: string; permanent: boolean; kind: ErrorKind }) => void): (() => void) => {
+    const handler = (_e: unknown, p: { code: string; message: string; permanent: boolean; kind: ErrorKind }): void => cb(p);
     ipcRenderer.on(IPC.FORMATTER_ERROR, handler);
     return () => ipcRenderer.removeListener(IPC.FORMATTER_ERROR, handler);
   },
@@ -200,6 +203,19 @@ const api = {
     };
     ipcRenderer.on(IPC.UPDATER_STATE, handler);
     return () => ipcRenderer.removeListener(IPC.UPDATER_STATE, handler);
+  },
+
+  // Error reports remain local until these trusted Settings-window actions.
+  getErrorReportPreview: (): Promise<ErrorReportPreview | null> =>
+    ipcRenderer.invoke(IPC.ERROR_REPORT_PREVIEW),
+  sendErrorReport: (): Promise<ErrorReportSendResult> =>
+    ipcRenderer.invoke(IPC.ERROR_REPORT_SEND),
+  discardErrorReport: (disableReporting: boolean): Promise<ErrorReportPreview | null> =>
+    ipcRenderer.invoke(IPC.ERROR_REPORT_DISCARD, disableReporting),
+  onErrorReportPending: (cb: (preview: ErrorReportPreview | null) => void): (() => void) => {
+    const handler = (_e: unknown, preview: ErrorReportPreview | null): void => cb(preview);
+    ipcRenderer.on(IPC.ERROR_REPORT_PENDING, handler);
+    return () => ipcRenderer.removeListener(IPC.ERROR_REPORT_PENDING, handler);
   }
 };
 

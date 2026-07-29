@@ -65,7 +65,7 @@ function encryptionAvailable(): boolean {
 function broadcastSystemError(message: string): void {
   try {
     for (const win of BrowserWindow.getAllWindows()) {
-      win.webContents.send(IPC.SYSTEM_ERROR, { source: 'storage', message });
+      win.webContents.send(IPC.SYSTEM_ERROR, { source: 'storage', message, kind: 'setup' });
     }
   } catch {
     /* broadcast must never break the storage path */

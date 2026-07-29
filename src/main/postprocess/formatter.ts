@@ -8,7 +8,6 @@
 import crypto from 'node:crypto';
 import OpenAI from 'openai';
 import { debug } from '@main/debug';
-import { reportError } from '@main/report/githubReporter';
 import type { PostProcessContext, PostProcessor } from '@main/postprocess/pipeline';
 import { APP_PROFILE_INSTRUCTIONS_MAX, type DictionaryEntry, type Settings } from '@shared/types';
 
@@ -443,11 +442,6 @@ export const gptFormatter: PostProcessor = {
     } catch (err) {
       const classified = classifyFormatterError(err);
       debug('DICTATION', `formatter failed [${classified.code}]: ${classified.message}`);
-      // Transient failures (timeout, rate limit, network) never reach the
-      // FORMATTER_ERROR banner (the raw transcript is still inserted), so
-      // they'd otherwise be invisible to the GitHub reporter's banner choke
-      // point. Queue them explicitly; dedup/scrubbing happen in the reporter.
-      reportError(`formatter:${classified.code}`, classified.message);
       if (classified.permanent) {
         permanentFailureReason = classified.message;
         permanentFailureCode = classified.code;
