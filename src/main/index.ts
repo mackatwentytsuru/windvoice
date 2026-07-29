@@ -29,7 +29,7 @@ import { initErrorReporter } from '@main/report/githubReporter';
 import { debug } from '@main/debug';
 import { isWaylandSession } from '@main/linux/wayland';
 import { EvdevKeyboardMonitor } from '@main/hotkey/evdev';
-import { portalRemoteDesktop } from '@main/linux/portalRemoteDesktop';
+import { portalSidecar } from '@main/linux/portalSidecar';
 import { IPC } from '@shared/types';
 import { t } from '@shared/i18n';
 
@@ -438,20 +438,22 @@ app.whenReady().then(async () => {
       setAccessibilityWarning(false);
     });
     evdevMonitor.start();
-    // Establish the RemoteDesktop portal session up front so the one-time
-    // consent dialog appears at launch, not in the middle of the user's
-    // first dictation. Silently reconnects via restore_token afterwards.
-    void portalRemoteDesktop.ensureSession().then((ok) => {
-      if (!ok) {
-        broadcastToUiWindows(IPC.SYSTEM_ERROR, {
-          source: 'paste',
-          message:
-            'Wayland input-injection permission is missing — pasting will only reach X11 apps. ' +
-            'Approve the remote-desktop prompt (or re-enable WindVoice under Settings > Apps > Remote Desktop) and restart.',
-          setup: true
-        });
-      }
+    // Start the portal sidecar up front so the one-time consent dialog
+    // appears at launch, not in the middle of the user's first dictation.
+    // Silently reconnects via restore_token afterwards. The sidecar owns
+    // the clipboard capability too — see linux/portalSidecar.ts for why
+    // Electron's clipboard cannot be used on Wayland.
+    portalSidecar.setUnavailableListener((denied) => {
+      broadcastToUiWindows(IPC.SYSTEM_ERROR, {
+        source: 'paste',
+        message: denied
+          ? 'Wayland input-injection permission was denied — pasting will not work. ' +
+            'Re-enable WindVoice under Settings > Apps > Remote Desktop and restart.'
+          : 'Wayland paste backend unavailable (python3-gi missing or portal too old) — pasting will only reach X11 apps.',
+        setup: true
+      });
     });
+    portalSidecar.start();
   } else {
     startHotkeysWithAccessibilityRecovery();
   }
@@ -523,6 +525,7 @@ app.on('before-quit', () => {
   hotkeys?.stop();
   fnWatcher?.stop();
   evdevMonitor?.stop();
+  portalSidecar.stop();
   orchestrator?.dispose();
   audio?.destroy();
   overlay?.destroy();

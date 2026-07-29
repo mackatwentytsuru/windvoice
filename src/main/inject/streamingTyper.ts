@@ -1,6 +1,8 @@
 import { clipboard } from 'electron';
 import { debug } from '@main/debug';
 import { sendPasteKeystroke } from '@main/inject/paste';
+import { isWaylandSession } from '@main/linux/wayland';
+import { portalSidecar } from '@main/linux/portalSidecar';
 // releaseStuckModifiers no longer used — see note in typer.ts.
 import { getActiveHotkeyManager } from '@main/hotkey/manager';
 import { pasteTiming, type PasteCompatibility, type PasteTiming } from '@main/inject/pasteTiming';
@@ -44,6 +46,14 @@ export class StreamingTyper {
   private resolveIdle: (() => void) | null = null;
   private timing: PasteTiming = pasteTiming('balanced');
   private excludeHistory = false;
+  /**
+   * Wayland portal mode: Electron's clipboard never becomes the Wayland
+   * selection for a background app, so each chunk goes through the portal
+   * sidecar instead (claim selection + inject). The original selection is
+   * snapshotted via the sidecar at begin() and restored at end().
+   */
+  private wayland = false;
+  private waylandOld: Promise<string | null> | null = null;
 
   /** Begin a streaming session; saves the user's current clipboard. */
   begin(
@@ -62,6 +72,12 @@ export class StreamingTyper {
     this.resolveIdle = null;
     this.timing = pasteTiming(compatibility);
     this.excludeHistory = excludeFromClipboardHistory;
+    this.wayland = isWaylandSession() && portalSidecar.isReady();
+    if (this.wayland) {
+      this.waylandOld = restoreClipboard ? portalSidecar.snapshot() : Promise.resolve(null);
+      this.originalClipboard = null;
+      return;
+    }
     // Only snapshot the clipboard for restore when it holds TEXT. If the user
     // has an image or file list copied, `readText()` returns '' — restoring
     // that at end() would silently wipe their non-text clipboard. In that
@@ -151,6 +167,24 @@ export class StreamingTyper {
         break;
       }
     }
+    if (this.wayland) {
+      const old = this.waylandOld ? await this.waylandOld : null;
+      if (old !== null && this.flushSeq > 0) {
+        await sleep(this.timing.streamRestoreDelayMs);
+        const ok = await portalSidecar.setSelection(old);
+        if (!ok) {
+          debug('DICTATION', 'streaming portal selection restore failed');
+          notifyPasteFailed('clipboard restore failed (Wayland portal)');
+        }
+      }
+      this.waylandOld = null;
+      this.wayland = false;
+      this.active = false;
+      this.buffer = '';
+      this.idlePromise = null;
+      this.resolveIdle = null;
+      return;
+    }
     if (this.originalClipboard !== null) {
       // Wait for the target app to consume the final chunk's paste before
       // restoring the original clipboard. Without this margin a slow
@@ -213,6 +247,17 @@ export class StreamingTyper {
         this.flushSeq++;
         const chunk = this.buffer;
         this.buffer = '';
+        if (this.wayland) {
+          // Portal path: modifier-release wait + full claim/inject handled
+          // per chunk; restore deferred to end().
+          const hkmW = getActiveHotkeyManager();
+          if (hkmW) await hkmW.untilAllModifiersUp(400);
+          hkmW?.suppressFor(40);
+          const ok = await portalSidecar.pasteText(chunk, false, this.timing.streamSettleMs, 0);
+          if (!ok) debug('DICTATION', 'streaming portal paste failed for a chunk');
+          await sleep(this.timing.streamIntervalMs);
+          continue;
+        }
         try {
           writeClipboardText(chunk, this.excludeHistory);
         } catch (err) {

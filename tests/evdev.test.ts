@@ -4,7 +4,6 @@ import {
   parseInputEvents,
   parseKeyboardEventNodes
 } from '../src/main/hotkey/evdev';
-import { requestPathFor } from '../src/main/linux/portalRemoteDesktop';
 
 const EVENT_SIZE = 24;
 
@@ -104,10 +103,3 @@ describe('parseKeyboardEventNodes', () => {
   });
 });
 
-describe('requestPathFor', () => {
-  it('derives the portal request path from the bus unique name', () => {
-    expect(requestPathFor(':1.245', 'windvoice_1_2')).toBe(
-      '/org/freedesktop/portal/desktop/request/1_245/windvoice_1_2'
-    );
-  });
-});
