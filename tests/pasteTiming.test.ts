@@ -1,4 +1,13 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+
+// Profile assertions below describe the BASE values; pin the session type
+// to non-Wayland so running the suite on a Wayland host does not engage
+// the Wayland floor clamp. The clamp itself is covered separately via
+// dynamic import in the wayland-floor suite.
+vi.mock('@main/linux/wayland', () => ({
+  isWaylandSession: () => false
+}));
+
 import { pasteTiming } from '../src/main/inject/pasteTiming';
 
 describe('pasteTiming', () => {

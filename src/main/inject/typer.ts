@@ -4,7 +4,9 @@ import path from 'node:path';
 import { z } from 'zod';
 import { debug } from '@main/debug';
 import { getActiveHotkeyManager } from '@main/hotkey/manager';
-import { sendCtrlVAtomic } from '@main/inject/pasteWin32';
+import { sendPasteKeystroke } from '@main/inject/paste';
+import { isWaylandSession } from '@main/linux/wayland';
+import { portalSidecar } from '@main/linux/portalSidecar';
 import { pasteTiming, type PasteCompatibility } from '@main/inject/pasteTiming';
 import { writeClipboardText } from '@main/inject/clipboardWrite';
 import { sleep } from '@main/util/sleep';
@@ -213,6 +215,38 @@ export async function pasteText(
   if (!text) return;
 
   const timing = pasteTiming(compatibility);
+
+  // Wayland: delegate the ENTIRE sequence (claim selection → Ctrl+V →
+  // restore selection) to the portal sidecar. Electron's own clipboard is
+  // useless here: a background app's clipboard write never becomes the
+  // Wayland selection (ownership needs keyboard focus), so the legacy path
+  // below pastes whatever was previously on the Wayland clipboard — the
+  // exact bug observed live (an old API key pasted instead of the
+  // transcript). Wait for physical modifier release first so the synth
+  // Ctrl+V is not perceived as Alt+Ctrl+V by the target.
+  if (isWaylandSession()) {
+    if (portalSidecar.isReady()) {
+      const hkmW = getActiveHotkeyManager();
+      if (hkmW) await hkmW.untilAllModifiersUp(600);
+      hkmW?.suppressFor(40);
+      debug('DICTATION', `wayland paste: sidecar path (len=${text.length} restore=${restoreClipboard})`);
+      const ok = await portalSidecar.pasteText(
+        text,
+        restoreClipboard,
+        timing.settleMs,
+        timing.restoreDelayMs
+      );
+      debug('DICTATION', `wayland paste: sidecar result ok=${ok}`);
+      if (ok) return;
+      notifyPasteFailed('Wayland portal paste failed — falling back to X11-only paste');
+      // fall through to the legacy path (reaches XWayland windows only)
+    } else {
+      // The legacy path cannot reach Wayland-native windows — make the
+      // downgrade visible instead of silently pasting into the void.
+      debug('DICTATION', 'wayland paste: sidecar NOT ready — legacy X11-only path');
+    }
+  }
+
   // LOW-1: only persist + restore when the clipboard currently holds plain
   // text. If the user had an image, a file list, or any other non-text
   // format on the clipboard, `readText()` returns '' — and a subsequent
@@ -255,7 +289,7 @@ export async function pasteText(
   // The HotkeyManager safety net also covers any leaked release.
   hkm?.suppressFor(40);
   try {
-    sendCtrlVAtomic();
+    await sendPasteKeystroke();
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     process.stderr.write(`[error] paste keyTap failed: ${msg}\n`);

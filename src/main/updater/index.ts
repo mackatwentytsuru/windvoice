@@ -16,6 +16,18 @@ const { autoUpdater } = pkg;
 const UPDATE_CHECK_INTERVAL_MS = 4 * 60 * 60 * 1000;
 
 let lastState: UpdaterState = { phase: 'idle' };
+
+/**
+ * True for the "Cannot find latest-<platform>.yml … 404" failure — the
+ * GitHub release simply has no artifacts for this platform yet (e.g. Linux
+ * builds before the first Linux release is published). That is a normal
+ * steady state, not an error: surfacing it as an error pill + stderr stack
+ * trace + auto-filed GitHub issue (issue #73) alarmed users for a condition
+ * they cannot act on. Treated as "no update available" instead.
+ */
+function isMissingPlatformFeed(message: string): boolean {
+  return /cannot find latest[\w.-]*\.yml/i.test(message) && /404/.test(message);
+}
 let initialized = false;
 let pendingInstall: { version: string } | null = null;
 let dictationActiveCheck: (() => boolean) | null = null;
@@ -93,7 +105,15 @@ export function initAutoUpdater(): void {
   autoUpdater.logger = {
     info: (msg: unknown) => debug('DICTATION', `[updater] ${String(msg)}`),
     warn: (msg: unknown) => process.stderr.write(`[updater] WARN ${String(msg)}\n`),
-    error: (msg: unknown) => process.stderr.write(`[updater] ERROR ${String(msg)}\n`),
+    error: (msg: unknown) => {
+      const text = String(msg);
+      // Missing platform feed: one debug line, not a stderr stack dump.
+      if (isMissingPlatformFeed(text)) {
+        debug('DICTATION', '[updater] no release feed for this platform yet (404) — skipping');
+        return;
+      }
+      process.stderr.write(`[updater] ERROR ${text}\n`);
+    },
     debug: (msg: unknown) => debug('DICTATION', `[updater] ${String(msg)}`)
   };
 
@@ -114,6 +134,10 @@ export function initAutoUpdater(): void {
     broadcast({ phase: 'downloaded', version: info.version })
   );
   autoUpdater.on('error', (err: Error) => {
+    if (isMissingPlatformFeed(err.message)) {
+      broadcast({ phase: 'not-available' });
+      return;
+    }
     reportError('updater', err.message);
     broadcast({ phase: 'error', message: err.message });
   });
@@ -125,7 +149,8 @@ export function initAutoUpdater(): void {
       await autoUpdater.checkForUpdates();
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      broadcast({ phase: 'error', message: msg });
+      if (isMissingPlatformFeed(msg)) broadcast({ phase: 'not-available' });
+      else broadcast({ phase: 'error', message: msg });
     }
     return lastState;
   });

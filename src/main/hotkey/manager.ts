@@ -140,6 +140,29 @@ export class HotkeyManager extends EventEmitter {
   }
 
   /**
+   * Feed a key event from an external capture backend (Linux/Wayland evdev
+   * monitor). Unlike `injectKey`, the caller supplies the full modifier
+   * snapshot — the evdev layer tracks physical modifier state itself, and
+   * reusing our stale uiohook-derived snapshot would be wrong on Wayland
+   * where uiohook never fires. Runs the exact same binding/safety-net logic
+   * as real uiohook events.
+   */
+  feedExternalKey(
+    keycode: number,
+    down: boolean,
+    mods: Record<Modifier, boolean>
+  ): void {
+    const e: UiohookKeyboardEventLike = {
+      keycode,
+      ctrlKey: mods.ctrl,
+      altKey: mods.alt,
+      shiftKey: mods.shift,
+      metaKey: mods.meta
+    };
+    this.onKey(e, down);
+  }
+
+  /**
    * Specifically: is Ctrl physically held right now? Used by the
    * paste-injection path to decide whether to synth Ctrl-down/up around
    * the V keystroke or rely on the user's own held Ctrl as the modifier.

@@ -39,6 +39,14 @@ vi.mock('uiohook-napi', () => ({
 // flush would inject an actual Ctrl+V into the focused window during the
 // test run. sendCtrlVAtomic's own branches are covered directly in
 // tests/pasteWin32.test.ts.
+// The paste facade routes to the Wayland portal when the TEST HOST itself
+// runs a Wayland session (WAYLAND_DISPLAY leaks into vitest's env), which
+// would make these tests hit a real D-Bus. Pin the session type to the
+// XTest path so the pasteWin32 mock above stays the single injection seam.
+vi.mock('@main/linux/wayland', () => ({
+  isWaylandSession: () => false
+}));
+
 vi.mock('@main/inject/pasteWin32', async () => {
   const { uIOhook, UiohookKey } = await import('uiohook-napi');
   return {

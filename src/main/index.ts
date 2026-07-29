@@ -21,12 +21,16 @@ import { fileTagsProcessor } from '@main/postprocess/fileTags';
 import { initAutoUpdater, onCheckDictationActive, notifyDictationIdle } from '@main/updater';
 import { applyAutoLaunch, onAutoLaunchError } from '@main/autoLaunch';
 import { onDuckError } from '@main/audio/duck';
-import { recoverClipboardIfPending, setPasteFailureListener } from '@main/inject/typer';
+import { pasteText, recoverClipboardIfPending, setPasteFailureListener } from '@main/inject/typer';
+import { streamingTyper } from '@main/inject/streamingTyper';
 import { setAudioBackpressureListener } from '@main/realtime/client';
 import { flushHistory } from '@main/store/history';
 import { broadcastToUiWindows, setAudioWebContentsId } from '@main/broadcast';
 import { initErrorReporter } from '@main/report/githubReporter';
 import { debug } from '@main/debug';
+import { isWaylandSession } from '@main/linux/wayland';
+import { EvdevKeyboardMonitor } from '@main/hotkey/evdev';
+import { portalSidecar } from '@main/linux/portalSidecar';
 import { IPC } from '@shared/types';
 import { t } from '@shared/i18n';
 
@@ -75,6 +79,7 @@ let audio: AudioBridge | null = null;
 let overlay: OverlayWindow | null = null;
 let hotkeys: HotkeyManager | null = null;
 let fnWatcher: FnWatcher | null = null;
+let evdevMonitor: EvdevKeyboardMonitor | null = null;
 let orchestrator: DictationOrchestrator | null = null;
 let lastAudioError: string | null = null;
 
@@ -384,6 +389,13 @@ app.whenReady().then(async () => {
   powerMonitor.on('unlock-screen', () => {
     audio?.recapture();
     orchestrator?.recycleConnection('unlock-screen');
+    // Wayland: mutter refuses RemoteDesktop session creation while the
+    // session is locked ("Session creation inhibited"), so a sidecar that
+    // launched behind a lock screen never got a session. Retry now.
+    if (isWaylandSession() && !portalSidecar.isReady()) {
+      debug('DICTATION', 'screen unlocked — retrying portal sidecar');
+      portalSidecar.restart();
+    }
   });
 
   // Register post-processors. Order matters: formatter first (cleans
@@ -410,11 +422,50 @@ app.whenReady().then(async () => {
     void orchestrator?.stop().catch((err) => debug('DICTATION', `hotkey stop: ${err}`));
   });
 
-  // Start global hotkey hook. uIOhook.start() throws on macOS when Accessibility
-  // permission has not been granted; we recover by polling permissions and
-  // retrying once the user grants access, plus a tray menu item that opens the
-  // relevant System Settings pane.
-  startHotkeysWithAccessibilityRecovery();
+  // Start global hotkey capture. On Wayland uiohook (X11 XRecord) cannot see
+  // keys typed into Wayland-native windows, so a kernel-level evdev monitor
+  // feeds the same HotkeyManager instead. Everywhere else, uIOhook.start()
+  // is used; on macOS it throws when Accessibility permission has not been
+  // granted and we recover by polling permissions, plus a tray menu item
+  // that opens the relevant System Settings pane.
+  if (isWaylandSession()) {
+    evdevMonitor = new EvdevKeyboardMonitor();
+    evdevMonitor.on('key', (e) => {
+      hotkeys?.feedExternalKey(e.keycode, e.down, e.modifiers);
+    });
+    evdevMonitor.on('permission-denied', () => {
+      const message =
+        'Cannot read keyboard devices — the global hotkey will not work. ' +
+        'Add your user to the `input` group (`sudo usermod -aG input $USER`), then log out and back in.';
+      debug('HOTKEY', message);
+      setAccessibilityWarning(true);
+      broadcastToUiWindows(IPC.SYSTEM_ERROR, { source: 'hotkey', message, setup: true });
+    });
+    evdevMonitor.on('ready', (count) => {
+      debug('HOTKEY', `evdev monitor ready (${count} keyboard device(s))`);
+      setAccessibilityWarning(false);
+    });
+    evdevMonitor.start();
+    // Start the portal sidecar up front so the one-time consent dialog
+    // appears at launch, not in the middle of the user's first dictation.
+    // Silently reconnects via restore_token afterwards. The sidecar owns
+    // the clipboard capability too — see linux/portalSidecar.ts for why
+    // Electron's clipboard cannot be used on Wayland.
+    portalSidecar.setUnavailableListener((denied) => {
+      broadcastToUiWindows(IPC.SYSTEM_ERROR, {
+        source: 'paste',
+        message: denied
+          ? 'Wayland input-injection permission was denied — pasting will not work. ' +
+            'Re-enable WindVoice under Settings > Apps > Remote Desktop and restart.'
+          : 'Wayland paste backend unavailable (python3-gi missing, portal too old, or the screen was ' +
+            'locked at launch) — pasting will only reach X11 apps until it recovers.',
+        setup: true
+      });
+    });
+    portalSidecar.start();
+  } else {
+    startHotkeysWithAccessibilityRecovery();
+  }
 
   // macOS-only: spawn the Fn (Globe) key sidecar. uiohook does not surface
   // Fn — it lives on a `kCGEventFlagsChanged` path that libuiohook's macOS
@@ -462,6 +513,36 @@ app.whenReady().then(async () => {
   initErrorReporter(() => settingsStore.get().ui.errorReporting);
 
   await ensureApiKey();
+
+  // Headless paste self-test (debug hook): WINDVOICE_PASTE_SELFTEST=1
+  // pastes a marker string into the focused window ~6s after startup;
+  // =stream drives the streaming typer with three incremental chunks.
+  // Lets the full production paste path (typer → sidecar/portal → target)
+  // be exercised end-to-end on a test box without a microphone or hotkey.
+  const selftest = process.env['WINDVOICE_PASTE_SELFTEST'];
+  if (selftest === '1') {
+    setTimeout(() => {
+      debug('DICTATION', 'paste self-test firing');
+      void pasteText('WINDVOICE_SELFTEST_OK_424242').then(
+        () => debug('DICTATION', 'paste self-test completed'),
+        (err) => debug('DICTATION', `paste self-test failed: ${err}`)
+      );
+    }, 6000);
+  } else if (selftest === 'stream') {
+    setTimeout(() => {
+      debug('DICTATION', 'streaming self-test firing');
+      void (async () => {
+        streamingTyper.begin(true, 'balanced');
+        streamingTyper.append('ALPHA_');
+        await new Promise((r) => setTimeout(r, 900));
+        streamingTyper.append('BRAVO_');
+        await new Promise((r) => setTimeout(r, 900));
+        streamingTyper.append('CHARLIE_424242');
+        await streamingTyper.end();
+        debug('DICTATION', 'streaming self-test completed');
+      })().catch((err) => debug('DICTATION', `streaming self-test failed: ${err}`));
+    }, 6000);
+  }
 });
 
 app.on('window-all-closed', () => {
@@ -482,6 +563,8 @@ app.on('before-quit', () => {
   }
   hotkeys?.stop();
   fnWatcher?.stop();
+  evdevMonitor?.stop();
+  portalSidecar.stop();
   orchestrator?.dispose();
   audio?.destroy();
   overlay?.destroy();
