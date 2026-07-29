@@ -10,3 +10,7 @@ release/
 .idea/
 .vscode/
 coverage/
+
+# Python bytecode from the portal sidecar
+__pycache__/
+*.pyc
