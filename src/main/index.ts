@@ -21,7 +21,7 @@ import { fileTagsProcessor } from '@main/postprocess/fileTags';
 import { initAutoUpdater, onCheckDictationActive, notifyDictationIdle } from '@main/updater';
 import { applyAutoLaunch, onAutoLaunchError } from '@main/autoLaunch';
 import { onDuckError } from '@main/audio/duck';
-import { recoverClipboardIfPending, setPasteFailureListener } from '@main/inject/typer';
+import { pasteText, recoverClipboardIfPending, setPasteFailureListener } from '@main/inject/typer';
 import { setAudioBackpressureListener } from '@main/realtime/client';
 import { flushHistory } from '@main/store/history';
 import { broadcastToUiWindows, setAudioWebContentsId } from '@main/broadcast';
@@ -504,6 +504,20 @@ app.whenReady().then(async () => {
   initErrorReporter(() => settingsStore.get().ui.errorReporting);
 
   await ensureApiKey();
+
+  // Headless paste self-test (debug hook): WINDVOICE_PASTE_SELFTEST=1
+  // pastes a marker string into the focused window ~6s after startup.
+  // Lets the full production paste path (typer → sidecar/portal → target)
+  // be exercised end-to-end on a test box without a microphone or hotkey.
+  if (process.env['WINDVOICE_PASTE_SELFTEST'] === '1') {
+    setTimeout(() => {
+      debug('DICTATION', 'paste self-test firing');
+      void pasteText('WINDVOICE_SELFTEST_OK_424242').then(
+        () => debug('DICTATION', 'paste self-test completed'),
+        (err) => debug('DICTATION', `paste self-test failed: ${err}`)
+      );
+    }, 6000);
+  }
 });
 
 app.on('window-all-closed', () => {

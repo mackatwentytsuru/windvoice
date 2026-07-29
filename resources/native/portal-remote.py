@@ -68,6 +68,13 @@ state = {
     'clipboard': False,
     # Text served for SelectionTransfer requests while we own the selection.
     'selection_text': '',
+    # Mime types of the current FOREIGN selection owner (None = unknown/none,
+    # [] = we own it or it was cleared). Maintained from
+    # SelectionOwnerChanged. Consulted before SelectionRead because GNOME
+    # 46's portal backend hard-crashes (GLib assertion → abort, then the
+    # main portal SEGVs) when SelectionRead runs with no selection owner —
+    # reproduced live on Ubuntu 24.04. Never read blind.
+    'foreign_mimes': None,
 }
 state_lock = threading.Lock()
 
@@ -142,6 +149,17 @@ def on_selection_transfer(conn, sender, path, siface, member, params):
         call(CLIP, 'SelectionWriteDone', GLib.Variant('(oub)', (sess, serial, True)))
     except Exception as e:  # noqa: BLE001 — serving must never kill the loop
         emit({'event': 'transfer_error', 'message': str(e)})
+
+
+def on_owner_changed(conn, sender, path, siface, member, params):
+    sess, options = params.unpack()
+    if sess != state['session']:
+        return
+    if options.get('session_is_owner'):
+        state['foreign_mimes'] = []
+    else:
+        mimes = options.get('mime_types')
+        state['foreign_mimes'] = list(mimes) if mimes else []
 
 
 def on_session_closed(conn, sender, path, siface, member, params):
@@ -239,6 +257,8 @@ def setup_session(allow_retry=True):
 
     bus.signal_subscribe(None, CLIP, 'SelectionTransfer', PPATH, None, 0,
                          on_selection_transfer)
+    bus.signal_subscribe(None, CLIP, 'SelectionOwnerChanged', PPATH, None, 0,
+                         on_owner_changed)
     bus.signal_subscribe(None, SESSION_IFACE, 'Closed', None, None, 0,
                          on_session_closed)
     emit({'event': 'ready', 'clipboard': state['clipboard']})
@@ -258,6 +278,12 @@ def read_selection_text(deadline_s=1.0):
     import select as _select
     session = state['session']
     if not session or not state['clipboard']:
+        return None
+    # Only read when a FOREIGN owner with a text mime is known to exist.
+    # Reading blind crashes GNOME 46's portal backend (see state comment);
+    # reading our own selection is pointless (we already know the text).
+    mimes = state['foreign_mimes']
+    if not mimes or not any('text' in m.lower() or m in ('UTF8_STRING', 'STRING') for m in mimes):
         return None
     try:
         res, fdlist = bus.call_with_unix_fd_list_sync(
@@ -349,6 +375,13 @@ def handle(msg):
             emit({'id': rid, 'ok': False, 'error': f'unknown op {op!r}'})
     except Exception as e:  # noqa: BLE001 — report, never crash the sidecar
         emit({'id': rid, 'ok': False, 'error': str(e)})
+        # If the portal itself died (NoReply / ServiceUnknown), our session
+        # is gone with it. Exit so the parent respawns us into a fresh
+        # session against the auto-restarted portal.
+        msg = str(e)
+        if 'NoReply' in msg or 'ServiceUnknown' in msg or 'NameHasNoOwner' in msg:
+            emit({'event': 'closed'})
+            os._exit(1)
 
 
 def stdin_worker():

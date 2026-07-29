@@ -224,19 +224,27 @@ export async function pasteText(
   // exact bug observed live (an old API key pasted instead of the
   // transcript). Wait for physical modifier release first so the synth
   // Ctrl+V is not perceived as Alt+Ctrl+V by the target.
-  if (isWaylandSession() && portalSidecar.isReady()) {
-    const hkmW = getActiveHotkeyManager();
-    if (hkmW) await hkmW.untilAllModifiersUp(600);
-    hkmW?.suppressFor(40);
-    const ok = await portalSidecar.pasteText(
-      text,
-      restoreClipboard,
-      timing.settleMs,
-      timing.restoreDelayMs
-    );
-    if (ok) return;
-    notifyPasteFailed('Wayland portal paste failed — falling back to X11-only paste');
-    // fall through to the legacy path (reaches XWayland windows only)
+  if (isWaylandSession()) {
+    if (portalSidecar.isReady()) {
+      const hkmW = getActiveHotkeyManager();
+      if (hkmW) await hkmW.untilAllModifiersUp(600);
+      hkmW?.suppressFor(40);
+      debug('DICTATION', `wayland paste: sidecar path (len=${text.length} restore=${restoreClipboard})`);
+      const ok = await portalSidecar.pasteText(
+        text,
+        restoreClipboard,
+        timing.settleMs,
+        timing.restoreDelayMs
+      );
+      debug('DICTATION', `wayland paste: sidecar result ok=${ok}`);
+      if (ok) return;
+      notifyPasteFailed('Wayland portal paste failed — falling back to X11-only paste');
+      // fall through to the legacy path (reaches XWayland windows only)
+    } else {
+      // The legacy path cannot reach Wayland-native windows — make the
+      // downgrade visible instead of silently pasting into the void.
+      debug('DICTATION', 'wayland paste: sidecar NOT ready — legacy X11-only path');
+    }
   }
 
   // LOW-1: only persist + restore when the clipboard currently holds plain
