@@ -12,6 +12,8 @@
 // a longer margin than a native text field. These profiles let the user
 // trade paste latency for cross-environment reliability.
 
+import { isWaylandSession } from '@main/linux/wayland';
+
 export type PasteCompatibility = 'fast' | 'balanced' | 'safe';
 
 export interface PasteTiming {
@@ -60,6 +62,37 @@ const PROFILES: Record<PasteCompatibility, PasteTiming> = {
   }
 };
 
+/**
+ * Wayland floor values, applied on top of whichever profile is selected.
+ *
+ * On Wayland the paste chain is much longer than a native XTest/SendInput
+ * path: NotifyKeyboardKeycode → D-Bus → compositor virtual keyboard →
+ * focused client processes the key event → client asynchronously requests
+ * the clipboard from its owner (us), possibly bridged through XWayland's
+ * selection sync when owner and target live on different display protocols.
+ * With the stock 180ms 'balanced' restore delay the target routinely reads
+ * the clipboard AFTER we have already restored it — the user sees their
+ * previously-copied content pasted instead of the transcript (observed
+ * live on GNOME 46: an API key on the clipboard got pasted in place of
+ * the dictation). The floor trades ~1s of clipboard-restore latency —
+ * invisible to the user — for a correct paste.
+ */
+const WAYLAND_MIN: PasteTiming = {
+  settleMs: 60,
+  restoreDelayMs: 1500,
+  streamSettleMs: 50,
+  streamIntervalMs: 150,
+  streamRestoreDelayMs: 1500
+};
+
 export function pasteTiming(profile: PasteCompatibility | undefined): PasteTiming {
-  return (profile && PROFILES[profile]) || PROFILES.balanced;
+  const base = (profile && PROFILES[profile]) || PROFILES.balanced;
+  if (!isWaylandSession()) return base;
+  return {
+    settleMs: Math.max(base.settleMs, WAYLAND_MIN.settleMs),
+    restoreDelayMs: Math.max(base.restoreDelayMs, WAYLAND_MIN.restoreDelayMs),
+    streamSettleMs: Math.max(base.streamSettleMs, WAYLAND_MIN.streamSettleMs),
+    streamIntervalMs: Math.max(base.streamIntervalMs, WAYLAND_MIN.streamIntervalMs),
+    streamRestoreDelayMs: Math.max(base.streamRestoreDelayMs, WAYLAND_MIN.streamRestoreDelayMs)
+  };
 }
