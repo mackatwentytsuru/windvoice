@@ -101,6 +101,28 @@ def portal_request(iface, method, build_args, timeout_s=120):
     return result['code'], result['results']
 
 
+def write_bounded(fd, data, deadline_s=2.0):
+    """Write all of `data` to fd or give up at the deadline. A consumer that
+    stops reading mid-transfer must not wedge the main loop (this runs on
+    the signal-dispatch thread)."""
+    import select as _select
+    os.set_blocking(fd, False)
+    end = time.time() + deadline_s
+    view = memoryview(data)
+    while view:
+        remaining = end - time.time()
+        if remaining <= 0:
+            raise TimeoutError('selection consumer stalled')
+        _, w, _ = _select.select([], [fd], [], remaining)
+        if not w:
+            raise TimeoutError('selection consumer stalled')
+        try:
+            n = os.write(fd, view[:65536])
+        except BlockingIOError:
+            continue
+        view = view[n:]
+
+
 def on_selection_transfer(conn, sender, path, siface, member, params):
     sess, mime, serial = params.unpack()
     if sess != state['session']:
@@ -114,7 +136,7 @@ def on_selection_transfer(conn, sender, path, siface, member, params):
             0, -1, None, None)
         fd = fdlist.get(res.unpack()[0])
         try:
-            os.write(fd, text.encode('utf-8'))
+            write_bounded(fd, text.encode('utf-8'))
         finally:
             os.close(fd)
         call(CLIP, 'SelectionWriteDone', GLib.Variant('(oub)', (sess, serial, True)))
@@ -223,8 +245,17 @@ def setup_session(allow_retry=True):
     return True
 
 
-def read_selection_text():
-    """Current clipboard text, or None (non-text / empty / read refused)."""
+def read_selection_text(deadline_s=1.0):
+    """Current clipboard text, or None (non-text / empty / read refused).
+
+    MUST be bounded: the portal hands us the read end of a pipe that the
+    CURRENT selection owner is asked to fill. If that owner died (e.g. a
+    previous WindVoice instance that held the selection), nothing ever
+    arrives and a blocking read wedges the whole op queue — observed live
+    as every paste timing out after the app was restarted. A missed
+    restore is a shrug; a wedged sidecar kills pasting entirely.
+    """
+    import select as _select
     session = state['session']
     if not session or not state['clipboard']:
         return None
@@ -232,12 +263,23 @@ def read_selection_text():
         res, fdlist = bus.call_with_unix_fd_list_sync(
             PORTAL, PPATH, CLIP, 'SelectionRead',
             GLib.Variant('(os)', (session, 'text/plain;charset=utf-8')),
-            GLib.VariantType('(h)'), 0, -1, None, None)
+            GLib.VariantType('(h)'), 0, 3000, None, None)
         fd = fdlist.get(res.unpack()[0])
+        os.set_blocking(fd, False)
         chunks = []
+        end = time.time() + deadline_s
         try:
             while True:
-                b = os.read(fd, 65536)
+                remaining = end - time.time()
+                if remaining <= 0:
+                    return None  # owner never delivered — skip restore
+                r, _, _ = _select.select([fd], [], [], remaining)
+                if not r:
+                    return None
+                try:
+                    b = os.read(fd, 65536)
+                except BlockingIOError:
+                    continue
                 if not b:
                     break
                 chunks.append(b)
