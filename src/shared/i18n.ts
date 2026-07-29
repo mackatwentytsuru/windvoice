@@ -61,6 +61,7 @@ const ja: Dict = {
   'general.insertionPaste': 'クリップボード貼り付け',
   'general.insertionPaste.darwin': 'Cmd+V (貼り付け)',
   'general.insertionPaste.win32': 'Ctrl+V (貼り付け)',
+  'general.insertionPaste.linux': 'Ctrl+V (貼り付け)',
   'general.insertionType': '1文字ずつ入力',
   'general.insertionTypeHelper':
     '貼り付けを受け付けない/加工してしまうアプリ向けに、転写を1文字ずつキー入力します(Windows のみ。macOS / Linux では貼り付けに自動フォールバック)。',
@@ -170,6 +171,7 @@ const ja: Dict = {
   'dialog.firstRun.button': '設定を開く',
   'firstRun.apiKey.darwin': 'macOS Keychain に保存',
   'firstRun.apiKey.win32': 'Windows 資格情報マネージャに保存',
+  'firstRun.apiKey.linux': 'システムのキーリングに保存',
 
   // errors
   'error.apiKeyInvalid': 'API キーの形式が正しくありません。',
@@ -238,6 +240,7 @@ const en: Dict = {
   'general.insertionPaste': 'Clipboard paste',
   'general.insertionPaste.darwin': 'Cmd+V (paste)',
   'general.insertionPaste.win32': 'Ctrl+V (paste)',
+  'general.insertionPaste.linux': 'Ctrl+V (paste)',
   'general.insertionType': 'Type per character',
   'general.insertionTypeHelper':
     'For apps that mangle or block a paste — sends the transcript as individual keystrokes (Windows only; falls back to paste on macOS / Linux).',
@@ -352,6 +355,7 @@ const en: Dict = {
   'dialog.firstRun.button': 'Open Settings',
   'firstRun.apiKey.darwin': 'Saved to macOS Keychain',
   'firstRun.apiKey.win32': 'Saved to Windows Credential Manager',
+  'firstRun.apiKey.linux': 'Saved to the system keyring',
 
   // errors
   'error.apiKeyInvalid': 'API key format is invalid.',

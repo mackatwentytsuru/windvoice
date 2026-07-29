@@ -1,7 +1,7 @@
 # WindVoice
 
 > **Right Ctrl** を押しっぱなし → 喋る → 離す → カーソル位置に転写が貼り付く。
-> OpenAI Realtime API を使った Windows / macOS 向けの音声入力 Electron アプリ。
+> OpenAI Realtime API を使った Windows / macOS / Linux 向けの音声入力 Electron アプリ。
 
 Notepad / Chrome / VS Code / Slack / Word / ChatGPT など、任意のテキスト入力欄で動作します。Whisper 系列の `gpt-realtime-whisper` でストリーミング転写し、GPT-5-mini で句読点・整形・辞書適用を行ったうえでクリップボード経由でペーストします。
 
@@ -12,7 +12,7 @@ Notepad / Chrome / VS Code / Slack / Word / ChatGPT など、任意のテキス�
 | 項目 | 内容 |
 |---|---|
 | 最新リリース | **v0.1.7** ([releases/tag/v0.1.7](https://github.com/mackatwentytsuru/windvoice/releases/tag/v0.1.7)) |
-| 対応プラットフォーム | macOS (Apple Silicon arm64) / Windows x64 |
+| 対応プラットフォーム | macOS (Apple Silicon arm64) / Windows x64 / Linux x64 (AppImage・deb, experimental) |
 | ビルド署名 | 未署名 (Gatekeeper / SmartScreen 回避手順あり) |
 | 自動更新 | macOS は opt-in / Windows は既定で有効 |
 | Unit test | 203 passed / 2 skipped (23 files, 205 cases) |
@@ -48,6 +48,31 @@ open /Applications/WindVoice.app
 ### Windows x64
 
 [Releases ページ](https://github.com/mackatwentytsuru/windvoice/releases/latest) から `WindVoice-Setup-<ver>-x64.exe` を落として実行。SmartScreen は「詳細情報」→「実行」で通します。
+
+### Linux x64 (experimental)
+
+[Releases ページ](https://github.com/mackatwentytsuru/windvoice/releases/latest) から `WindVoice-<ver>-x86_64.AppImage` (どのディストロでも可) または `.deb` (Debian/Ubuntu) をダウンロード。
+
+```bash
+chmod +x WindVoice-*.AppImage
+./WindVoice-*.AppImage
+```
+
+初回セットアップ (Linux のみ):
+
+1. **グローバルホットキーの権限** — キーボードイベントは evdev (`/dev/input`) から読むため、`input` グループへの参加が必要:
+
+   ```bash
+   sudo usermod -aG input $USER
+   ```
+
+   その後 **ログアウト → ログイン** (グループ変更の反映に必須)。
+
+2. **Wayland の貼り付け許可** — Wayland セッションでは Ctrl+V 合成に XDG RemoteDesktop ポータルを使用します。初回起動時に表示されるリモートデスクトップの許可ダイアログを承認してください (承認は保存され、次回以降は表示されません)。誤って拒否した場合は 設定 → アプリ → リモートデスクトップ から再許可して WindVoice を再起動。
+
+3. API キーはシステムのキーリング (GNOME Keyring / KWallet, libsecret 経由) に保存されます。
+
+X11 セッションでは追加の許可は不要です (uiohook / XTest をそのまま使用)。GNOME でトレイアイコンを表示するには [AppIndicator 拡張](https://extensions.gnome.org/extension/615/appindicator-support/) が必要です。
 
 ---
 
@@ -168,8 +193,17 @@ stderr に `[hotkey]` `[audio]` `[realtime]` `[dictation]` が流れます。
 
 ### 前提
 - Node.js 22 以上
-- macOS Apple Silicon または Windows x64 (`uiohook-napi`/`keytar` のネイティブビルド用)
+- macOS Apple Silicon / Windows x64 / Linux x64 (`uiohook-napi`/`keytar` のネイティブビルド用)
 - Mac でビルドする場合は Xcode Command Line Tools
+- Linux でビルドする場合は X11 ヘッダ:
+
+  ```bash
+  sudo apt install build-essential libx11-dev libxtst-dev libxkbcommon-dev libsecret-1-dev
+  ```
+
+  ヘッダを入れられない環境では、同梱のプリビルドバイナリ (N-API) で動くため
+  `npm install --ignore-scripts && npm rebuild --ignore-scripts` 相当の運用や
+  `electron-builder --config.npmRebuild=false` でのパッケージングも可能。
 
 ### 開発モード
 
@@ -190,9 +224,10 @@ npm run typecheck  # tsconfig.node + tsconfig.web の strict TS チェック
 ### パッケージング
 
 ```bash
-npm run package:mac   # release/<ver>/WindVoice-<ver>-{arm64,x64}.dmg (Mac でのみ可)
-npm run package:win   # release/<ver>/WindVoice-Setup-<ver>-x64.exe (NSIS)
-npm run release       # GitHub Releases に publish
+npm run package:mac    # release/<ver>/WindVoice-<ver>-{arm64,x64}.dmg (Mac でのみ可)
+npm run package:win    # release/<ver>/WindVoice-Setup-<ver>-x64.exe (NSIS)
+npm run package:linux  # release/<ver>/WindVoice-<ver>-x86_64.AppImage + .deb
+npm run release        # GitHub Releases に publish
 ```
 
 未署名ビルドのため `electron-builder.yml` の `identity: null` / `signtoolOptions: null` を外し、`CSC_LINK` / `APPLE_ID` / `APPLE_APP_SPECIFIC_PASSWORD` / `APPLE_TEAM_ID` を設定すれば署名 / 公証が可能。

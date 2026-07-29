@@ -1,6 +1,6 @@
 import { clipboard } from 'electron';
 import { debug } from '@main/debug';
-import { sendCtrlVAtomic } from '@main/inject/pasteWin32';
+import { sendPasteKeystroke } from '@main/inject/paste';
 // releaseStuckModifiers no longer used — see note in typer.ts.
 import { getActiveHotkeyManager } from '@main/hotkey/manager';
 import { pasteTiming, type PasteCompatibility, type PasteTiming } from '@main/inject/pasteTiming';
@@ -239,7 +239,7 @@ export class StreamingTyper {
         // release inside the window is not lost.
         hkm?.suppressFor(40);
         try {
-          sendCtrlVAtomic();
+          await sendPasteKeystroke();
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
           debug('DICTATION', `streaming paste failed: ${msg}`);

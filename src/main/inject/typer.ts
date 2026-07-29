@@ -4,7 +4,7 @@ import path from 'node:path';
 import { z } from 'zod';
 import { debug } from '@main/debug';
 import { getActiveHotkeyManager } from '@main/hotkey/manager';
-import { sendCtrlVAtomic } from '@main/inject/pasteWin32';
+import { sendPasteKeystroke } from '@main/inject/paste';
 import { pasteTiming, type PasteCompatibility } from '@main/inject/pasteTiming';
 import { writeClipboardText } from '@main/inject/clipboardWrite';
 import { sleep } from '@main/util/sleep';
@@ -255,7 +255,7 @@ export async function pasteText(
   // The HotkeyManager safety net also covers any leaked release.
   hkm?.suppressFor(40);
   try {
-    sendCtrlVAtomic();
+    await sendPasteKeystroke();
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     process.stderr.write(`[error] paste keyTap failed: ${msg}\n`);

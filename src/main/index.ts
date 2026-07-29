@@ -27,6 +27,9 @@ import { flushHistory } from '@main/store/history';
 import { broadcastToUiWindows, setAudioWebContentsId } from '@main/broadcast';
 import { initErrorReporter } from '@main/report/githubReporter';
 import { debug } from '@main/debug';
+import { isWaylandSession } from '@main/linux/wayland';
+import { EvdevKeyboardMonitor } from '@main/hotkey/evdev';
+import { portalRemoteDesktop } from '@main/linux/portalRemoteDesktop';
 import { IPC } from '@shared/types';
 import { t } from '@shared/i18n';
 
@@ -75,6 +78,7 @@ let audio: AudioBridge | null = null;
 let overlay: OverlayWindow | null = null;
 let hotkeys: HotkeyManager | null = null;
 let fnWatcher: FnWatcher | null = null;
+let evdevMonitor: EvdevKeyboardMonitor | null = null;
 let orchestrator: DictationOrchestrator | null = null;
 let lastAudioError: string | null = null;
 
@@ -410,11 +414,46 @@ app.whenReady().then(async () => {
     void orchestrator?.stop().catch((err) => debug('DICTATION', `hotkey stop: ${err}`));
   });
 
-  // Start global hotkey hook. uIOhook.start() throws on macOS when Accessibility
-  // permission has not been granted; we recover by polling permissions and
-  // retrying once the user grants access, plus a tray menu item that opens the
-  // relevant System Settings pane.
-  startHotkeysWithAccessibilityRecovery();
+  // Start global hotkey capture. On Wayland uiohook (X11 XRecord) cannot see
+  // keys typed into Wayland-native windows, so a kernel-level evdev monitor
+  // feeds the same HotkeyManager instead. Everywhere else, uIOhook.start()
+  // is used; on macOS it throws when Accessibility permission has not been
+  // granted and we recover by polling permissions, plus a tray menu item
+  // that opens the relevant System Settings pane.
+  if (isWaylandSession()) {
+    evdevMonitor = new EvdevKeyboardMonitor();
+    evdevMonitor.on('key', (e) => {
+      hotkeys?.feedExternalKey(e.keycode, e.down, e.modifiers);
+    });
+    evdevMonitor.on('permission-denied', () => {
+      const message =
+        'Cannot read keyboard devices — the global hotkey will not work. ' +
+        'Add your user to the `input` group (`sudo usermod -aG input $USER`), then log out and back in.';
+      debug('HOTKEY', message);
+      setAccessibilityWarning(true);
+      broadcastToUiWindows(IPC.SYSTEM_ERROR, { source: 'hotkey', message });
+    });
+    evdevMonitor.on('ready', (count) => {
+      debug('HOTKEY', `evdev monitor ready (${count} keyboard device(s))`);
+      setAccessibilityWarning(false);
+    });
+    evdevMonitor.start();
+    // Establish the RemoteDesktop portal session up front so the one-time
+    // consent dialog appears at launch, not in the middle of the user's
+    // first dictation. Silently reconnects via restore_token afterwards.
+    void portalRemoteDesktop.ensureSession().then((ok) => {
+      if (!ok) {
+        broadcastToUiWindows(IPC.SYSTEM_ERROR, {
+          source: 'paste',
+          message:
+            'Wayland input-injection permission is missing — pasting will only reach X11 apps. ' +
+            'Approve the remote-desktop prompt (or re-enable WindVoice under Settings > Apps > Remote Desktop) and restart.'
+        });
+      }
+    });
+  } else {
+    startHotkeysWithAccessibilityRecovery();
+  }
 
   // macOS-only: spawn the Fn (Globe) key sidecar. uiohook does not surface
   // Fn — it lives on a `kCGEventFlagsChanged` path that libuiohook's macOS
@@ -482,6 +521,7 @@ app.on('before-quit', () => {
   }
   hotkeys?.stop();
   fnWatcher?.stop();
+  evdevMonitor?.stop();
   orchestrator?.dispose();
   audio?.destroy();
   overlay?.destroy();
