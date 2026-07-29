@@ -54,6 +54,17 @@ export class StreamingTyper {
    */
   private wayland = false;
   private waylandOld: Promise<string | null> | null = null;
+  /**
+   * Bumped on every begin(). A flush loop captures it and bails out the
+   * moment it changes: on Wayland a single chunk paste can outlive
+   * `end()`'s 2s drain timeout, and without this guard the late paste
+   * would re-claim the clipboard AFTER the restore (leaving the transcript
+   * on the user's clipboard) and its `finally` would resolve the NEXT
+   * session's idle promise, letting that end() return before it drained.
+   */
+  private generation = 0;
+  /** In-flight chunk paste, so end() can await it before restoring. */
+  private inFlight: Promise<unknown> | null = null;
 
   /** Begin a streaming session; saves the user's current clipboard. */
   begin(
@@ -66,6 +77,8 @@ export class StreamingTyper {
       return;
     }
     this.active = true;
+    this.generation += 1;
+    this.inFlight = null;
     this.buffer = '';
     this.flushSeq = 0;
     this.idlePromise = null;
@@ -168,6 +181,14 @@ export class StreamingTyper {
       }
     }
     if (this.wayland) {
+      // A chunk paste can outlive the drain timeout above (portal budget is
+      // seconds, END_MAX_WAIT_MS is 2s). Let it finish before restoring, or
+      // it would re-claim the clipboard right after our restore and leave
+      // the transcript sitting on the user's clipboard.
+      if (this.inFlight) {
+        await Promise.race([this.inFlight, sleep(5000)]);
+        this.inFlight = null;
+      }
       const old = this.waylandOld ? await this.waylandOld : null;
       if (old !== null && this.flushSeq > 0) {
         await sleep(this.timing.streamRestoreDelayMs);
@@ -230,6 +251,7 @@ export class StreamingTyper {
   }
 
   private async flush(): Promise<void> {
+    const gen = this.generation;
     this.flushing = true;
     // Ensure an idle promise exists so `end()` can await drain even if
     // flush() was invoked directly (e.g. via COALESCE_MAX_CHARS path)
@@ -252,10 +274,16 @@ export class StreamingTyper {
           // per chunk; restore deferred to end().
           const hkmW = getActiveHotkeyManager();
           if (hkmW) await hkmW.untilAllModifiersUp(400);
+          if (gen !== this.generation) return;
           hkmW?.suppressFor(40);
-          const ok = await portalSidecar.pasteText(chunk, false, this.timing.streamSettleMs, 0);
+          const paste = portalSidecar.pasteText(chunk, false, this.timing.streamSettleMs, 0);
+          this.inFlight = paste;
+          const ok = await paste;
+          if (this.inFlight === paste) this.inFlight = null;
           if (!ok) debug('DICTATION', 'streaming portal paste failed for a chunk');
+          if (gen !== this.generation) return;
           await sleep(this.timing.streamIntervalMs);
+          if (gen !== this.generation) return;
           continue;
         }
         try {
@@ -292,6 +320,9 @@ export class StreamingTyper {
         await sleep(this.timing.streamIntervalMs);
       }
     } finally {
+      // A superseded flush must not touch shared state — begin() has
+      // already reset it for the next session.
+      if (gen !== this.generation) return;
       this.flushing = false;
       // Wake any `end()` await iff the queue truly drained. If `append()`
       // re-filled the buffer while we were yielding, leave idlePromise

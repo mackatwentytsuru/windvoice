@@ -226,6 +226,12 @@ export class EvdevKeyboardMonitor extends EventEmitter {
         stream.on('close', () => {
           this.streams.delete(node);
           this.remainders.delete(node);
+          // A keyboard that disappears mid-keypress (unplugged, Bluetooth
+          // drop, suspend) never delivers its key-up, so any code it left
+          // in `held` would stay set forever — a permanently "held" Ctrl
+          // makes untilAllModifiersUp time out on every paste and stops
+          // exact-modifier bindings from ever matching again.
+          this.held.clear();
         });
         this.streams.set(node, stream);
         debug('HOTKEY', `evdev: reading ${node}`);

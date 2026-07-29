@@ -151,6 +151,28 @@ def on_selection_transfer(conn, sender, path, siface, member, params):
         emit({'event': 'transfer_error', 'message': str(e)})
 
 
+def flatten_mimes(value):
+    """Normalize the mime_types option to a flat list of strings.
+
+    Portal backends have shipped this as `as`, as a nested `aas`, and
+    wrapped in a Variant; a non-string slipping through used to crash the
+    paste op with "'list' object has no attribute 'lower'".
+    """
+    if value is None:
+        return []
+    if hasattr(value, 'unpack'):
+        value = value.unpack()
+    if isinstance(value, str):
+        return [value]
+    out = []
+    try:
+        for item in value:
+            out.extend(flatten_mimes(item) if not isinstance(item, str) else [item])
+    except TypeError:
+        return []
+    return out
+
+
 def on_owner_changed(conn, sender, path, siface, member, params):
     sess, options = params.unpack()
     if sess != state['session']:
@@ -158,8 +180,7 @@ def on_owner_changed(conn, sender, path, siface, member, params):
     if options.get('session_is_owner'):
         state['foreign_mimes'] = []
     else:
-        mimes = options.get('mime_types')
-        state['foreign_mimes'] = list(mimes) if mimes else []
+        state['foreign_mimes'] = flatten_mimes(options.get('mime_types'))
 
 
 def on_session_closed(conn, sender, path, siface, member, params):
@@ -169,6 +190,22 @@ def on_session_closed(conn, sender, path, siface, member, params):
         # A sidecar without its session is useless — exit so the parent
         # respawns a fresh one instead of queueing ops against nothing.
         os._exit(1)
+
+
+_subscribed = False
+
+
+def subscribe_signals():
+    global _subscribed
+    if _subscribed:
+        return
+    _subscribed = True
+    bus.signal_subscribe(None, CLIP, 'SelectionTransfer', PPATH, None, 0,
+                         on_selection_transfer)
+    bus.signal_subscribe(None, CLIP, 'SelectionOwnerChanged', PPATH, None, 0,
+                         on_owner_changed)
+    bus.signal_subscribe(None, SESSION_IFACE, 'Closed', None, None, 0,
+                         on_session_closed)
 
 
 def setup_session(allow_retry=True):
@@ -184,8 +221,23 @@ def setup_session(allow_retry=True):
     session = results['session_handle']
     state['session'] = session
 
+    # Subscribe BEFORE Start: the portal emits SelectionOwnerChanged as soon
+    # as the clipboard is enabled, and a Closed can land during setup. A
+    # missed owner notification silently disables clipboard restore for the
+    # first paste; a missed Closed wedges us against a dead session.
+    # Handlers filter by session path, so early subscription is safe.
+    subscribe_signals()
+
     # Must be requested before Start for clipboard_enabled to come back true.
-    call(CLIP, 'RequestClipboard', GLib.Variant('(oa{sv})', (session, {})))
+    # Portals without the Clipboard interface (KDE Plasma < 6.1,
+    # xdg-desktop-portal < 1.18) raise here — degrade to keyboard-only
+    # injection rather than aborting the whole session.
+    try:
+        call(CLIP, 'RequestClipboard', GLib.Variant('(oa{sv})', (session, {})))
+        clipboard_requested = True
+    except Exception as e:  # noqa: BLE001
+        emit({'event': 'no_clipboard_iface', 'message': str(e)[:200]})
+        clipboard_requested = False
 
     select_opts = {
         'types': GLib.Variant('u', 1),  # KEYBOARD
@@ -237,7 +289,7 @@ def setup_session(allow_retry=True):
         except OSError:
             pass
 
-    state['clipboard'] = bool(results.get('clipboard_enabled', False))
+    state['clipboard'] = clipboard_requested and bool(results.get('clipboard_enabled', False))
 
     # A restore token minted by an older WindVoice build (before the
     # clipboard capability existed) restores a session WITHOUT clipboard
@@ -258,12 +310,6 @@ def setup_session(allow_retry=True):
                 pass
         return setup_session(allow_retry=False)
 
-    bus.signal_subscribe(None, CLIP, 'SelectionTransfer', PPATH, None, 0,
-                         on_selection_transfer)
-    bus.signal_subscribe(None, CLIP, 'SelectionOwnerChanged', PPATH, None, 0,
-                         on_owner_changed)
-    bus.signal_subscribe(None, SESSION_IFACE, 'Closed', None, None, 0,
-                         on_session_closed)
     emit({'event': 'ready', 'clipboard': state['clipboard']})
     return True
 
@@ -286,12 +332,21 @@ def read_selection_text(deadline_s=1.0):
     # Reading blind crashes GNOME 46's portal backend (see state comment);
     # reading our own selection is pointless (we already know the text).
     mimes = state['foreign_mimes']
-    if not mimes or not any('text' in m.lower() or m in ('UTF8_STRING', 'STRING') for m in mimes):
+    if not mimes:
+        return None
+    # Ask for a mime the owner actually offers. X11/XWayland apps bridged
+    # through the portal frequently advertise only the legacy atoms, and
+    # hardcoding text/plain;charset=utf-8 would fail the read against them.
+    wanted = next(
+        (m for m in MIME_TYPES if m in mimes),
+        next((m for m in mimes if isinstance(m, str) and 'text' in m.lower()), None)
+    )
+    if wanted is None:
         return None
     try:
         res, fdlist = bus.call_with_unix_fd_list_sync(
             PORTAL, PPATH, CLIP, 'SelectionRead',
-            GLib.Variant('(os)', (session, 'text/plain;charset=utf-8')),
+            GLib.Variant('(os)', (session, wanted)),
             GLib.VariantType('(h)'), 0, 3000, None, None)
         fd = fdlist.get(res.unpack()[0])
         os.set_blocking(fd, False)
@@ -387,8 +442,26 @@ def handle(msg):
             os._exit(1)
 
 
+def setup_session_guarded():
+    """setup_session() with a hard exception boundary.
+
+    Without this, a D-Bus error from any setup call (no RemoteDesktop
+    backend on wlroots/sway, portal too old, daemon restarting) killed this
+    worker thread while the GLib main loop kept the process alive: the
+    sidecar would never emit ready OR failed, never read stdin, and never
+    exit — so the supervisor saw a live child that answered nothing, and
+    the user got no "backend unavailable" message at all.
+    """
+    try:
+        return setup_session()
+    except Exception as e:  # noqa: BLE001
+        emit({'event': 'failed', 'code': -1, 'denied': False,
+              'stage': 'exception', 'message': str(e)[:300]})
+        return False
+
+
 def stdin_worker():
-    if not setup_session():
+    if not setup_session_guarded():
         # Stay alive so the parent reads the failure event before EOF races;
         # it will kill us.
         time.sleep(3600)

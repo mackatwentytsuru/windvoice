@@ -46,6 +46,9 @@ class PortalSidecar {
   private pending = new Map<number, { resolve: (r: SidecarReply) => void; timer: NodeJS.Timeout }>();
   private stdoutBuf = '';
   private onUnavailable: SidecarUnavailableListener | null = null;
+  private restartTimer: NodeJS.Timeout | null = null;
+  /** Set by stop(), cleared by start() — makes "stopped means stopped" hold. */
+  private stopped = false;
 
   /** True once the session is up with the clipboard capability granted. */
   isReady(): boolean {
@@ -76,6 +79,7 @@ class PortalSidecar {
   }
 
   start(): void {
+    this.stopped = false;
     if (this.child) return;
     const script = resolveSidecarScript();
     if (!script) {
@@ -100,6 +104,13 @@ class PortalSidecar {
       return;
     }
     this.child = child;
+    // A write to a dead child's pipe surfaces as an ASYNC 'error' event, not
+    // a synchronous throw from write() — without this listener an EPIPE
+    // (sidecar exited between our paste call and Node noticing) becomes an
+    // uncaughtException and takes the whole main process down.
+    child.stdin.on('error', (err) => {
+      debug('DICTATION', `portal sidecar stdin error: ${err.message}`);
+    });
     child.stdout.setEncoding('utf8');
     child.stdout.on('data', (chunk: string) => this.onStdout(chunk));
     child.stderr.setEncoding('utf8');
@@ -117,6 +128,11 @@ class PortalSidecar {
   }
 
   stop(): void {
+    this.stopped = true;
+    if (this.restartTimer) {
+      clearTimeout(this.restartTimer);
+      this.restartTimer = null;
+    }
     const c = this.child;
     this.child = null;
     this.ready = false;
@@ -142,7 +158,22 @@ class PortalSidecar {
       return;
     }
     this.respawns += 1;
-    setTimeout(() => this.start(), RESPAWN_DELAY_MS).unref();
+    this.scheduleRestart();
+  }
+
+  /**
+   * Schedule a respawn, tracking the timer so stop() can cancel it —
+   * otherwise a restart queued just before app quit (or before a
+   * deliberate stop) spawns a stray python during teardown.
+   */
+  private scheduleRestart(): void {
+    if (this.restartTimer) return;
+    this.restartTimer = setTimeout(() => {
+      this.restartTimer = null;
+      if (this.stopped) return;
+      this.start();
+    }, RESPAWN_DELAY_MS);
+    this.restartTimer.unref();
   }
 
   private rejectAllPending(reason: string): void {
@@ -201,17 +232,26 @@ class PortalSidecar {
         // only a user denial is final.
         if (!this.denied && this.respawns < MAX_RESPAWNS) {
           this.respawns += 1;
-          setTimeout(() => this.start(), RESPAWN_DELAY_MS).unref();
+          this.scheduleRestart();
         } else {
           this.onUnavailable?.(this.denied);
         }
         break;
       case 'closed':
         // Compositor revoked the session (settings change, portal restart).
-        // Restart the sidecar to build a fresh one from the restore token.
-        debug('DICTATION', 'portal sidecar session closed by compositor — restarting');
+        // Rebuild from the restore token — but through the SAME bounded
+        // budget as other restarts. An unbounded loop here would spin every
+        // few seconds forever, and on backends without persist_mode support
+        // each cycle raises a fresh consent dialog (dialog storm).
         this.stop();
-        setTimeout(() => this.start(), RESPAWN_DELAY_MS).unref();
+        if (this.respawns < MAX_RESPAWNS) {
+          this.respawns += 1;
+          debug('DICTATION', 'portal sidecar session closed by compositor — restarting');
+          this.scheduleRestart();
+        } else {
+          debug('DICTATION', 'portal sidecar session closed repeatedly — giving up');
+          this.onUnavailable?.(false);
+        }
         break;
       case 'transfer_error':
       case 'protocol_error':
