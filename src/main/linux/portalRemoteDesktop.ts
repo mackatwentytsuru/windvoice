@@ -254,6 +254,12 @@ class PortalRemoteDesktop {
       };
       bus.on('message', onMessage);
     });
+    // Mark the response promise as observed. If the method call below throws
+    // (e.g. "Portal operation not allowed"), portalRequest rethrows before
+    // anyone awaits responsePromise — its later timeout rejection would then
+    // fire as an unhandledRejection. The caller still receives rejections
+    // through the returned promise as usual.
+    responsePromise.catch(() => undefined);
 
     const reply = await bus.call(
       new dbus.Message({

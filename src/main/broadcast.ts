@@ -32,7 +32,20 @@ export function broadcastToUiWindows(channel: string, payload: unknown): void {
   // SYSTEM_ERROR / FORMATTER_ERROR banner is also queued for the automatic
   // GitHub issue reporter (deduplicated + scrubbed there; fire-and-forget).
   if (channel === IPC.SYSTEM_ERROR || channel === IPC.FORMATTER_ERROR) {
-    const p = payload as { source?: unknown; code?: unknown; message?: unknown };
+    const p = payload as {
+      source?: unknown;
+      code?: unknown;
+      message?: unknown;
+      setup?: unknown;
+    };
+    // `setup: true` marks environment/setup guidance (join the input group,
+    // approve the Wayland portal, …) — actionable by the user, not a bug.
+    // Show the banner but do not file a GitHub issue for it (issues #72/#75
+    // were auto-filed noise of this kind).
+    if (p?.setup === true) {
+      broadcastOnly(channel, payload);
+      return;
+    }
     const source =
       typeof p?.source === 'string'
         ? p.source
@@ -41,6 +54,10 @@ export function broadcastToUiWindows(channel: string, payload: unknown): void {
           : 'formatter';
     if (typeof p?.message === 'string') reportError(source, p.message);
   }
+  broadcastOnly(channel, payload);
+}
+
+function broadcastOnly(channel: string, payload: unknown): void {
   const skip = audioWebContentsId;
   for (const win of BrowserWindow.getAllWindows()) {
     if (skip !== null && win.webContents.id === skip) continue;

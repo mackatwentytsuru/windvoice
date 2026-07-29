@@ -431,7 +431,7 @@ app.whenReady().then(async () => {
         'Add your user to the `input` group (`sudo usermod -aG input $USER`), then log out and back in.';
       debug('HOTKEY', message);
       setAccessibilityWarning(true);
-      broadcastToUiWindows(IPC.SYSTEM_ERROR, { source: 'hotkey', message });
+      broadcastToUiWindows(IPC.SYSTEM_ERROR, { source: 'hotkey', message, setup: true });
     });
     evdevMonitor.on('ready', (count) => {
       debug('HOTKEY', `evdev monitor ready (${count} keyboard device(s))`);
@@ -447,7 +447,8 @@ app.whenReady().then(async () => {
           source: 'paste',
           message:
             'Wayland input-injection permission is missing — pasting will only reach X11 apps. ' +
-            'Approve the remote-desktop prompt (or re-enable WindVoice under Settings > Apps > Remote Desktop) and restart.'
+            'Approve the remote-desktop prompt (or re-enable WindVoice under Settings > Apps > Remote Desktop) and restart.',
+          setup: true
         });
       }
     });
