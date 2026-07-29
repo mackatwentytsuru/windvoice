@@ -22,6 +22,7 @@ import { initAutoUpdater, onCheckDictationActive, notifyDictationIdle } from '@m
 import { applyAutoLaunch, onAutoLaunchError } from '@main/autoLaunch';
 import { onDuckError } from '@main/audio/duck';
 import { pasteText, recoverClipboardIfPending, setPasteFailureListener } from '@main/inject/typer';
+import { streamingTyper } from '@main/inject/streamingTyper';
 import { setAudioBackpressureListener } from '@main/realtime/client';
 import { flushHistory } from '@main/store/history';
 import { broadcastToUiWindows, setAudioWebContentsId } from '@main/broadcast';
@@ -388,6 +389,13 @@ app.whenReady().then(async () => {
   powerMonitor.on('unlock-screen', () => {
     audio?.recapture();
     orchestrator?.recycleConnection('unlock-screen');
+    // Wayland: mutter refuses RemoteDesktop session creation while the
+    // session is locked ("Session creation inhibited"), so a sidecar that
+    // launched behind a lock screen never got a session. Retry now.
+    if (isWaylandSession() && !portalSidecar.isReady()) {
+      debug('DICTATION', 'screen unlocked — retrying portal sidecar');
+      portalSidecar.restart();
+    }
   });
 
   // Register post-processors. Order matters: formatter first (cleans
@@ -449,7 +457,8 @@ app.whenReady().then(async () => {
         message: denied
           ? 'Wayland input-injection permission was denied — pasting will not work. ' +
             'Re-enable WindVoice under Settings > Apps > Remote Desktop and restart.'
-          : 'Wayland paste backend unavailable (python3-gi missing or portal too old) — pasting will only reach X11 apps.',
+          : 'Wayland paste backend unavailable (python3-gi missing, portal too old, or the screen was ' +
+            'locked at launch) — pasting will only reach X11 apps until it recovers.',
         setup: true
       });
     });
@@ -506,16 +515,32 @@ app.whenReady().then(async () => {
   await ensureApiKey();
 
   // Headless paste self-test (debug hook): WINDVOICE_PASTE_SELFTEST=1
-  // pastes a marker string into the focused window ~6s after startup.
+  // pastes a marker string into the focused window ~6s after startup;
+  // =stream drives the streaming typer with three incremental chunks.
   // Lets the full production paste path (typer → sidecar/portal → target)
   // be exercised end-to-end on a test box without a microphone or hotkey.
-  if (process.env['WINDVOICE_PASTE_SELFTEST'] === '1') {
+  const selftest = process.env['WINDVOICE_PASTE_SELFTEST'];
+  if (selftest === '1') {
     setTimeout(() => {
       debug('DICTATION', 'paste self-test firing');
       void pasteText('WINDVOICE_SELFTEST_OK_424242').then(
         () => debug('DICTATION', 'paste self-test completed'),
         (err) => debug('DICTATION', `paste self-test failed: ${err}`)
       );
+    }, 6000);
+  } else if (selftest === 'stream') {
+    setTimeout(() => {
+      debug('DICTATION', 'streaming self-test firing');
+      void (async () => {
+        streamingTyper.begin(true, 'balanced');
+        streamingTyper.append('ALPHA_');
+        await new Promise((r) => setTimeout(r, 900));
+        streamingTyper.append('BRAVO_');
+        await new Promise((r) => setTimeout(r, 900));
+        streamingTyper.append('CHARLIE_424242');
+        await streamingTyper.end();
+        debug('DICTATION', 'streaming self-test completed');
+      })().catch((err) => debug('DICTATION', `streaming self-test failed: ${err}`));
     }, 6000);
   }
 });

@@ -60,6 +60,21 @@ class PortalSidecar {
     this.onUnavailable = cb;
   }
 
+  /**
+   * Force a fresh attempt, clearing the respawn budget and any prior
+   * denial. Called when the environment changes in a way that can undo a
+   * failure — screen unlock in particular: while the session is locked
+   * mutter refuses every RemoteDesktop CreateSession with "Session
+   * creation inhibited", so a machine that was locked at launch would
+   * otherwise burn its respawn budget and stay dead until restarted.
+   */
+  restart(): void {
+    this.respawns = 0;
+    this.denied = false;
+    this.stop();
+    this.start();
+  }
+
   start(): void {
     if (this.child) return;
     const script = resolveSidecarScript();
@@ -179,8 +194,17 @@ class PortalSidecar {
       case 'failed':
         this.denied = msg.denied === true;
         debug('DICTATION', `portal sidecar session failed (code=${msg.code} denied=${this.denied})`);
-        this.onUnavailable?.(this.denied);
         this.stop();
+        // Transient failures happen (portal restarting after a crash, a
+        // concurrent session teardown racing our restore_token). Retry with
+        // the shared respawn budget before declaring the backend gone —
+        // only a user denial is final.
+        if (!this.denied && this.respawns < MAX_RESPAWNS) {
+          this.respawns += 1;
+          setTimeout(() => this.start(), RESPAWN_DELAY_MS).unref();
+        } else {
+          this.onUnavailable?.(this.denied);
+        }
         break;
       case 'closed':
         // Compositor revoked the session (settings change, portal restart).

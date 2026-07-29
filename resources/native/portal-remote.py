@@ -166,6 +166,9 @@ def on_session_closed(conn, sender, path, siface, member, params):
     if path == state['session']:
         state['session'] = None
         emit({'event': 'closed'})
+        # A sidecar without its session is useless — exit so the parent
+        # respawns a fresh one instead of queueing ops against nothing.
+        os._exit(1)
 
 
 def setup_session(allow_retry=True):
@@ -176,7 +179,7 @@ def setup_session(allow_retry=True):
 
     code, results = portal_request(RD, 'CreateSession', cs_args, timeout_s=15)
     if code != 0:
-        emit({'event': 'failed', 'code': code, 'denied': code == 1})
+        emit({'event': 'failed', 'code': code, 'denied': code == 1, 'stage': 'CreateSession'})
         return False
     session = results['session_handle']
     state['session'] = session
@@ -206,7 +209,7 @@ def setup_session(allow_retry=True):
 
     code, _ = portal_request(RD, 'SelectDevices', sd_args, timeout_s=15)
     if code != 0:
-        emit({'event': 'failed', 'code': code, 'denied': code == 1})
+        emit({'event': 'failed', 'code': code, 'denied': code == 1, 'stage': 'SelectDevices'})
         return False
 
     def st_args(token):
@@ -222,7 +225,7 @@ def setup_session(allow_retry=True):
                 os.unlink(TOKEN_FILE)
             except OSError:
                 pass
-        emit({'event': 'failed', 'code': code, 'denied': code == 1})
+        emit({'event': 'failed', 'code': code, 'denied': code == 1, 'stage': 'Start'})
         return False
 
     new_token = results.get('restore_token')
