@@ -18,6 +18,7 @@ export const IPC = {
   // dictation control
   DICTATION_START: 'dictation:start',
   DICTATION_STOP: 'dictation:stop',
+  APP_QUIT: 'app:quit',
   // history
   HISTORY_LIST: 'history:list',
   HISTORY_CLEAR: 'history:clear',
@@ -124,6 +125,7 @@ export interface SystemErrorPayload {
     | 'audio-backpressure'
     | 'transcription'
     | 'hotkey'
+    | 'tray'
     | 'notice';
   message: string;
   kind: ErrorKind;

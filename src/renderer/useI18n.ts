@@ -54,7 +54,8 @@ if (typeof import.meta !== 'undefined' && (import.meta as { hot?: unknown }).hot
 export function detectPlatform(): 'darwin' | 'win32' | 'linux' | string {
   if (typeof window !== 'undefined') {
     // Preferred: preload-exposed string ("darwin" | "win32" | "linux" | ...).
-    const fromApi = (window as unknown as { api?: { platform?: string } }).api?.platform;
+    const fromApi = (window as unknown as { windvoice?: { platform?: string } }).windvoice
+      ?.platform;
     if (typeof fromApi === 'string' && fromApi.length > 0) return fromApi;
   }
   if (typeof navigator !== 'undefined' && typeof navigator.userAgent === 'string') {

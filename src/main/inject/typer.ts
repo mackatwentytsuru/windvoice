@@ -10,6 +10,7 @@ import { portalSidecar } from '@main/linux/portalSidecar';
 import { pasteTiming, type PasteCompatibility } from '@main/inject/pasteTiming';
 import { writeClipboardText } from '@main/inject/clipboardWrite';
 import { sleep } from '@main/util/sleep';
+import { t, type UiLang } from '@shared/i18n';
 
 // SETTLE / RESTORE delays are no longer fixed constants — they come from
 // the user-selectable timing profile in `pasteTiming.ts`. A previous
@@ -44,6 +45,23 @@ export function notifyPasteFailed(message: string): void {
   } catch {
     /* listener errors are not allowed to break the paste path */
   }
+}
+
+export function copyTextForManualPaste(
+  text: string,
+  excludeFromClipboardHistory = false
+): void {
+  writeClipboardText(text, excludeFromClipboardHistory);
+}
+
+let pasteLanguageProvider: () => UiLang = () => 'ja';
+
+export function setPasteLanguageProvider(provider: (() => UiLang) | null): void {
+  pasteLanguageProvider = provider ?? (() => 'ja');
+}
+
+export function manualPasteMessage(): string {
+  return t('error.pasteCopiedManual', pasteLanguageProvider());
 }
 
 /**
@@ -251,18 +269,27 @@ export async function pasteText(
       if (result.injected === null) {
         // Timeout/child loss after dispatch is an indeterminate delivery:
         // the sidecar has been recycled, but the target may already have
-        // received Ctrl+V. Any fallback here risks duplicate insertion.
+        // received Ctrl+V. Never synthesize another paste; preserve the text
+        // for a deliberate manual paste instead.
+        copyTextForManualPaste(text, excludeFromClipboardHistory);
         notifyPasteFailed(
-          `Wayland portal paste outcome is unknown — no fallback was attempted: ${result.error ?? 'request interrupted'}`
+          `Wayland portal paste outcome is unknown: ${result.error ?? 'request interrupted'}. ${manualPasteMessage()}`
         );
         return;
       }
-      notifyPasteFailed('Wayland portal paste failed — falling back to X11-only paste');
-      // fall through to the legacy path (reaches XWayland windows only)
+      copyTextForManualPaste(text, excludeFromClipboardHistory);
+      notifyPasteFailed(
+        `Wayland portal paste failed: ${result.error ?? 'unknown error'}. ${manualPasteMessage()}`
+      );
+      return;
     } else {
-      // The legacy path cannot reach Wayland-native windows — make the
-      // downgrade visible instead of silently pasting into the void.
-      debug('DICTATION', 'wayland paste: sidecar NOT ready — legacy X11-only path');
+      // XTest reaches only XWayland clients. A native Wayland session may
+      // have no X11 clients at all, so falling through would report success
+      // while discarding the transcript into the void.
+      debug('DICTATION', 'wayland paste: sidecar NOT ready — preserving text for manual paste');
+      copyTextForManualPaste(text, excludeFromClipboardHistory);
+      notifyPasteFailed(manualPasteMessage());
+      return;
     }
   }
 

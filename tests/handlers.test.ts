@@ -147,6 +147,7 @@ function isFailureResult(v: unknown): v is { ok: false; error: string; code?: st
 const triggers = {
   start: vi.fn().mockResolvedValue(undefined),
   stop: vi.fn().mockResolvedValue(undefined),
+  quit: vi.fn(),
   getLastAudioError: vi.fn(() => null),
   onApiKeyChanged: vi.fn().mockResolvedValue(undefined),
   onSettingsChanged: vi.fn()
@@ -164,7 +165,23 @@ beforeEach(() => {
   hoisted.secure.setApiKey = () => Promise.resolve();
   triggers.onSettingsChanged.mockClear();
   triggers.onApiKeyChanged.mockClear();
+  triggers.quit.mockClear();
   setTrustedSettingsSender(null);
+});
+
+describe('IPC handlers — APP_QUIT', () => {
+  it('allows only the trusted Settings window to quit the app', async () => {
+    const handler = getHandler(IPC.APP_QUIT);
+
+    const refused = (await handler(fakeEvent(999))) as MaybeOk;
+    expect(refused.ok).toBe(false);
+    expect(triggers.quit).not.toHaveBeenCalled();
+
+    setTrustedSettingsSender(TRUSTED_ID);
+    const accepted = (await handler(fakeEvent(TRUSTED_ID))) as MaybeOk;
+    expect(accepted.ok).toBe(true);
+    expect(triggers.quit).toHaveBeenCalledOnce();
+  });
 });
 
 // ─── Tests ─────────────────────────────────────────────────────────────────

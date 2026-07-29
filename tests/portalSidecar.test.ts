@@ -88,6 +88,9 @@ describe('PortalSidecar supervision', () => {
     expect(children).toHaveLength(6);
     expect(unavailable).toHaveBeenCalledTimes(1);
     expect(unavailable).toHaveBeenCalledWith(false);
+
+    sidecar.retryForDictation();
+    expect(children).toHaveLength(7);
   });
 
   it('ignores a late exit from a replaced child', async () => {

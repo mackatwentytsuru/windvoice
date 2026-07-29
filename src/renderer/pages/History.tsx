@@ -42,6 +42,11 @@ export function HistoryPage(): JSX.Element {
           </button>
         )}
       </div>
+      {window.windvoice.sessionType === 'wayland' && (
+        <p role="note" className="helper" style={{ marginBottom: 16 }}>
+          {t('history.waylandAppUnavailable')}
+        </p>
+      )}
 
       {/* Single live region announces copy state changes for screen readers. */}
       <span className="visually-hidden" aria-live="polite">

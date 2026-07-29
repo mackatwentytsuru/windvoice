@@ -1,5 +1,6 @@
 import Store from 'electron-store';
 import { SettingsSchema, type Settings } from '@shared/types';
+import { enforcePrivateFileMode } from '@main/store/privateMode';
 
 class SettingsStore {
   private store: Store<Settings>;
@@ -18,6 +19,7 @@ class SettingsStore {
       defaults,
       clearInvalidConfig: true
     });
+    enforcePrivateFileMode(this.store.path);
   }
 
   get(): Settings {
@@ -30,6 +32,7 @@ class SettingsStore {
     }
     const defaults = SettingsSchema.parse({});
     this.store.store = defaults;
+    enforcePrivateFileMode(this.store.path);
     this.cached = defaults;
     return defaults;
   }
@@ -38,6 +41,7 @@ class SettingsStore {
     const merged = { ...this.get(), ...partial };
     const parsed = SettingsSchema.parse(merged);
     this.store.store = parsed;
+    enforcePrivateFileMode(this.store.path);
     this.cached = parsed;
     return parsed;
   }
@@ -45,6 +49,7 @@ class SettingsStore {
   reset(): Settings {
     const defaults = SettingsSchema.parse({});
     this.store.store = defaults;
+    enforcePrivateFileMode(this.store.path);
     this.cached = defaults;
     return defaults;
   }

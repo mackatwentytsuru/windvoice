@@ -58,9 +58,11 @@ function applyAutoLaunchLinux(enabled: boolean): void {
       '[Desktop Entry]',
       'Type=Application',
       'Name=WindVoice',
+      'Icon=windvoice',
       'Comment=Voice dictation (starts in the tray)',
       `Exec=${linuxExecCommand()}`,
       'Terminal=false',
+      'StartupNotify=false',
       'X-GNOME-Autostart-enabled=true',
       ''
     ].join('\n');

@@ -10,7 +10,12 @@ import {
 import { getActiveHotkeyManager } from '@main/hotkey/manager';
 import { pasteTiming, type PasteCompatibility, type PasteTiming } from '@main/inject/pasteTiming';
 import { writeClipboardText } from '@main/inject/clipboardWrite';
-import { clipboardHasText, notifyPasteFailed } from '@main/inject/typer';
+import {
+  clipboardHasText,
+  copyTextForManualPaste,
+  manualPasteMessage,
+  notifyPasteFailed
+} from '@main/inject/typer';
 import { sleep } from '@main/util/sleep';
 
 const DEBOUNCE_MS = 80;
@@ -74,6 +79,10 @@ export class StreamingTyper {
   private ending: Promise<void> | null = null;
   /** Stops the queue after a delivery failure while preserving its text. */
   private pasteFailed = false;
+  /** Full text received this session, retained for a manual Wayland paste. */
+  private sessionText = '';
+  private manualPasteRequired = false;
+  private manualNoticeSent = false;
 
   /** Begin a streaming session; saves the user's current clipboard. */
   begin(
@@ -90,16 +99,27 @@ export class StreamingTyper {
     this.flushing = false;
     this.inFlight = null;
     this.pasteFailed = false;
+    this.sessionText = '';
+    this.manualPasteRequired = false;
+    this.manualNoticeSent = false;
     this.buffer = '';
     this.flushSeq = 0;
     this.idlePromise = null;
     this.resolveIdle = null;
     this.timing = pasteTiming(compatibility);
     this.excludeHistory = excludeFromClipboardHistory;
-    this.wayland = isWaylandSession() && portalSidecar.isReady();
-    this.waylandRestoreRequested = this.wayland && restoreClipboard;
+    this.wayland = isWaylandSession();
+    this.manualPasteRequired = this.wayland && !portalSidecar.isReady();
+    this.pasteFailed = this.manualPasteRequired;
+    this.waylandRestoreRequested =
+      this.wayland && !this.manualPasteRequired && restoreClipboard;
     this.waylandClaimed = false;
     if (this.wayland) {
+      if (this.manualPasteRequired) {
+        this.waylandOld = null;
+        this.originalClipboard = null;
+        return true;
+      }
       this.waylandOld = restoreClipboard
         ? portalSidecar.snapshot()
         : Promise.resolve({ ok: true, kind: 'empty' });
@@ -147,8 +167,13 @@ export class StreamingTyper {
     // intact via the GPT formatter pipeline.
     const safe = text.replace(/[\r\n]+/g, ' ');
     if (!safe) return;
+    this.sessionText += safe;
     const wasEmpty = this.buffer.length === 0;
     this.buffer += safe;
+    if (this.manualPasteRequired) {
+      this.updateManualClipboard();
+      return;
+    }
     if (this.pasteFailed) return;
     // Re-arm the idle promise on the empty→non-empty transition so a late
     // fragment arriving while `end()` is awaiting correctly extends the
@@ -220,10 +245,31 @@ export class StreamingTyper {
     if (this.flushing && this.idlePromise) await this.idlePromise;
     if (this.wayland) {
       this.inFlight = null;
+      if (this.manualPasteRequired) {
+        this.updateManualClipboard();
+        // If the portal session is still alive after a definite injection
+        // failure, leave the complete transcript on the actual Wayland
+        // selection too. Electron's clipboard write alone may only reach
+        // XWayland clients while WindVoice is in the background.
+        if (this.waylandClaimed && portalSidecar.isReady() && this.sessionText) {
+          const preserved = await portalSidecar.setSelection(this.sessionText);
+          if (!preserved.ok) {
+            debug(
+              'DICTATION',
+              `could not preserve transcript on Wayland selection: ${preserved.error ?? 'unknown error'}`
+            );
+          }
+        }
+      }
       const old = this.waylandOld
         ? await this.waylandOld
         : ({ ok: true, kind: 'empty' } as const);
-      if (old.ok && old.kind === 'text' && this.waylandClaimed) {
+      if (
+        !this.manualPasteRequired &&
+        old.ok &&
+        old.kind === 'text' &&
+        this.waylandClaimed
+      ) {
         if (this.flushSeq > 0) await sleep(this.timing.streamRestoreDelayMs);
         const restore = await portalSidecar.setSelection(old.text);
         if (!restore.ok) {
@@ -243,6 +289,9 @@ export class StreamingTyper {
       this.buffer = '';
       this.flushing = false;
       this.pasteFailed = false;
+      this.sessionText = '';
+      this.manualPasteRequired = false;
+      this.manualNoticeSent = false;
       this.idlePromise = null;
       this.resolveIdle = null;
       return;
@@ -294,6 +343,31 @@ export class StreamingTyper {
     }
   }
 
+  private requireManualPaste(detail: string): void {
+    this.manualPasteRequired = true;
+    this.pasteFailed = true;
+    this.updateManualClipboard(detail);
+  }
+
+  private updateManualClipboard(detail?: string): void {
+    if (this.sessionText.length > 0) {
+      try {
+        copyTextForManualPaste(this.sessionText, this.excludeHistory);
+      } catch (err) {
+        debug(
+          'DICTATION',
+          `manual-paste clipboard write failed: ${err instanceof Error ? err.message : String(err)}`
+        );
+      }
+    }
+    if (!this.manualNoticeSent && this.sessionText.length > 0) {
+      this.manualNoticeSent = true;
+      notifyPasteFailed(
+        detail ? `${detail}. ${manualPasteMessage()}` : manualPasteMessage()
+      );
+    }
+  }
+
   private async flush(): Promise<void> {
     if (!this.active || this.flushing || this.pasteFailed) return;
     const gen = this.generation;
@@ -321,12 +395,11 @@ export class StreamingTyper {
             if (gen !== this.generation) return;
             if (!snapshot.ok || snapshot.kind === 'non-text') {
               this.buffer = chunk + this.buffer;
-              this.pasteFailed = true;
               const detail = snapshot.ok
                 ? 'the existing clipboard is non-text and cannot be restored'
                 : `clipboard snapshot failed: ${snapshot.error}`;
               debug('DICTATION', `streaming portal paste stopped: ${detail}`);
-              notifyPasteFailed(`Wayland streaming paste stopped — ${detail}`);
+              this.requireManualPaste(`Wayland streaming paste stopped — ${detail}`);
               return;
             }
           }
@@ -344,13 +417,12 @@ export class StreamingTyper {
             // Preserve the undelivered/uncertain chunk and stop this session.
             // Retrying an uncertain operation could duplicate dictated text.
             this.buffer = chunk + this.buffer;
-            this.pasteFailed = true;
             const detail =
               result.injected === null
                 ? 'delivery outcome is unknown'
                 : `delivery failed at ${result.stage ?? 'unknown stage'}`;
             debug('DICTATION', `streaming portal paste failed for a chunk: ${detail}`);
-            notifyPasteFailed(
+            this.requireManualPaste(
               `Wayland streaming paste stopped — ${detail}: ${result.error ?? 'unknown error'}`
             );
             return;

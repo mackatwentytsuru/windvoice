@@ -101,7 +101,7 @@ describe('pasteText Wayland routing', () => {
     expect(hoisted.notify).toHaveBeenCalledWith(expect.stringContaining('restore'));
   });
 
-  it('falls back only when the sidecar definitively did not inject', async () => {
+  it('keeps text for manual paste instead of using X11 when the sidecar did not inject', async () => {
     hoisted.pasteText.mockResolvedValue({
       ok: false,
       claimed: false,
@@ -113,7 +113,11 @@ describe('pasteText Wayland routing', () => {
 
     await pasteText('hello', true);
 
-    expect(hoisted.legacyPaste).toHaveBeenCalledOnce();
+    expect(hoisted.legacyPaste).not.toHaveBeenCalled();
+    expect(hoisted.writeClipboard).toHaveBeenLastCalledWith('hello', false);
+    expect(hoisted.notify).toHaveBeenCalledWith(
+      expect.stringContaining('クリップボード')
+    );
   });
 
   it('does not fall back when the injection outcome is unknown', async () => {
@@ -132,12 +136,16 @@ describe('pasteText Wayland routing', () => {
     expect(hoisted.notify).toHaveBeenCalledWith(expect.stringContaining('unknown'));
   });
 
-  it('uses the legacy path when the sidecar is not ready', async () => {
+  it('keeps text for manual paste when the sidecar is not ready', async () => {
     hoisted.ready = false;
 
     await pasteText('hello', true);
 
     expect(hoisted.pasteText).not.toHaveBeenCalled();
-    expect(hoisted.legacyPaste).toHaveBeenCalledOnce();
+    expect(hoisted.legacyPaste).not.toHaveBeenCalled();
+    expect(hoisted.writeClipboard).toHaveBeenLastCalledWith('hello', false);
+    expect(hoisted.notify).toHaveBeenCalledWith(
+      expect.stringContaining('手動で貼り付け')
+    );
   });
 });

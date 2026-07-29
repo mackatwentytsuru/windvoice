@@ -39,6 +39,7 @@ export function AppModesPage({ settings, update }: Props): JSX.Element {
   const { t } = useI18n();
   const [match, setMatch] = useState('');
   const [instructions, setInstructions] = useState('');
+  const unavailable = window.windvoice.sessionType === 'wayland';
 
   const profiles = settings.formatter.appProfiles;
   const rowKeys = profileRowKeys(profiles);
@@ -65,6 +66,11 @@ export function AppModesPage({ settings, update }: Props): JSX.Element {
       <p className="helper" style={{ marginBottom: 16 }}>
         {t('appModes.helper')}
       </p>
+      {unavailable && (
+        <p role="note" className="helper" style={{ color: 'var(--error)', marginBottom: 16 }}>
+          {t('appModes.waylandUnavailable')}
+        </p>
+      )}
 
       <div className="row" style={{ marginBottom: 8 }}>
         <input
@@ -72,6 +78,7 @@ export function AppModesPage({ settings, update }: Props): JSX.Element {
           placeholder={t('appModes.matchPlaceholder')}
           value={match}
           onChange={(e) => setMatch(e.target.value)}
+          disabled={unavailable}
           style={{ flex: '0 0 180px' }}
         />
         <input
@@ -79,9 +86,10 @@ export function AppModesPage({ settings, update }: Props): JSX.Element {
           placeholder={t('appModes.instructionsPlaceholder')}
           value={instructions}
           onChange={(e) => setInstructions(e.target.value)}
+          disabled={unavailable}
           style={{ flex: 1 }}
         />
-        <button className="primary" onClick={add} disabled={!match.trim()}>
+        <button className="primary" onClick={add} disabled={unavailable || !match.trim()}>
           {t('appModes.add')}
         </button>
       </div>
@@ -103,6 +111,7 @@ export function AppModesPage({ settings, update }: Props): JSX.Element {
           <button
             className="button-icon"
             onClick={() => remove(i)}
+            disabled={unavailable}
             aria-label={t('aria.delete')}
             title={t('aria.delete')}
           >

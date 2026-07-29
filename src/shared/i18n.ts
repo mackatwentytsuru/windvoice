@@ -89,7 +89,7 @@ const ja: Dict = {
     '音声入力したテキストを Windows のクリップボード履歴 (Win+V) に記録しません。macOS / Linux では無効。',
   'general.system': 'システム',
   'general.autoLaunch': 'OS起動時に自動起動',
-  'general.autoLaunchHelper': 'Windows / macOS のログイン時に WindVoice を自動で起動します。',
+  'general.autoLaunchHelper': 'OSへのログイン時に WindVoice を自動で起動します。',
   'general.updates': 'アップデート',
   'general.autoUpdate': '自動で更新を確認する',
   'general.autoUpdateHelper': '起動時と4時間ごとに GitHub Releases を確認し、更新があれば通知します。ダウンロードと再起動はクリックで実行します。',
@@ -128,6 +128,8 @@ const ja: Dict = {
   'general.testDictationRecording': '3秒録音中…',
   'general.testDictationHelper': 'ホットキーを使わずに3秒間録音し、カーソル位置に転写を貼り付けます。',
   'general.lastTranscript': '直近の転写:',
+  'general.quit': 'WindVoice を終了',
+  'general.quitHelper': '常駐プロセスを終了します。',
 
   // hotkeys page
   'hotkeys.title': 'ホットキー',
@@ -171,6 +173,8 @@ const ja: Dict = {
   'appModes.add': '追加',
   'appModes.empty': '登録がありません。',
   'appModes.noInstructions': '(指示なし)',
+  'appModes.waylandUnavailable':
+    'Wayland では前面アプリを取得できないため、アプリ別モードは利用できません。このセッションでは編集も無効です。',
 
   // history page
   'history.title': '履歴',
@@ -179,6 +183,8 @@ const ja: Dict = {
   'history.copy': 'コピー',
   'history.copied': 'コピー済み',
   'history.confirmClearAll': 'すべての履歴を削除しますか?',
+  'history.waylandAppUnavailable':
+    'Wayland では関連アプリ名を取得できないため、履歴には表示されません。',
 
   // first-run dialog
   'dialog.firstRun.title': 'WindVoice — 初回起動',
@@ -197,6 +203,10 @@ const ja: Dict = {
   'error.micUnavailable':
     'マイクから音声を取得できません。他のアプリ（Teams や Zoom など）がマイクを使用していないか確認し、Windows の入力デバイス設定を見直してください。',
   'error.audioNotSent': '音声をサーバーに送信できませんでした。ネットワーク接続を確認して、もう一度お試しください。',
+  'error.pasteCopiedManual':
+    '転写テキストをクリップボードにコピーしました。手動で貼り付けてください。',
+  'error.statusNotifierUnavailable':
+    '常駐アイコンを表示する仕組みが見つかりません。GNOME では gnome-shell-extension-appindicator パッケージ、または extensions.gnome.org の「AppIndicator and KStatusNotifierItem Support」をインストールして有効にすると、常駐アイコンが表示されます。拡張機能が無くても、WindVoice をもう一度起動すれば設定ウィンドウが開きます。',
 
   // aria / accessibility
   'aria.delete': '削除',
@@ -286,7 +296,7 @@ const en: Dict = {
     "Don't record dictated text in the Windows clipboard history (Win+V). No effect on macOS / Linux.",
   'general.system': 'System',
   'general.autoLaunch': 'Launch on login',
-  'general.autoLaunchHelper': 'Start WindVoice automatically when Windows / macOS signs in.',
+  'general.autoLaunchHelper': 'Start WindVoice automatically when you sign in to the operating system.',
   'general.updates': 'Updates',
   'general.autoUpdate': 'Automatically check for updates',
   'general.autoUpdateHelper': 'Check GitHub Releases on startup and every 4 hours, and notify you when an update is available. Download and restart happen on click.',
@@ -326,6 +336,8 @@ const en: Dict = {
   'general.testDictationHelper':
     'Record 3 seconds without using a hotkey, then paste the transcript at your cursor.',
   'general.lastTranscript': 'Last transcript:',
+  'general.quit': 'Quit WindVoice',
+  'general.quitHelper': 'Stop the resident WindVoice process.',
 
   // hotkeys page
   'hotkeys.title': 'Hotkeys',
@@ -371,6 +383,8 @@ const en: Dict = {
   'appModes.add': 'Add',
   'appModes.empty': 'No entries yet.',
   'appModes.noInstructions': '(no instructions)',
+  'appModes.waylandUnavailable':
+    'Per-app modes are unavailable on Wayland because the foreground application cannot be detected. Editing is disabled for this session.',
 
   // history page
   'history.title': 'History',
@@ -380,6 +394,8 @@ const en: Dict = {
   'history.copy': 'Copy',
   'history.copied': 'Copied',
   'history.confirmClearAll': 'Delete all history entries?',
+  'history.waylandAppUnavailable':
+    'Related application names cannot be detected on Wayland, so they are not shown in history.',
 
   // first-run dialog
   'dialog.firstRun.title': 'WindVoice — first run',
@@ -398,6 +414,10 @@ const en: Dict = {
   'error.micUnavailable':
     "Can't capture audio from the microphone. Check that no other app (e.g. Teams or Zoom) is using it, and review your input device in Windows sound settings.",
   'error.audioNotSent': "Couldn't send audio to the server. Check your network connection and try again.",
+  'error.pasteCopiedManual':
+    'The transcript was copied to the clipboard. Please paste it manually.',
+  'error.statusNotifierUnavailable':
+    'No system tray host was found. On GNOME, install and enable the gnome-shell-extension-appindicator package or “AppIndicator and KStatusNotifierItem Support” from extensions.gnome.org to show the resident icon. Even without the extension, launch WindVoice again to open the Settings window.',
 
   // aria / accessibility
   'aria.delete': 'Delete',

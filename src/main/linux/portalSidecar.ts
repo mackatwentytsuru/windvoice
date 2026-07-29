@@ -148,6 +148,17 @@ export class PortalSidecar {
     this.start();
   }
 
+  /**
+   * Re-arm transient failures for a new user action. A bounded supervision
+   * budget prevents background respawn loops, but reaching that budget must
+   * not make paste unavailable for the remainder of the app process.
+   */
+  retryForDictation(): void {
+    if (this.isReady() || this.denied || this.stopped) return;
+    this.respawns = 0;
+    if (!this.child && !this.restartTimer) this.start();
+  }
+
   start(): void {
     this.stopped = false;
     if (this.child) return;

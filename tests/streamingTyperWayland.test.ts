@@ -1,10 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const hoisted = vi.hoisted(() => ({
+  ready: true,
   pasteText: vi.fn(),
   snapshot: vi.fn(),
   setSelection: vi.fn(),
-  notify: vi.fn()
+  notify: vi.fn(),
+  copyForManualPaste: vi.fn()
 }));
 
 vi.mock('electron', () => ({
@@ -22,7 +24,7 @@ vi.mock('@main/linux/wayland', () => ({
 
 vi.mock('@main/linux/portalSidecar', () => ({
   portalSidecar: {
-    isReady: () => true,
+    isReady: () => hoisted.ready,
     pasteText: hoisted.pasteText,
     snapshot: hoisted.snapshot,
     setSelection: hoisted.setSelection
@@ -31,7 +33,10 @@ vi.mock('@main/linux/portalSidecar', () => ({
 
 vi.mock('@main/inject/typer', () => ({
   clipboardHasText: () => true,
-  notifyPasteFailed: hoisted.notify
+  notifyPasteFailed: hoisted.notify,
+  copyTextForManualPaste: hoisted.copyForManualPaste,
+  manualPasteMessage: () =>
+    'クリップボードにコピーしました。手動で貼り付けてください。'
 }));
 
 vi.mock('@main/inject/pasteTiming', () => ({
@@ -57,10 +62,12 @@ import { StreamingTyper } from '../src/main/inject/streamingTyper';
 describe('StreamingTyper Wayland lifecycle', () => {
   beforeEach(() => {
     vi.useFakeTimers();
+    hoisted.ready = true;
     hoisted.pasteText.mockReset();
     hoisted.snapshot.mockReset().mockResolvedValue({ ok: true, kind: 'empty' });
     hoisted.setSelection.mockReset().mockResolvedValue({ ok: true, uncertain: false });
     hoisted.notify.mockReset();
+    hoisted.copyForManualPaste.mockReset();
   });
 
   afterEach(() => {
@@ -88,6 +95,27 @@ describe('StreamingTyper Wayland lifecycle', () => {
     expect(hoisted.notify).toHaveBeenCalledWith(expect.stringContaining('streaming'));
   });
 
+  it('does not use the legacy path when the sidecar is unavailable and keeps the transcript', async () => {
+    hoisted.ready = false;
+    const typer = new StreamingTyper();
+
+    expect(typer.begin(true)).toBe(true);
+    typer.append('first ');
+    typer.append('second');
+    const ending = typer.end();
+    await vi.runAllTimersAsync();
+    await ending;
+
+    expect(hoisted.pasteText).not.toHaveBeenCalled();
+    expect(hoisted.copyForManualPaste).toHaveBeenLastCalledWith(
+      'first second',
+      false
+    );
+    expect(hoisted.notify).toHaveBeenCalledWith(
+      expect.stringContaining('手動で貼り付け')
+    );
+  });
+
   it('does not overwrite a non-text Wayland clipboard', async () => {
     hoisted.snapshot.mockResolvedValue({ ok: true, kind: 'non-text' });
     hoisted.pasteText.mockResolvedValue({
@@ -106,7 +134,7 @@ describe('StreamingTyper Wayland lifecycle', () => {
     expect(hoisted.notify).toHaveBeenCalledWith(expect.stringContaining('non-text'));
   });
 
-  it('restores a claimed selection even when injection failed', async () => {
+  it('leaves the transcript on a claimed selection when injection failed', async () => {
     hoisted.snapshot.mockResolvedValue({ ok: true, kind: 'text', text: 'OLD' });
     hoisted.pasteText.mockResolvedValue({
       ok: false,
@@ -125,7 +153,7 @@ describe('StreamingTyper Wayland lifecycle', () => {
     await vi.runAllTimersAsync();
     await ending;
 
-    expect(hoisted.setSelection).toHaveBeenCalledWith('OLD');
+    expect(hoisted.setSelection).toHaveBeenCalledWith('x'.repeat(200));
   });
 
   it('rejects begin while end is in progress, then accepts the next session', async () => {

@@ -3,6 +3,7 @@ import type { AudioInputDevice, Settings } from '../../shared/types';
 import type { ErrorReportPreview, UpdaterState } from '../../shared/ipc';
 import { UI_LANGS, type UiLang } from '../../shared/i18n';
 import { useI18n } from '../useI18n';
+import { generalSettingsVisibility } from '../platformCapabilities';
 
 interface Props {
   settings: Settings;
@@ -28,6 +29,7 @@ export function GeneralPage({ settings, update }: Props): JSX.Element {
   const [showReportPreview, setShowReportPreview] = useState(false);
   const [reportResult, setReportResult] = useState<string | null>(null);
   const [reportBusy, setReportBusy] = useState(false);
+  const settingVisibility = generalSettingsVisibility(window.windvoice.platform);
 
   async function checkForUpdate(): Promise<void> {
     setCheckingUpdate(true);
@@ -357,7 +359,9 @@ export function GeneralPage({ settings, update }: Props): JSX.Element {
         </label>
         <select
           id="insertion-method"
-          value={settings.insertion.method}
+          value={
+            settingVisibility.typeInsertion ? settings.insertion.method : 'paste'
+          }
           onChange={(e) =>
             void update({
               insertion: {
@@ -368,9 +372,15 @@ export function GeneralPage({ settings, update }: Props): JSX.Element {
           }
         >
           <option value="paste">{tPlatform('general.insertionPaste')}</option>
-          <option value="type">{t('general.insertionType')}</option>
+          {settingVisibility.typeInsertion && (
+            <option value="type">{t('general.insertionType')}</option>
+          )}
         </select>
-        <div className="helper" style={{ marginBottom: 8 }}>{t('general.insertionTypeHelper')}</div>
+        {settingVisibility.typeInsertion && (
+          <div className="helper" style={{ marginBottom: 8 }}>
+            {t('general.insertionTypeHelper')}
+          </div>
+        )}
 
         <label className="row" style={{ cursor: 'pointer' }}>
           <input
@@ -407,22 +417,26 @@ export function GeneralPage({ settings, update }: Props): JSX.Element {
         </select>
         <div className="helper" style={{ marginBottom: 8 }}>{t('general.pasteCompatHelper')}</div>
 
-        <label className="row" style={{ cursor: 'pointer' }}>
-          <input
-            type="checkbox"
-            checked={settings.insertion.excludeFromClipboardHistory}
-            onChange={(e) =>
-              void update({
-                insertion: {
-                  ...settings.insertion,
-                  excludeFromClipboardHistory: e.target.checked
+        {settingVisibility.clipboardHistoryExclusion && (
+          <>
+            <label className="row" style={{ cursor: 'pointer' }}>
+              <input
+                type="checkbox"
+                checked={settings.insertion.excludeFromClipboardHistory}
+                onChange={(e) =>
+                  void update({
+                    insertion: {
+                      ...settings.insertion,
+                      excludeFromClipboardHistory: e.target.checked
+                    }
+                  })
                 }
-              })
-            }
-          />
-          <span>{t('general.excludeClipboardHistory')}</span>
-        </label>
-        <div className="helper">{t('general.excludeClipboardHistoryHelper')}</div>
+              />
+              <span>{t('general.excludeClipboardHistory')}</span>
+            </label>
+            <div className="helper">{t('general.excludeClipboardHistoryHelper')}</div>
+          </>
+        )}
       </div>
 
       <div className="field" style={{ paddingTop: 12, borderTop: '1px solid var(--border)' }}>

@@ -140,7 +140,7 @@ export function App(): JSX.Element {
 
   return (
     <div className="layout">
-      <aside className="sidebar">
+      <aside className="sidebar" style={{ display: 'flex', flexDirection: 'column' }}>
         <h1>WindVoice</h1>
         <div style={{ marginLeft: 8, marginBottom: 16 }}>
           <span className={`status-pill ${status}`}>{statusLabel(status, t)}</span>
@@ -168,6 +168,17 @@ export function App(): JSX.Element {
             );
           })}
         </nav>
+        <div style={{ marginTop: 'auto', padding: '12px 8px 0' }}>
+          <button
+            type="button"
+            className="button-secondary"
+            style={{ width: '100%', color: 'var(--error)' }}
+            onClick={() => void window.windvoice.quit()}
+          >
+            {t('general.quit')}
+          </button>
+          <div className="helper">{t('general.quitHelper')}</div>
+        </div>
       </aside>
       <main className="main" role="tabpanel" aria-label={tabLabels[tab]}>
         <UpdaterBanner />

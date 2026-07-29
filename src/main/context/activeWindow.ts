@@ -9,6 +9,7 @@
 
 import { activeWindow } from 'get-windows';
 import { debug } from '@main/debug';
+import { isWaylandSession } from '@main/linux/wayland';
 
 export interface ActiveWindowInfo {
   /**
@@ -75,6 +76,10 @@ function withTimeout<T>(promise: Promise<T>, ms: number): Promise<Settled<T>> {
 }
 
 export async function getActiveWindow(): Promise<ActiveWindowInfo | null> {
+  // get-windows' Linux backend shells out to xprop/xwininfo. Those tools
+  // cannot see native Wayland windows, so skip doomed helper processes.
+  if (isWaylandSession()) return null;
+
   const now = Date.now();
   if (cache && cache.expiresAt > now) {
     return cache.value;

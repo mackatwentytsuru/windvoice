@@ -5,6 +5,7 @@ import { HistoryEntrySchema, type HistoryEntry } from '@shared/types';
 import { MAX_HISTORY } from '@shared/constants';
 import { IPC } from '@shared/ipc';
 import { debug } from '@main/debug';
+import { enforcePrivateFileMode } from '@main/store/privateMode';
 
 const MAX_TEXT_LEN = 64 * 1024;
 const FLUSH_DEBOUNCE_MS = 500;
@@ -147,6 +148,7 @@ class HistoryStore {
       defaults: { entries: [] },
       clearInvalidConfig: true
     });
+    enforcePrivateFileMode(this.store.path);
     this.cache = this.loadFromDisk();
   }
 
@@ -249,6 +251,7 @@ class HistoryStore {
     });
     try {
       this.store.set('entries', persisted);
+      enforcePrivateFileMode(this.store.path);
       // Clear `dirty` only after a successful write. If the write throws
       // we leave it set so the next scheduleFlush retries — otherwise the
       // in-memory cache would diverge from disk permanently (next add /

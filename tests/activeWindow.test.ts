@@ -4,13 +4,18 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 // without re-mocking. Tests reset it in beforeEach.
 const hoisted = vi.hoisted(() => {
   const state = {
-    activeWindow: vi.fn() as ReturnType<typeof vi.fn>
+    activeWindow: vi.fn() as ReturnType<typeof vi.fn>,
+    wayland: false
   };
   return state;
 });
 
 vi.mock('get-windows', () => ({
   activeWindow: hoisted.activeWindow
+}));
+
+vi.mock('@main/linux/wayland', () => ({
+  isWaylandSession: () => hoisted.wayland
 }));
 
 import {
@@ -21,6 +26,7 @@ import {
 describe('getActiveWindow', () => {
   beforeEach(() => {
     hoisted.activeWindow.mockReset();
+    hoisted.wayland = false;
     __resetActiveWindowCacheForTests();
   });
 
@@ -40,6 +46,14 @@ describe('getActiveWindow', () => {
       app: 'Code'
     });
     expect(hoisted.activeWindow).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns null on Wayland without invoking the X11-only get-windows backend', async () => {
+    hoisted.wayland = true;
+
+    await expect(getActiveWindow()).resolves.toBeNull();
+
+    expect(hoisted.activeWindow).not.toHaveBeenCalled();
   });
 
   it('returns null when get-windows resolves undefined', async () => {

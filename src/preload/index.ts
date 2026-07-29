@@ -106,6 +106,8 @@ const api = {
     unwrap<true>(ipcRenderer.invoke(IPC.DICTATION_START)).then(() => undefined),
   stop: (): Promise<void> =>
     unwrap<true>(ipcRenderer.invoke(IPC.DICTATION_STOP)).then(() => undefined),
+  quit: (): Promise<void> =>
+    unwrap<true>(ipcRenderer.invoke(IPC.APP_QUIT)).then(() => undefined),
 
   // status / transcript subscriptions
   onStatus: (cb: (status: DictationStatus) => void): (() => void) => {
@@ -179,6 +181,15 @@ const api = {
   copyText: (text: string): Promise<void> =>
     unwrap<true>(ipcRenderer.invoke(IPC.CLIPBOARD_WRITE, text)).then(() => undefined),
   platform: process.platform as 'darwin' | 'win32' | 'linux' | string,
+  sessionType:
+    process.platform === 'linux'
+      ? process.env['WINDVOICE_FORCE_X11'] === '1'
+        ? 'x11'
+        : process.env['WAYLAND_DISPLAY'] ||
+            process.env['XDG_SESSION_TYPE'] === 'wayland'
+          ? 'wayland'
+          : 'x11'
+      : 'other',
   onSettingsChanged: (cb: (settings: Settings) => void): (() => void) => {
     const handler = (_e: unknown, s: Settings): void => cb(s);
     ipcRenderer.on(IPC.SETTINGS_CHANGED, handler);

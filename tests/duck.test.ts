@@ -27,7 +27,7 @@ vi.mock('loudness', () => ({
   }
 }));
 
-import { AudioDuck, onDuckError } from '../src/main/audio/duck';
+import { AudioDuck } from '../src/main/audio/duck';
 
 describe('AudioDuck', () => {
   afterAll(() => {
@@ -91,13 +91,16 @@ describe('AudioDuck', () => {
     hoisted.getVolume.mockRejectedValueOnce(new Error('boom'));
     const duck = new AudioDuck();
     await expect(duck.duck(0.3)).resolves.toBeUndefined();
-    // restore is a no-op since duck never marked active
+    // The failed backend is disabled for the rest of this launch.
+    hoisted.getVolume.mockClear();
     hoisted.setVolume.mockClear();
+    await duck.duck(0.3);
     await duck.restore();
+    expect(hoisted.getVolume).not.toHaveBeenCalled();
     expect(hoisted.setVolume).not.toHaveBeenCalled();
   });
 
-  it('keeps state on failed restore so a later cycle restores the TRUE original', async () => {
+  it('self-disables after a backend restore failure', async () => {
     const duck = new AudioDuck();
     // First cycle: duck from 50 → 15, then a failing restore. State must be
     // preserved (active + originalVolume=50) so the lowered value is never
@@ -106,17 +109,16 @@ describe('AudioDuck', () => {
     expect(hoisted.state.volume).toBe(15);
     hoisted.setVolume.mockRejectedValueOnce(new Error('restore failed'));
     await duck.restore();
-    // restore failed: volume still lowered, but state is intact.
+    // restore failed: volume is still lowered, but the unsupported backend
+    // must not be called repeatedly for every future dictation.
     expect(hoisted.state.volume).toBe(15);
 
-    // A second duck() must be a no-op (still active), NOT re-save 15 as original.
+    hoisted.getVolume.mockClear();
+    hoisted.setVolume.mockClear();
     await duck.duck(0.3);
-    expect(hoisted.state.volume).toBe(15);
-
-    // A retried restore now succeeds and returns to the TRUE original (50).
     await duck.restore();
-    expect(hoisted.setVolume).toHaveBeenLastCalledWith(50);
-    expect(hoisted.state.volume).toBe(50);
+    expect(hoisted.getVolume).not.toHaveBeenCalled();
+    expect(hoisted.setVolume).not.toHaveBeenCalled();
   });
 
   describe('platform gating', () => {
@@ -166,48 +168,4 @@ describe('AudioDuck', () => {
     });
   });
 
-  describe('onDuckError', () => {
-    it('fires with phase "duck" when setVolume throws during ducking', async () => {
-      hoisted.setVolume.mockRejectedValueOnce(new Error('cannot set volume'));
-      const events: Array<{ phase: string; message: string }> = [];
-      const off = onDuckError((phase, message) => events.push({ phase, message }));
-      try {
-        const duck = new AudioDuck();
-        await duck.duck(0.3);
-        expect(events).toHaveLength(1);
-        expect(events[0]!.phase).toBe('duck');
-        expect(events[0]!.message).toContain('cannot set volume');
-      } finally {
-        off();
-      }
-    });
-
-    it('fires with phase "restore" when setVolume throws during restore', async () => {
-      const events: Array<{ phase: string; message: string }> = [];
-      const off = onDuckError((phase, message) => events.push({ phase, message }));
-      try {
-        const duck = new AudioDuck();
-        await duck.duck(0.3);
-        expect(events).toHaveLength(0);
-        // Now arrange the next setVolume call (restore) to fail.
-        hoisted.setVolume.mockRejectedValueOnce(new Error('restore failed'));
-        await duck.restore();
-        expect(events).toHaveLength(1);
-        expect(events[0]!.phase).toBe('restore');
-        expect(events[0]!.message).toContain('restore failed');
-      } finally {
-        off();
-      }
-    });
-
-    it('returns an unsubscribe function that detaches the listener', async () => {
-      const events: Array<{ phase: string; message: string }> = [];
-      const off = onDuckError((phase, message) => events.push({ phase, message }));
-      off();
-      hoisted.setVolume.mockRejectedValueOnce(new Error('boom'));
-      const duck = new AudioDuck();
-      await duck.duck(0.3);
-      expect(events).toHaveLength(0);
-    });
-  });
 });

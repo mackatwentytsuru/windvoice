@@ -2,6 +2,7 @@ import { BrowserWindow, screen } from 'electron';
 import path from 'node:path';
 import { is } from '@main/audio/env';
 import { IPC, type DictationStatus, type OverlayState } from '@shared/types';
+import { isWaylandSession } from '@main/linux/wayland';
 
 const WIDTH = 280;
 const HEIGHT = 56;
@@ -20,16 +21,21 @@ export class OverlayWindow {
 
   async init(preloadPath: string): Promise<void> {
     if (this.win) return;
-    const display = screen.getPrimaryDisplay();
-    const area = display.workArea;
-    const x = Math.round(area.x + (area.width - WIDTH) / 2);
-    const y = area.y + area.height - HEIGHT - BOTTOM_OFFSET;
+    const wayland = isWaylandSession();
+    let requestedPosition: { x: number; y: number } | undefined;
+    if (!wayland) {
+      const display = screen.getPrimaryDisplay();
+      const area = display.workArea;
+      requestedPosition = {
+        x: Math.round(area.x + (area.width - WIDTH) / 2),
+        y: area.y + area.height - HEIGHT - BOTTOM_OFFSET
+      };
+    }
 
     const win = new BrowserWindow({
       width: WIDTH,
       height: HEIGHT,
-      x,
-      y,
+      ...requestedPosition,
       show: false,
       frame: false,
       transparent: true,
@@ -49,16 +55,21 @@ export class OverlayWindow {
       }
     });
 
+    // xdg-shell gives clients no placement or stacking authority. Mutter may
+    // ignore these requests on native Wayland even though Electron reports
+    // the requested internal state; retain them for Windows, macOS, and X11.
     win.setAlwaysOnTop(true, 'screen-saver');
     win.setIgnoreMouseEvents(true, { forward: false });
     win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
 
     this.win = win;
 
-    const onDisplayChange = (): void => this.repositionToActiveDisplay();
-    screen.on('display-removed', onDisplayChange);
-    screen.on('display-metrics-changed', onDisplayChange);
-    this.displayListener = onDisplayChange;
+    if (!wayland) {
+      const onDisplayChange = (): void => this.repositionToActiveDisplay();
+      screen.on('display-removed', onDisplayChange);
+      screen.on('display-metrics-changed', onDisplayChange);
+      this.displayListener = onDisplayChange;
+    }
 
     if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
       await win.loadURL(`${process.env['ELECTRON_RENDERER_URL']}/overlay.html`);
@@ -94,7 +105,7 @@ export class OverlayWindow {
 
   private show(): void {
     if (!this.win || this.win.isDestroyed()) return;
-    this.repositionToActiveDisplay();
+    if (!isWaylandSession()) this.repositionToActiveDisplay();
     if (!this.win.isVisible()) this.win.showInactive();
   }
 

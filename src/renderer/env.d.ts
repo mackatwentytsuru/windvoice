@@ -28,6 +28,9 @@ declare global {
       setApiKey(key: string): Promise<void>;
       start(): Promise<void>;
       stop(): Promise<void>;
+      quit(): Promise<void>;
+      platform: 'darwin' | 'win32' | 'linux' | string;
+      sessionType: 'wayland' | 'x11' | 'other';
       onStatus(cb: (s: DictationStatus) => void): () => void;
       onTranscriptDelta(cb: (text: string) => void): () => void;
       onTranscriptFinal(cb: (text: string) => void): () => void;

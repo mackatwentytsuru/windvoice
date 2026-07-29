@@ -27,8 +27,12 @@ import { replacementsProcessor } from '@main/postprocess/replacements';
 import { fileTagsProcessor } from '@main/postprocess/fileTags';
 import { initAutoUpdater, onCheckDictationActive, notifyDictationIdle } from '@main/updater';
 import { applyAutoLaunch, onAutoLaunchError } from '@main/autoLaunch';
-import { onDuckError } from '@main/audio/duck';
-import { pasteText, recoverClipboardIfPending, setPasteFailureListener } from '@main/inject/typer';
+import {
+  pasteText,
+  recoverClipboardIfPending,
+  setPasteFailureListener,
+  setPasteLanguageProvider
+} from '@main/inject/typer';
 import { streamingTyper } from '@main/inject/streamingTyper';
 import { setAudioBackpressureListener } from '@main/realtime/client';
 import { flushHistory } from '@main/store/history';
@@ -43,6 +47,7 @@ import { debug } from '@main/debug';
 import { isWaylandSession } from '@main/linux/wayland';
 import { EvdevKeyboardMonitor } from '@main/hotkey/evdev';
 import { portalSidecar } from '@main/linux/portalSidecar';
+import { ensureStatusNotifierWatcher } from '@main/linux/statusNotifier';
 import { IPC } from '@shared/types';
 import { t } from '@shared/i18n';
 import { openExternalSafe } from '@main/util/openExternal';
@@ -59,6 +64,11 @@ let orchestrator: DictationOrchestrator | null = null;
 let lastAudioError: string | null = null;
 let shutdownRunning = false;
 let shutdownComplete = false;
+
+async function startDictation(): Promise<void> {
+  if (isWaylandSession()) portalSidecar.retryForDictation();
+  await orchestrator?.start();
+}
 
 // `broadcastToUiWindows` now lives in `@main/broadcast` and is shared with
 // `@main/ipc/handlers` so SETTINGS_CHANGED skips the hidden audio renderer
@@ -273,6 +283,7 @@ app.whenReady().then(async () => {
     setStatus('error');
     broadcastToUiWindows(IPC.SYSTEM_ERROR, { source: 'paste', message, kind: 'transient' });
   });
+  setPasteLanguageProvider(() => settingsStore.get().ui.uiLanguage);
 
   // MEDIUM-4: surface sustained audio backpressure (drops > threshold in a
   // 5s window). Until this listener existed the drops were debug-only, so
@@ -294,8 +305,9 @@ app.whenReady().then(async () => {
   // is not yet registered the call rejects with "No handler registered for
   // 'settings:get'" and the UI fails to load its initial state.
   registerIpc({
-    start: () => orchestrator?.start() ?? Promise.resolve(),
+    start: startDictation,
     stop: () => orchestrator?.stop() ?? Promise.resolve(),
+    quit: () => app.quit(),
     getLastAudioError: () => lastAudioError,
     onApiKeyChanged: async () => {
       // Clear any sticky formatter failure (bad-key / model-not-found):
@@ -325,6 +337,15 @@ app.whenReady().then(async () => {
   session.defaultSession.setPermissionRequestHandler((wc, permission, callback) => {
     if (permission === 'media') return callback(trustedMicIds.has(wc.id));
     callback(false);
+  });
+
+  await ensureStatusNotifierWatcher({
+    language: settingsStore.get().ui.uiLanguage,
+    notify: (payload) => {
+      setSetupWarning('tray', true);
+      broadcastToUiWindows(IPC.SYSTEM_ERROR, payload);
+    },
+    openSettings: createSettingsWindow
   });
 
   createTray({
@@ -406,7 +427,7 @@ app.whenReady().then(async () => {
   setActiveHotkeyManager(hotkeys);
   hotkeys.setBindings(settingsStore.get().hotkeys);
   hotkeys.on('start', () => {
-    void orchestrator?.start().catch((err) => debug('DICTATION', `hotkey start: ${err}`));
+    void startDictation().catch((err) => debug('DICTATION', `hotkey start: ${err}`));
   });
   hotkeys.on('stop', () => {
     void orchestrator?.stop().catch((err) => debug('DICTATION', `hotkey stop: ${err}`));
@@ -493,18 +514,9 @@ app.whenReady().then(async () => {
     void orchestrator.prewarmConnection();
   }
 
-  // Surface duck / auto-launch errors to stderr (visible in dev console).
-  // A future iteration could also show a tray balloon; keep simple for now.
-  // Forward background errors to the Settings UI so they don't vanish
-  // into stderr (which is invisible in packaged builds — M10).
-  onDuckError((phase, message) => {
-    debug('DUCK', `${phase}: ${message}`);
-    broadcastToUiWindows(IPC.SYSTEM_ERROR, {
-      source: 'duck',
-      message: `${phase}: ${message}`,
-      kind: 'transient'
-    });
-  });
+  // Duck backend failures are debug-only and self-disable the feature for
+  // this launch. ALSA installations without a Master control are an
+  // environmental capability gap, not an actionable user-facing error.
   onAutoLaunchError((message) => {
     debug('MAIN', `autoLaunch: ${message}`);
     broadcastToUiWindows(IPC.SYSTEM_ERROR, { source: 'autoLaunch', message, kind: 'setup' });

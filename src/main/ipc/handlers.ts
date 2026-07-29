@@ -10,6 +10,7 @@ import { broadcastToUiWindows } from '@main/broadcast';
 interface ManualTriggers {
   start: () => Promise<void> | void;
   stop: () => Promise<void> | void;
+  quit: () => Promise<void> | void;
   getLastAudioError: () => string | null;
   onApiKeyChanged: () => Promise<void> | void;
   onSettingsChanged: (next: Settings, prev: Settings) => void;
@@ -150,6 +151,17 @@ export function registerIpc(triggers: ManualTriggers): void {
     if (refusal) return refusal;
     try {
       await triggers.stop();
+      return { ok: true, value: true };
+    } catch (err) {
+      return { ok: false, error: errMsg(err) };
+    }
+  });
+
+  ipcMain.handle(IPC.APP_QUIT, async (event): Promise<IpcResult<true>> => {
+    const refusal = refuseUntrusted(event);
+    if (refusal) return refusal;
+    try {
+      await triggers.quit();
       return { ok: true, value: true };
     } catch (err) {
       return { ok: false, error: errMsg(err) };
