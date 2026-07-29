@@ -8,7 +8,14 @@ import { FnWatcher, FN_KEYCODE } from '@main/hotkey/fnwatcher';
 import { AudioBridge } from '@main/audio/bridge';
 import { OverlayWindow } from '@main/overlay/window';
 import { DictationOrchestrator } from '@main/dictation/orchestrator';
-import { createTray, setStatus, refreshTrayLanguage, onStatusChanged, setAccessibilityWarning } from '@main/tray';
+import {
+  createTray,
+  setStatus,
+  refreshTrayLanguage,
+  onStatusChanged,
+  setAccessibilityWarning,
+  setSetupWarning
+} from '@main/tray';
 import { registerIpc, setTrustedSettingsSender } from '@main/ipc/handlers';
 import { postProcessorPipeline } from '@main/postprocess/pipeline';
 import {
@@ -25,7 +32,12 @@ import { pasteText, recoverClipboardIfPending, setPasteFailureListener } from '@
 import { streamingTyper } from '@main/inject/streamingTyper';
 import { setAudioBackpressureListener } from '@main/realtime/client';
 import { flushHistory } from '@main/store/history';
-import { broadcastToUiWindows, setAudioWebContentsId } from '@main/broadcast';
+import {
+  broadcastToUiWindows,
+  clearStickySetupError,
+  replayStickySetupErrors,
+  setAudioWebContentsId
+} from '@main/broadcast';
 import { initErrorReporter } from '@main/report/githubReporter';
 import { debug } from '@main/debug';
 import { isWaylandSession } from '@main/linux/wayland';
@@ -82,6 +94,8 @@ let fnWatcher: FnWatcher | null = null;
 let evdevMonitor: EvdevKeyboardMonitor | null = null;
 let orchestrator: DictationOrchestrator | null = null;
 let lastAudioError: string | null = null;
+let shutdownRunning = false;
+let shutdownComplete = false;
 
 // `broadcastToUiWindows` now lives in `@main/broadcast` and is shared with
 // `@main/ipc/handlers` so SETTINGS_CHANGED skips the hidden audio renderer
@@ -139,6 +153,7 @@ async function createSettingsWindow(): Promise<BrowserWindow> {
   } else {
     await win.loadFile(path.join(__dirname, '../renderer/index.html'));
   }
+  replayStickySetupErrors(win.webContents);
   return win;
 }
 
@@ -193,11 +208,17 @@ function startHotkeysWithAccessibilityRecovery(): void {
 async function ensureApiKey(): Promise<void> {
   if (await secureStore.hasApiKey()) return;
   const lang = settingsStore.get().ui.uiLanguage;
+  const storageKey =
+    process.platform === 'darwin'
+      ? 'firstRun.apiKey.darwin'
+      : process.platform === 'win32'
+        ? 'firstRun.apiKey.win32'
+        : 'firstRun.apiKey.linux';
   await dialog.showMessageBox({
     type: 'info',
     title: t('dialog.firstRun.title', lang),
     message: t('dialog.firstRun.message', lang),
-    detail: t('dialog.firstRun.detail', lang),
+    detail: `${t('dialog.firstRun.detail', lang)}\n\n${t(storageKey, lang)}`,
     buttons: [t('dialog.firstRun.button', lang)]
   });
   await createSettingsWindow();
@@ -438,12 +459,19 @@ app.whenReady().then(async () => {
         'Cannot read keyboard devices — the global hotkey will not work. ' +
         'Add your user to the `input` group (`sudo usermod -aG input $USER`), then log out and back in.';
       debug('HOTKEY', message);
-      setAccessibilityWarning(true);
+      setSetupWarning('hotkey', true);
       broadcastToUiWindows(IPC.SYSTEM_ERROR, { source: 'hotkey', message, setup: true });
     });
     evdevMonitor.on('ready', (count) => {
       debug('HOTKEY', `evdev monitor ready (${count} keyboard device(s))`);
-      setAccessibilityWarning(false);
+      setSetupWarning('hotkey', false);
+      clearStickySetupError('hotkey');
+    });
+    evdevMonitor.on('unavailable', () => {
+      const message =
+        'Keyboard devices became unavailable — the global hotkey is paused while WindVoice reconnects.';
+      setSetupWarning('hotkey', true);
+      broadcastToUiWindows(IPC.SYSTEM_ERROR, { source: 'hotkey', message, setup: true });
     });
     evdevMonitor.start();
     // Start the portal sidecar up front so the one-time consent dialog
@@ -452,6 +480,7 @@ app.whenReady().then(async () => {
     // the clipboard capability too — see linux/portalSidecar.ts for why
     // Electron's clipboard cannot be used on Wayland.
     portalSidecar.setUnavailableListener((denied) => {
+      setSetupWarning('paste', true);
       broadcastToUiWindows(IPC.SYSTEM_ERROR, {
         source: 'paste',
         message: denied
@@ -461,6 +490,10 @@ app.whenReady().then(async () => {
             'locked at launch) — pasting will only reach X11 apps until it recovers.',
         setup: true
       });
+    });
+    portalSidecar.setReadyListener(() => {
+      setSetupWarning('paste', false);
+      clearStickySetupError('paste');
     });
     portalSidecar.start();
   } else {
@@ -552,7 +585,14 @@ app.on('window-all-closed', () => {
   // all need to stay alive until the user explicitly chooses Tray → Quit.
 });
 
-app.on('before-quit', () => {
+app.on('before-quit', (event) => {
+  // The second app.quit(), issued after the asynchronous barrier, must pass
+  // through without being prevented again.
+  if (shutdownComplete) return;
+  event.preventDefault();
+  if (shutdownRunning) return;
+  shutdownRunning = true;
+
   // Clear the accessibility-recovery poll first — otherwise the
   // interval can fire after the tray has been destroyed and call
   // systemPreferences.isTrustedAccessibilityClient on a teardown-
@@ -564,11 +604,34 @@ app.on('before-quit', () => {
   hotkeys?.stop();
   fnWatcher?.stop();
   evdevMonitor?.stop();
-  portalSidecar.stop();
-  orchestrator?.dispose();
-  audio?.destroy();
-  overlay?.destroy();
-  flushHistory();
+  void (async () => {
+    try {
+      // The streaming session owns the user's original clipboard snapshot.
+      // Keep the portal alive until its final restore has completed.
+      await streamingTyper.end();
+    } catch (err) {
+      debug(
+        'DICTATION',
+        `streaming shutdown restore failed: ${err instanceof Error ? err.message : String(err)}`
+      );
+    }
+
+    // Dispose the orchestrator while AudioBridge is still alive, then stop
+    // the sidecar → audio renderer → visible window in that order.
+    orchestrator?.dispose();
+    portalSidecar.stop();
+    audio?.destroy();
+    setAudioWebContentsId(null);
+    overlay?.destroy();
+    flushHistory();
+
+    shutdownComplete = true;
+    app.quit();
+  })().catch((err) => {
+    debug('MAIN', `shutdown barrier failed: ${err instanceof Error ? err.message : String(err)}`);
+    shutdownComplete = true;
+    app.quit();
+  });
 });
 
 process.on('unhandledRejection', (reason) => {

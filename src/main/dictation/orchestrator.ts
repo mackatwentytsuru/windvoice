@@ -272,12 +272,17 @@ export class DictationOrchestrator {
     // the keystroke-based 'type' method, which always inserts the final
     // transcript in one pass.
     if (settings.insertion.streaming && settings.insertion.method === 'paste') {
-      streamingTyper.begin(
+      this.streamingActive = streamingTyper.begin(
         settings.insertion.restoreClipboard,
         settings.insertion.pasteCompatibility,
         settings.insertion.excludeFromClipboardHistory
       );
-      this.streamingActive = true;
+      if (!this.streamingActive) {
+        debug(
+          'DICTATION',
+          'streaming insertion busy from prior session — using final paste for this cycle'
+        );
+      }
     }
 
     const { startCount } = this.audio.beginForwarding();

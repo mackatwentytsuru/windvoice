@@ -22,33 +22,97 @@ const TOKEN_FILE = '.portal-remotedesktop.json';
 const RESPAWN_DELAY_MS = 3000;
 const MAX_RESPAWNS = 5;
 
+export type PasteStage = 'snapshot' | 'claim' | 'inject' | 'restore';
+
+export interface PortalPasteResult {
+  ok: boolean;
+  claimed: boolean;
+  /** null means the request timed out/exited after dispatch, so injection is unknown. */
+  injected: boolean | null;
+  restored: boolean;
+  stage?: PasteStage;
+  error?: string;
+}
+
+export type PortalSnapshotResult =
+  | { ok: true; kind: 'text'; text: string }
+  | { ok: true; kind: 'empty' }
+  | { ok: true; kind: 'non-text' }
+  | { ok: false; error: string };
+
+export interface PortalMutationResult {
+  ok: boolean;
+  /** True when the operation may have reached the child before failure. */
+  uncertain: boolean;
+  error?: string;
+}
+
 interface SidecarReply {
   id?: number;
   ok?: boolean;
   error?: string;
-  text?: string | null;
+  text?: string;
+  kind?: 'text' | 'empty' | 'non-text';
   event?: string;
   clipboard?: boolean;
   code?: number;
   denied?: boolean;
   message?: string;
+  claimed?: boolean;
+  injected?: boolean;
+  restored?: boolean;
+  stage?: PasteStage;
+  /** Local-only marker added when a mutating request loses its child. */
+  uncertain?: boolean;
 }
 
 export type SidecarUnavailableListener = (denied: boolean) => void;
+export type SidecarReadyListener = () => void;
 
-class PortalSidecar {
+type SpawnSidecar = (
+  command: string,
+  args: string[],
+  options: { stdio: ['pipe', 'pipe', 'pipe'] }
+) => ChildProcessWithoutNullStreams;
+
+export interface PortalSidecarOptions {
+  spawnChild?: SpawnSidecar;
+  resolveScript?: () => string | null;
+}
+
+const MUTATING_OPS = new Set(['paste', 'set_selection', 'key_paste']);
+
+export class PortalSidecar {
   private child: ChildProcessWithoutNullStreams | null = null;
   private ready = false;
   private clipboard = false;
   private denied = false;
   private respawns = 0;
   private nextId = 1;
-  private pending = new Map<number, { resolve: (r: SidecarReply) => void; timer: NodeJS.Timeout }>();
+  private pending = new Map<
+    number,
+    {
+      resolve: (r: SidecarReply) => void;
+      timer: NodeJS.Timeout;
+      mutating: boolean;
+    }
+  >();
   private stdoutBuf = '';
   private onUnavailable: SidecarUnavailableListener | null = null;
+  private onReady: SidecarReadyListener | null = null;
   private restartTimer: NodeJS.Timeout | null = null;
   /** Set by stop(), cleared by start() — makes "stopped means stopped" hold. */
   private stopped = false;
+  private readonly spawnChild: SpawnSidecar;
+  private readonly resolveScript: () => string | null;
+
+  constructor(options: PortalSidecarOptions = {}) {
+    this.spawnChild =
+      options.spawnChild ??
+      ((command, args, spawnOptions) =>
+        spawn(command, args, spawnOptions) as ChildProcessWithoutNullStreams);
+    this.resolveScript = options.resolveScript ?? resolveSidecarScript;
+  }
 
   /** True once the session is up with the clipboard capability granted. */
   isReady(): boolean {
@@ -63,6 +127,10 @@ class PortalSidecar {
     this.onUnavailable = cb;
   }
 
+  setReadyListener(cb: SidecarReadyListener | null): void {
+    this.onReady = cb;
+  }
+
   /**
    * Force a fresh attempt, clearing the respawn budget and any prior
    * denial. Called when the environment changes in a way that can undo a
@@ -74,14 +142,16 @@ class PortalSidecar {
   restart(): void {
     this.respawns = 0;
     this.denied = false;
-    this.stop();
+    this.stopped = false;
+    this.cancelRestart();
+    this.teardownChild(this.child, 'sidecar restarting');
     this.start();
   }
 
   start(): void {
     this.stopped = false;
     if (this.child) return;
-    const script = resolveSidecarScript();
+    const script = this.resolveScript();
     if (!script) {
       debug('DICTATION', 'portal sidecar script not found in resources/native/');
       this.onUnavailable?.(false);
@@ -95,63 +165,89 @@ class PortalSidecar {
     }
     let child: ChildProcessWithoutNullStreams;
     try {
-      child = spawn('python3', [script, tokenPath], {
+      child = this.spawnChild('python3', [script, tokenPath], {
         stdio: ['pipe', 'pipe', 'pipe']
       });
     } catch (err) {
       debug('DICTATION', `portal sidecar spawn failed: ${err}`);
-      this.onUnavailable?.(false);
+      this.requestRespawn();
       return;
     }
     this.child = child;
+    this.ready = false;
+    this.clipboard = false;
+    this.stdoutBuf = '';
     // A write to a dead child's pipe surfaces as an ASYNC 'error' event, not
     // a synchronous throw from write() — without this listener an EPIPE
     // (sidecar exited between our paste call and Node noticing) becomes an
     // uncaughtException and takes the whole main process down.
     child.stdin.on('error', (err) => {
       debug('DICTATION', `portal sidecar stdin error: ${err.message}`);
+      this.onExit(child);
     });
     child.stdout.setEncoding('utf8');
-    child.stdout.on('data', (chunk: string) => this.onStdout(chunk));
+    child.stdout.on('data', (chunk: string) => this.onStdout(child, chunk));
     child.stderr.setEncoding('utf8');
     child.stderr.on('data', (chunk: string) => {
+      if (this.child !== child) return;
       debug('DICTATION', `portal sidecar stderr: ${chunk.trim().slice(0, 300)}`);
     });
     child.on('error', (err) => {
       debug('DICTATION', `portal sidecar error: ${err.message}`);
-      this.onExit();
+      this.onExit(child);
     });
     child.on('exit', (code) => {
       debug('DICTATION', `portal sidecar exited (${code})`);
-      this.onExit();
+      this.onExit(child);
     });
   }
 
+  /** Permanently stop until the next explicit start()/restart(). */
   stop(): void {
     this.stopped = true;
+    this.cancelRestart();
+    this.teardownChild(this.child, 'sidecar stopped');
+  }
+
+  /**
+   * Tear down only the current child. Unlike stop(), this does not set the
+   * permanent-stop flag and is therefore safe on bounded restart paths.
+   */
+  private teardownChild(
+    child: ChildProcessWithoutNullStreams | null,
+    reason: string
+  ): void {
+    if (!child || this.child !== child) return;
+    this.child = null;
+    this.ready = false;
+    this.clipboard = false;
+    this.stdoutBuf = '';
+    this.rejectAllPending(reason);
+    try {
+      child.kill();
+    } catch {
+      /* already gone */
+    }
+  }
+
+  private cancelRestart(): void {
     if (this.restartTimer) {
       clearTimeout(this.restartTimer);
       this.restartTimer = null;
     }
-    const c = this.child;
-    this.child = null;
-    this.ready = false;
-    this.rejectAllPending('sidecar stopped');
-    if (c) {
-      try {
-        c.kill();
-      } catch {
-        /* already gone */
-      }
-    }
   }
 
-  private onExit(): void {
-    if (!this.child) return; // already handled by stop()
-    this.child = null;
-    this.ready = false;
-    this.rejectAllPending('sidecar exited');
-    if (this.denied) return; // no point relaunching into another denial
+  private onExit(child: ChildProcessWithoutNullStreams): void {
+    // restart() can replace A with B before A's delayed exit/error arrives.
+    // Never let an obsolete event detach or respawn over the current child.
+    if (this.child !== child) return;
+    this.teardownChild(child, 'sidecar exited');
+    if (this.stopped || this.denied) return;
+    this.requestRespawn();
+  }
+
+  private requestRespawn(): void {
+    if (this.stopped || this.denied) return;
     if (this.respawns >= MAX_RESPAWNS) {
       debug('DICTATION', 'portal sidecar gave up after repeated exits');
       this.onUnavailable?.(false);
@@ -167,7 +263,7 @@ class PortalSidecar {
    * deliberate stop) spawns a stray python during teardown.
    */
   private scheduleRestart(): void {
-    if (this.restartTimer) return;
+    if (this.restartTimer || this.stopped) return;
     this.restartTimer = setTimeout(() => {
       this.restartTimer = null;
       if (this.stopped) return;
@@ -179,12 +275,13 @@ class PortalSidecar {
   private rejectAllPending(reason: string): void {
     for (const [, p] of this.pending) {
       clearTimeout(p.timer);
-      p.resolve({ ok: false, error: reason });
+      p.resolve({ ok: false, error: reason, uncertain: p.mutating });
     }
     this.pending.clear();
   }
 
-  private onStdout(chunk: string): void {
+  private onStdout(child: ChildProcessWithoutNullStreams, chunk: string): void {
+    if (this.child !== child) return;
     this.stdoutBuf += chunk;
     let idx: number;
     while ((idx = this.stdoutBuf.indexOf('\n')) !== -1) {
@@ -199,7 +296,7 @@ class PortalSidecar {
         continue;
       }
       if (msg.event) {
-        this.onEvent(msg);
+        this.onEvent(child, msg);
         continue;
       }
       if (typeof msg.id === 'number') {
@@ -213,29 +310,27 @@ class PortalSidecar {
     }
   }
 
-  private onEvent(msg: SidecarReply): void {
+  private onEvent(child: ChildProcessWithoutNullStreams, msg: SidecarReply): void {
+    if (this.child !== child) return;
     switch (msg.event) {
       case 'ready':
         this.ready = true;
         this.clipboard = msg.clipboard === true;
         this.respawns = 0;
         debug('DICTATION', `portal sidecar ready (clipboard=${this.clipboard})`);
-        if (!this.clipboard) this.onUnavailable?.(false);
+        if (this.clipboard) this.onReady?.();
+        else this.onUnavailable?.(false);
         break;
       case 'failed':
         this.denied = msg.denied === true;
         debug('DICTATION', `portal sidecar session failed (code=${msg.code} denied=${this.denied})`);
-        this.stop();
+        this.teardownChild(child, 'sidecar session failed');
         // Transient failures happen (portal restarting after a crash, a
         // concurrent session teardown racing our restore_token). Retry with
         // the shared respawn budget before declaring the backend gone —
         // only a user denial is final.
-        if (!this.denied && this.respawns < MAX_RESPAWNS) {
-          this.respawns += 1;
-          this.scheduleRestart();
-        } else {
-          this.onUnavailable?.(this.denied);
-        }
+        if (!this.denied) this.requestRespawn();
+        else this.onUnavailable?.(true);
         break;
       case 'closed':
         // Compositor revoked the session (settings change, portal restart).
@@ -243,15 +338,9 @@ class PortalSidecar {
         // budget as other restarts. An unbounded loop here would spin every
         // few seconds forever, and on backends without persist_mode support
         // each cycle raises a fresh consent dialog (dialog storm).
-        this.stop();
-        if (this.respawns < MAX_RESPAWNS) {
-          this.respawns += 1;
-          debug('DICTATION', 'portal sidecar session closed by compositor — restarting');
-          this.scheduleRestart();
-        } else {
-          debug('DICTATION', 'portal sidecar session closed repeatedly — giving up');
-          this.onUnavailable?.(false);
-        }
+        this.teardownChild(child, 'sidecar session closed');
+        debug('DICTATION', 'portal sidecar session closed by compositor — restarting');
+        this.requestRespawn();
         break;
       case 'transfer_error':
       case 'protocol_error':
@@ -264,59 +353,107 @@ class PortalSidecar {
 
   private send(op: string, fields: Record<string, unknown>, timeoutMs: number): Promise<SidecarReply> {
     const child = this.child;
+    const mutating = MUTATING_OPS.has(op);
     if (!child || !this.ready) {
-      return Promise.resolve({ ok: false, error: 'sidecar not ready' });
+      return Promise.resolve({ ok: false, error: 'sidecar not ready', uncertain: false });
     }
     const id = this.nextId++;
     return new Promise<SidecarReply>((resolve) => {
       const timer = setTimeout(() => {
         this.pending.delete(id);
-        resolve({ ok: false, error: `${op} timed out after ${timeoutMs}ms` });
+        resolve({
+          ok: false,
+          error: `${op} timed out after ${timeoutMs}ms`,
+          uncertain: mutating
+        });
+        // A timed-out mutating request may still execute later. Killing its
+        // owning child is the only available cancellation boundary.
+        if (mutating && this.child === child) {
+          this.teardownChild(child, `${op} timed out`);
+          this.requestRespawn();
+        }
       }, timeoutMs);
-      this.pending.set(id, { resolve, timer });
+      this.pending.set(id, { resolve, timer, mutating });
       try {
         child.stdin.write(JSON.stringify({ id, op, ...fields }) + '\n');
       } catch (err) {
         this.pending.delete(id);
         clearTimeout(timer);
-        resolve({ ok: false, error: String(err) });
+        resolve({ ok: false, error: String(err), uncertain: mutating });
+        if (mutating && this.child === child) {
+          this.teardownChild(child, `${op} write failed`);
+          this.requestRespawn();
+        }
       }
     });
   }
 
   /**
-   * Full Wayland paste sequence. Returns true on success; on false the
-   * caller should fall back to the legacy clipboard+XTest path (which at
-   * least reaches XWayland windows) and surface a paste failure.
+   * Full Wayland paste sequence with stage-aware delivery state.
    */
   async pasteText(
     text: string,
     restore: boolean,
     settleMs: number,
     restoreMs: number
-  ): Promise<boolean> {
+  ): Promise<PortalPasteResult> {
     const budget = settleMs + restoreMs + 15_000;
     const r = await this.send('paste', { text, restore, settleMs, restoreMs }, budget);
     if (!r.ok) debug('DICTATION', `portal sidecar paste failed: ${r.error}`);
-    return r.ok === true;
+    if (r.uncertain) {
+      return {
+        ok: false,
+        claimed: r.claimed === true,
+        injected: null,
+        restored: false,
+        stage: r.stage ?? 'inject',
+        error: r.error
+      };
+    }
+    const injected = r.injected === true;
+    return {
+      // The protocol defines successful delivery by injection, even when
+      // the later clipboard restore failed.
+      ok: injected,
+      claimed: r.claimed === true,
+      injected,
+      restored: r.restored === true,
+      ...(r.stage ? { stage: r.stage } : {}),
+      ...(r.error ? { error: r.error } : {})
+    };
   }
 
-  /** Current clipboard text (null when non-text/empty/unreadable). */
-  async snapshot(): Promise<string | null> {
+  /** Current clipboard state, preserving empty vs non-text distinction. */
+  async snapshot(): Promise<PortalSnapshotResult> {
     const r = await this.send('snapshot', {}, 5000);
-    return r.ok && typeof r.text === 'string' ? r.text : null;
+    if (!r.ok) return { ok: false, error: r.error ?? 'snapshot failed' };
+    if (r.kind === 'text' && typeof r.text === 'string') {
+      return { ok: true, kind: 'text', text: r.text };
+    }
+    if (r.kind === 'empty' || r.kind === 'non-text') {
+      return { ok: true, kind: r.kind };
+    }
+    return { ok: false, error: 'invalid snapshot response' };
   }
 
   /** Claim the selection with `text` without injecting anything. */
-  async setSelection(text: string): Promise<boolean> {
+  async setSelection(text: string): Promise<PortalMutationResult> {
     const r = await this.send('set_selection', { text }, 5000);
-    return r.ok === true;
+    return {
+      ok: r.ok === true,
+      uncertain: r.uncertain === true,
+      ...(r.error ? { error: r.error } : {})
+    };
   }
 
   /** Inject the Ctrl+V chord only (legacy-path fallback injection). */
-  async keyPaste(): Promise<boolean> {
+  async keyPaste(): Promise<PortalMutationResult> {
     const r = await this.send('key_paste', {}, 10_000);
-    return r.ok === true;
+    return {
+      ok: r.ok === true,
+      uncertain: r.uncertain === true,
+      ...(r.error ? { error: r.error } : {})
+    };
   }
 }
 

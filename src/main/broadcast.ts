@@ -6,11 +6,12 @@
 // Centralize the rule here and let each subsystem register the audio
 // renderer's webContents id once at startup.
 
-import { BrowserWindow } from 'electron';
+import { BrowserWindow, type WebContents } from 'electron';
 import { reportError } from '@main/report/githubReporter';
 import { IPC } from '@shared/ipc';
 
 let audioWebContentsId: number | null = null;
+const stickySetupErrors = new Map<string, unknown>();
 
 /**
  * Register (or clear) the hidden audio renderer's webContents id. Called
@@ -43,6 +44,8 @@ export function broadcastToUiWindows(channel: string, payload: unknown): void {
     // Show the banner but do not file a GitHub issue for it (issues #72/#75
     // were auto-filed noise of this kind).
     if (p?.setup === true) {
+      const source = typeof p.source === 'string' ? p.source : 'setup';
+      stickySetupErrors.set(source, payload);
       broadcastOnly(channel, payload);
       return;
     }
@@ -55,6 +58,19 @@ export function broadcastToUiWindows(channel: string, payload: unknown): void {
     if (typeof p?.message === 'string') reportError(source, p.message);
   }
   broadcastOnly(channel, payload);
+}
+
+/** Clear one recovered setup error, or all sticky errors in tests/teardown. */
+export function clearStickySetupError(source?: string): void {
+  if (source === undefined) stickySetupErrors.clear();
+  else stickySetupErrors.delete(source);
+}
+
+/** Replay setup guidance after a Settings renderer has installed IPC listeners. */
+export function replayStickySetupErrors(target: Pick<WebContents, 'send'>): void {
+  for (const payload of stickySetupErrors.values()) {
+    target.send(IPC.SYSTEM_ERROR, payload);
+  }
 }
 
 function broadcastOnly(channel: string, payload: unknown): void {

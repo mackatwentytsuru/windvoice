@@ -55,6 +55,7 @@ describe('i18n parity', () => {
     'general.insertionPaste.win32',
     'firstRun.apiKey.darwin',
     'firstRun.apiKey.win32',
+    'firstRun.apiKey.linux',
     'error.apiKeyInvalid',
     'error.secureStoreUnavailable',
     'hotkeys.duplicate',

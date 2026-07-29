@@ -58,6 +58,12 @@ chmod +x WindVoice-*.AppImage
 ./WindVoice-*.AppImage
 ```
 
+Wayland での貼り付けには Python サイドカー用の `python3` と PyGObject が必要です。`.deb` では `python3` / `python3-gi` が依存関係として自動導入されますが、AppImage ではホスト側に別途インストールしてください。
+
+- Debian / Ubuntu: `python3`, `python3-gi`
+- Fedora: `python3`, `python3-gobject`
+- Arch Linux: `python`, `python-gobject`
+
 初回セットアップ (Linux のみ):
 
 1. **グローバルホットキーの権限** — キーボードイベントは evdev (`/dev/input`) から読むため、`input` グループへの参加が必要:
@@ -68,7 +74,11 @@ chmod +x WindVoice-*.AppImage
 
    その後 **ログアウト → ログイン** (グループ変更の反映に必須)。
 
+   `input` グループに参加すると、そのユーザー権限で動く任意のプロセスがパスワードを含むすべてのキー入力を読めるようになります。信頼できないプログラムが動く環境では推奨しません。
+
 2. **Wayland の貼り付け許可** — Wayland セッションでは Ctrl+V 合成に XDG RemoteDesktop ポータルを使用します。初回起動時に表示されるリモートデスクトップの許可ダイアログを承認してください (承認は保存され、次回以降は表示されません)。誤って拒否した場合は 設定 → アプリ → リモートデスクトップ から再許可して WindVoice を再起動。
+
+   権限を取り消すには、GNOME の「設定」→「アプリ」→「WindVoice」でリモートデスクトップ権限を無効にし、WindVoice を終了してから `~/.config/windvoice/.portal-remotedesktop.json` を削除してください。次回起動時には再度許可が求められます。
 
 3. API キーはシステムのキーリング (GNOME Keyring / KWallet, libsecret 経由) に保存されます。
 

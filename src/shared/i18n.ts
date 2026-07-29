@@ -33,6 +33,7 @@ const ja: Dict = {
   'tray.settings': '設定…',
   'tray.quit': '終了',
   'tray.accessibilityWarning': '⚠ アクセシビリティ権限が未許可 — クリックして開く',
+  'tray.setupWarning': '⚠ Linux の設定が必要です — クリックして確認',
 
   // overlay
   'overlay.listening': '録音中',
@@ -167,7 +168,7 @@ const ja: Dict = {
   'dialog.firstRun.title': 'WindVoice — 初回起動',
   'dialog.firstRun.message': 'OpenAI API キーが未設定です。',
   'dialog.firstRun.detail':
-    '設定画面を開き、API キー欄に OpenAI API キーを貼り付けて保存してください。\n\nキーは Windows 資格情報マネージャー (keytar) に保存されます。',
+    '設定画面を開き、API キー欄に OpenAI API キーを貼り付けて保存してください。',
   'dialog.firstRun.button': '設定を開く',
   'firstRun.apiKey.darwin': 'macOS Keychain に保存',
   'firstRun.apiKey.win32': 'Windows 資格情報マネージャに保存',
@@ -212,6 +213,7 @@ const en: Dict = {
   'tray.settings': 'Settings...',
   'tray.quit': 'Quit',
   'tray.accessibilityWarning': '⚠ Accessibility not granted — click to open',
+  'tray.setupWarning': '⚠ Linux setup required — click to review',
 
   // overlay
   'overlay.listening': 'Listening',
@@ -351,7 +353,7 @@ const en: Dict = {
   'dialog.firstRun.title': 'WindVoice — first run',
   'dialog.firstRun.message': 'No OpenAI API key configured.',
   'dialog.firstRun.detail':
-    'Open the settings window, paste your OpenAI API key in the API Key field, and save.\n\nThe key is stored in the Windows Credential Manager (via keytar).',
+    'Open the settings window, paste your OpenAI API key in the API Key field, and save.',
   'dialog.firstRun.button': 'Open Settings',
   'firstRun.apiKey.darwin': 'Saved to macOS Keychain',
   'firstRun.apiKey.win32': 'Saved to Windows Credential Manager',

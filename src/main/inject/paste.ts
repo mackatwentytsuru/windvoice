@@ -21,8 +21,13 @@ import { portalSidecar } from '@main/linux/portalSidecar';
  */
 export async function sendPasteKeystroke(): Promise<void> {
   if (isWaylandSession() && portalSidecar.isReady()) {
-    const ok = await portalSidecar.keyPaste();
-    if (ok) return;
+    const result = await portalSidecar.keyPaste();
+    if (result.ok) return;
+    if (result.uncertain) {
+      // The child is recycled by PortalSidecar on timeout/exit. Do not add
+      // an XTest injection while the first Ctrl+V may already have landed.
+      throw new Error(result.error ?? 'Wayland portal key injection outcome is unknown');
+    }
     debug('DICTATION', 'portal key injection failed, falling back to XTest');
     // XTest below reaches XWayland windows only — better than nothing.
   }

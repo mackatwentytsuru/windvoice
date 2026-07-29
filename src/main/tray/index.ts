@@ -6,7 +6,7 @@ import { settingsStore } from '@main/store/settings';
 
 let tray: Tray | null = null;
 let bindings: TrayBindings | null = null;
-let accessibilityWarning = false;
+const setupWarnings = new Set<string>();
 
 /**
  * Candidate on-disk locations for a bundled resource icon.
@@ -62,8 +62,14 @@ export interface TrayBindings {
 }
 
 export function setAccessibilityWarning(needsGrant: boolean): void {
-  if (accessibilityWarning === needsGrant) return;
-  accessibilityWarning = needsGrant;
+  setSetupWarning('accessibility', needsGrant);
+}
+
+export function setSetupWarning(source: string, active: boolean): void {
+  const changed = active ? !setupWarnings.has(source) : setupWarnings.has(source);
+  if (!changed) return;
+  if (active) setupWarnings.add(source);
+  else setupWarnings.delete(source);
   if (tray) {
     tray.setToolTip(statusLabel(currentStatus));
     refreshMenu();
@@ -125,12 +131,14 @@ function refreshMenu(): void {
   const template: Electron.MenuItemConstructorOptions[] = [
     { label: statusLabel(currentStatus), enabled: false }
   ];
-  if (accessibilityWarning && bindings.openAccessibility) {
+  if (setupWarnings.size > 0) {
+    const accessibility = setupWarnings.has('accessibility') && bindings.openAccessibility;
     template.push(
       { type: 'separator' },
       {
-        label: t('tray.accessibilityWarning', lang),
-        click: () => bindings?.openAccessibility?.()
+        label: t(accessibility ? 'tray.accessibilityWarning' : 'tray.setupWarning', lang),
+        click: () =>
+          accessibility ? bindings?.openAccessibility?.() : bindings?.openSettings()
       }
     );
   }

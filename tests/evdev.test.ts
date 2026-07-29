@@ -102,4 +102,3 @@ describe('parseKeyboardEventNodes', () => {
     expect(parseKeyboardEventNodes('')).toEqual([]);
   });
 });
-

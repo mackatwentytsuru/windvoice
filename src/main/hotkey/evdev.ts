@@ -11,7 +11,7 @@
 // Requirements: read access to /dev/input/event* — on virtually every
 // distribution that means the user must be a member of the `input` group
 // (`sudo usermod -aG input $USER` + re-login). When no device can be opened
-// the monitor emits `permission-denied` exactly once so the caller can
+// the monitor emits `permission-denied` once per unavailable episode so the caller can
 // surface setup instructions; it keeps watching /dev/input and recovers
 // automatically once permissions appear (e.g. after re-login the app's
 // autostart instance can open the devices immediately).
@@ -86,6 +86,8 @@ export interface EvdevMonitorEvents {
   key: (e: EvdevKeyEvent) => void;
   /** No readable keyboard device — user is likely missing `input` group membership. */
   'permission-denied': () => void;
+  /** A previously-ready monitor lost its last readable device. */
+  unavailable: () => void;
   /** At least one keyboard device opened successfully. */
   ready: (deviceCount: number) => void;
 }
@@ -141,7 +143,7 @@ export function parseInputEvents(
 export class EvdevKeyboardMonitor extends EventEmitter {
   private streams = new Map<string, fs.ReadStream>();
   private remainders = new Map<string, Buffer>();
-  private held = new Set<number>();
+  private heldByDevice = new Map<string, Set<number>>();
   private watcher: fs.FSWatcher | null = null;
   private rescanTimer: NodeJS.Timeout | null = null;
   private started = false;
@@ -174,7 +176,8 @@ export class EvdevKeyboardMonitor extends EventEmitter {
     for (const [, stream] of this.streams) stream.destroy();
     this.streams.clear();
     this.remainders.clear();
-    this.held.clear();
+    this.heldByDevice.clear();
+    this.readyEmitted = false;
   }
 
   isAnyDeviceOpen(): boolean {
@@ -203,9 +206,8 @@ export class EvdevKeyboardMonitor extends EventEmitter {
     // Close streams for devices that disappeared.
     for (const [node, stream] of this.streams) {
       if (!nodes.includes(node)) {
+        this.removeDevice(node, stream, false);
         stream.destroy();
-        this.streams.delete(node);
-        this.remainders.delete(node);
       }
     }
     let denied = 0;
@@ -219,20 +221,13 @@ export class EvdevKeyboardMonitor extends EventEmitter {
         stream.on('data', (chunk) => this.onChunk(node, chunk as Buffer));
         stream.on('error', (err) => {
           debug('HOTKEY', `evdev: ${node} stream error: ${err}`);
+          this.removeDevice(node, stream, true);
           stream.destroy();
-          this.streams.delete(node);
-          this.remainders.delete(node);
         });
         stream.on('close', () => {
-          this.streams.delete(node);
-          this.remainders.delete(node);
-          // A keyboard that disappears mid-keypress (unplugged, Bluetooth
-          // drop, suspend) never delivers its key-up, so any code it left
-          // in `held` would stay set forever — a permanently "held" Ctrl
-          // makes untilAllModifiersUp time out on every paste and stops
-          // exact-modifier bindings from ever matching again.
-          this.held.clear();
+          this.removeDevice(node, stream, true);
         });
+        this.heldByDevice.set(node, new Set());
         this.streams.set(node, stream);
         debug('HOTKEY', `evdev: reading ${node}`);
       } catch (err) {
@@ -244,6 +239,7 @@ export class EvdevKeyboardMonitor extends EventEmitter {
     if (this.streams.size > 0) {
       if (!this.readyEmitted) {
         this.readyEmitted = true;
+        this.permissionDeniedEmitted = false;
         this.emit('ready', this.streams.size);
       }
     } else if (denied > 0 && !this.permissionDeniedEmitted) {
@@ -253,27 +249,72 @@ export class EvdevKeyboardMonitor extends EventEmitter {
   }
 
   private onChunk(node: string, chunk: Buffer): void {
+    if (!this.heldByDevice.has(node)) return;
     const prev = this.remainders.get(node);
     const buf = prev && prev.length > 0 ? Buffer.concat([prev, chunk]) : chunk;
-    const rest = parseInputEvents(buf, (code, value) => this.onKeyEvent(code, value));
+    const rest = parseInputEvents(buf, (code, value) => this.onKeyEvent(node, code, value));
     this.remainders.set(node, Buffer.from(rest));
   }
 
-  private onKeyEvent(code: number, value: number): void {
+  private removeDevice(node: string, stream: fs.ReadStream, rescan: boolean): void {
+    if (this.streams.get(node) !== stream) return;
+    const released = this.heldByDevice.get(node) ?? new Set<number>();
+    this.streams.delete(node);
+    this.remainders.delete(node);
+    this.heldByDevice.delete(node);
+
+    // Synthesize releases only for keys no other keyboard still holds.
+    // This keeps HotkeyManager's own heldDown state in sync on unplug.
+    for (const code of released) {
+      if (!this.isHeld(code)) this.emitKey(code, false, 0);
+    }
+
+    if (this.started && this.streams.size === 0 && this.readyEmitted) {
+      this.readyEmitted = false;
+      this.emit('unavailable');
+    }
+    if (rescan) this.scheduleRescan();
+  }
+
+  private isHeld(code: number): boolean {
+    for (const held of this.heldByDevice.values()) {
+      if (held.has(code)) return true;
+    }
+    return false;
+  }
+
+  private currentModifiers(): EvdevModifiers {
+    return {
+      ctrl: this.isHeld(EV_LEFTCTRL) || this.isHeld(EV_RIGHTCTRL),
+      alt: this.isHeld(EV_LEFTALT) || this.isHeld(EV_RIGHTALT),
+      shift: this.isHeld(EV_LEFTSHIFT) || this.isHeld(EV_RIGHTSHIFT),
+      meta: this.isHeld(EV_LEFTMETA) || this.isHeld(EV_RIGHTMETA)
+    };
+  }
+
+  private onKeyEvent(node: string, code: number, value: number): void {
     // value: 0 = release, 1 = press, 2 = auto-repeat. Auto-repeat is
     // forwarded as a keydown — mirroring uiohook, whose repeats HotkeyManager
     // already de-bounces (heldDown / toggleHeld guards).
+    const held = this.heldByDevice.get(node);
+    if (!held) return;
     const down = value !== 0;
-    if (value !== 2) {
-      if (down) this.held.add(code);
-      else this.held.delete(code);
+    if (value === 2) {
+      this.emitKey(code, true, value);
+      return;
     }
-    const modifiers: EvdevModifiers = {
-      ctrl: this.held.has(EV_LEFTCTRL) || this.held.has(EV_RIGHTCTRL),
-      alt: this.held.has(EV_LEFTALT) || this.held.has(EV_RIGHTALT),
-      shift: this.held.has(EV_LEFTSHIFT) || this.held.has(EV_RIGHTSHIFT),
-      meta: this.held.has(EV_LEFTMETA) || this.held.has(EV_RIGHTMETA)
-    };
+    const wasDown = this.isHeld(code);
+    if (down) held.add(code);
+    else held.delete(code);
+    const isDown = this.isHeld(code);
+    // Multiple keyboards can report the same key. Only forward the global
+    // up/down transition so releasing B cannot release a key still held on A.
+    if (wasDown === isDown) return;
+    this.emitKey(code, isDown, value);
+  }
+
+  private emitKey(code: number, down: boolean, value: number): void {
+    const modifiers = this.currentModifiers();
     if (isDebug('HOTKEY')) {
       debug('HOTKEY', `evdev ${down ? 'down' : 'up  '} code=${code} value=${value}`);
     }

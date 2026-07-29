@@ -230,14 +230,33 @@ export async function pasteText(
       if (hkmW) await hkmW.untilAllModifiersUp(600);
       hkmW?.suppressFor(40);
       debug('DICTATION', `wayland paste: sidecar path (len=${text.length} restore=${restoreClipboard})`);
-      const ok = await portalSidecar.pasteText(
+      const result = await portalSidecar.pasteText(
         text,
         restoreClipboard,
         timing.settleMs,
         timing.restoreDelayMs
       );
-      debug('DICTATION', `wayland paste: sidecar result ok=${ok}`);
-      if (ok) return;
+      debug(
+        'DICTATION',
+        `wayland paste: sidecar result ok=${result.ok} injected=${String(result.injected)} restored=${result.restored}`
+      );
+      if (result.injected === true) {
+        // Injection is the delivery boundary. A later restore failure must
+        // never cause a second paste of the same transcript.
+        if (restoreClipboard && !result.restored && result.stage === 'restore') {
+          notifyPasteFailed(`Wayland clipboard restore failed: ${result.error ?? 'unknown error'}`);
+        }
+        return;
+      }
+      if (result.injected === null) {
+        // Timeout/child loss after dispatch is an indeterminate delivery:
+        // the sidecar has been recycled, but the target may already have
+        // received Ctrl+V. Any fallback here risks duplicate insertion.
+        notifyPasteFailed(
+          `Wayland portal paste outcome is unknown — no fallback was attempted: ${result.error ?? 'request interrupted'}`
+        );
+        return;
+      }
       notifyPasteFailed('Wayland portal paste failed — falling back to X11-only paste');
       // fall through to the legacy path (reaches XWayland windows only)
     } else {

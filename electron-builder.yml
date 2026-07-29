@@ -97,9 +97,11 @@ linux:
   synopsis: Voice dictation powered by OpenAI Realtime API
   artifactName: WindVoice-${version}-${arch}.${ext}
 deb:
-  # keytar dlopens libsecret at runtime; the tray icon needs an
-  # AppIndicator implementation on GNOME.
+  # The Wayland portal sidecar needs Python + PyGObject; keytar dlopens
+  # libsecret at runtime; the tray icon needs AppIndicator on GNOME.
   depends:
+    - python3
+    - python3-gi
     - libsecret-1-0
     - libnotify4
     - libnss3
