@@ -17,9 +17,24 @@ class PcmDownsampler extends AudioWorkletProcessor {
     this.accumulator = new Float32Array(this.chunkSamples * 4);
     this.accumLen = 0;
     this.resamplePos = 0;
+    // The Windows capture graph stays alive between takes to avoid a broken
+    // WASAPI suspend/resume transition. Keep processing, but emit no PCM until
+    // the renderer opens this gate for an active push-to-talk take.
+    this.forwarding = false;
+    this.port.onmessage = (event) => {
+      const message = event && event.data;
+      if (!message || message.type !== 'set-forwarding') return;
+      this.forwarding = message.enabled === true;
+      if (!this.forwarding) {
+        // Never prepend a partial chunk from the previous take.
+        this.accumLen = 0;
+        this.resamplePos = 0;
+      }
+    };
   }
 
   process(inputs) {
+    if (!this.forwarding) return true;
     const input = inputs[0];
     if (!input || input.length === 0) return true;
     const channel = input[0];

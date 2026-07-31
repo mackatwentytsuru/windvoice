@@ -12,6 +12,7 @@ import {
   type BeepKind,
   type UpdaterState
 } from '../shared/ipc';
+import type { AudioIdleMode } from '../shared/audioCapturePolicy';
 
 type IpcResult<T> =
   | { ok: true; value: T }
@@ -220,9 +221,15 @@ const audioBridge = {
   reportError: (message: string): void => {
     ipcRenderer.send(IPC.AUDIO_ERROR, message);
   },
-  /** Main → hidden audio renderer: start capture (optionally with deviceId). */
-  onStart: (cb: (deviceId?: string) => void): (() => void) => {
-    const handler = (_e: unknown, deviceId?: string): void => cb(deviceId);
+  /** Main → hidden audio renderer: start capture with its platform idle policy. */
+  onStart: (
+    cb: (deviceId: string | undefined, idleMode: AudioIdleMode) => void
+  ): (() => void) => {
+    const handler = (_e: unknown, deviceId?: unknown, idleMode?: unknown): void => {
+      const safeDeviceId = typeof deviceId === 'string' ? deviceId : undefined;
+      const safeIdleMode: AudioIdleMode = idleMode === 'keep-warm' ? 'keep-warm' : 'suspend';
+      cb(safeDeviceId, safeIdleMode);
+    };
     ipcRenderer.on(IPC.AUDIO_START_CMD, handler);
     return () => ipcRenderer.removeListener(IPC.AUDIO_START_CMD, handler);
   },
@@ -238,13 +245,13 @@ const audioBridge = {
     ipcRenderer.on(IPC.AUDIO_DEVICE_CHANGE, handler);
     return () => ipcRenderer.removeListener(IPC.AUDIO_DEVICE_CHANGE, handler);
   },
-  /** Main → hidden audio renderer: suspend AudioContext during idle. */
+  /** Main → hidden audio renderer: enter idle (suspend or keep-warm gate). */
   onSuspend: (cb: () => void): (() => void) => {
     const handler = (): void => cb();
     ipcRenderer.on(IPC.AUDIO_SUSPEND_CMD, handler);
     return () => ipcRenderer.removeListener(IPC.AUDIO_SUSPEND_CMD, handler);
   },
-  /** Main → hidden audio renderer: resume AudioContext for a new cycle. */
+  /** Main → hidden audio renderer: begin a take (resume or open the gate). */
   onResume: (cb: () => void): (() => void) => {
     const handler = (): void => cb();
     ipcRenderer.on(IPC.AUDIO_RESUME_CMD, handler);
@@ -253,8 +260,8 @@ const audioBridge = {
   /**
    * Main → hidden audio renderer: rebuild the capture stream after sleep/resume.
    * `resumeAfterRebuild` is true when the rebuild fires during an active
-   * dictation, telling the renderer to resume the freshly built (and otherwise
-   * idle-suspended) AudioContext so THIS dictation still captures audio.
+   * dictation, telling suspend-mode renderers to resume the freshly built
+   * AudioContext so THIS dictation still captures audio.
    */
   onRecover: (cb: (resumeAfterRebuild: boolean) => void): (() => void) => {
     const handler = (_e: unknown, resumeAfterRebuild?: unknown): void =>

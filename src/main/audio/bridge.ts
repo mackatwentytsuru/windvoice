@@ -4,6 +4,7 @@ import { is } from './env';
 import { debug, isDebug } from '@main/debug';
 import { IPC, type AudioChunk, type BeepKind } from '@shared/types';
 import { SILENCE_RMS_THRESHOLD } from '@shared/constants';
+import { audioIdleModeForPlatform, type AudioIdleMode } from '@shared/audioCapturePolicy';
 
 export interface ChunkPayload {
   /** Either base64-encoded PCM or raw bytes (Buffer/Uint8Array/ArrayBuffer). */
@@ -33,6 +34,7 @@ export type ChunkListener = (chunk: ChunkPayload | AudioChunk) => void;
  * 24 kHz mono PCM16 chunks back over IPC. Also dispatches beep cues.
  */
 export class AudioBridge {
+  private readonly idleMode: AudioIdleMode = audioIdleModeForPlatform(process.platform);
   private win: BrowserWindow | null = null;
   private ready = false;
   private capturing = false;
@@ -166,9 +168,12 @@ export class AudioBridge {
   async prewarm(deviceId?: string): Promise<void> {
     if (this.capturing) return;
     await this.waitReady();
-    this.win?.webContents.send(IPC.AUDIO_START_CMD, deviceId);
+    this.win?.webContents.send(IPC.AUDIO_START_CMD, deviceId, this.idleMode);
     this.capturing = true;
-    debug('AUDIO', `prewarm requested (device=${deviceId ?? 'default'})`);
+    debug(
+      'AUDIO',
+      `prewarm requested (device=${deviceId ?? 'default'} idleMode=${this.idleMode})`
+    );
   }
 
   changeDevice(deviceId: string): void {
@@ -183,13 +188,9 @@ export class AudioBridge {
    */
   recapture(): void {
     if (!this.capturing) return;
-    // Pass the current forwarding state as `resumeAfterRebuild`. The renderer
-    // suspends every freshly built AudioContext (issue #7 idle optimization),
-    // so a recapture that fires DURING an active dictation must tell the
-    // renderer to resume the rebuilt context — otherwise the new context stays
-    // suspended for the rest of the dictation and records silence. While idle
-    // (powerMonitor resume/unlock), forwarding is false and the context
-    // correctly stays suspended until the next beginForwarding().
+    // Pass the current forwarding state as `resumeAfterRebuild`. Platforms
+    // using idle suspension need the rebuilt context resumed during an active
+    // dictation; Windows keep-warm mode already leaves the new graph running.
     this.win?.webContents.send(IPC.AUDIO_RECOVER_CMD, this.forwarding);
     debug('AUDIO', 'recapture requested (power resume / track loss)');
   }
@@ -197,9 +198,8 @@ export class AudioBridge {
   beginForwarding(): { startCount: number } {
     this.forwarding = true;
     this.maxLevelSinceForward = 0;
-    // Resume the AudioContext if it was suspended during idle. The
-    // first chunk after resume arrives in ~5-15ms, well within the
-    // perceived start-recording window.
+    // The renderer either resumes a suspended context or opens the worklet's
+    // forwarding gate while its Windows capture graph stays warm.
     this.win?.webContents.send(IPC.AUDIO_RESUME_CMD);
     this.armSilenceWatchdog(this.chunkCount);
     return { startCount: this.chunkCount };
@@ -208,9 +208,9 @@ export class AudioBridge {
   endForwarding(startCount: number): { delivered: number; maxLevel: number } {
     this.forwarding = false;
     this.clearSilenceWatchdog();
-    // Suspend the AudioContext so the worklet stops generating 50ms
-    // chunks (issue #7). Saves ~20 IPC crossings + Buffer.from copies
-    // per idle second.
+    // The renderer suspends on macOS/Linux. Windows leaves the WASAPI-backed
+    // graph warm but closes its worklet forwarding gate, so idle still avoids
+    // ~20 IPC crossings + Buffer.from copies per second.
     this.win?.webContents.send(IPC.AUDIO_SUSPEND_CMD);
     // `maxLevel` is the peak RMS seen across this take. The orchestrator
     // uses it to tell "the user actually spoke" from a live-but-silent mic

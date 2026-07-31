@@ -5,6 +5,7 @@
 
 import workletSource from './audio-worklet.js?raw';
 import { CHUNK_MS, TARGET_SAMPLE_RATE } from '../shared/constants';
+import type { AudioIdleMode } from '../shared/audioCapturePolicy';
 
 let audioCtx: AudioContext | null = null;
 let mediaStream: MediaStream | null = null;
@@ -13,6 +14,11 @@ let source: MediaStreamAudioSourceNode | null = null;
 let workletUrl: string | null = null;
 let currentDeviceId: string | null = null;
 let beepCtx: AudioContext | null = null;
+// Windows keeps the capture graph running between takes to avoid a WASAPI
+// resume that can deliver digital silence while another app uses the mic.
+// The worklet forwarding gate still prevents idle PCM from crossing IPC.
+let idleMode: AudioIdleMode = 'suspend';
+let forwardingRequested = false;
 // Synchronous in-flight guard for startCapture. `audioCtx` is only assigned
 // AFTER the awaited getUserMedia, so two interleaving callers both pass an
 // `if (audioCtx) return` check, each build a MediaStream + AudioContext, and
@@ -24,10 +30,14 @@ let starting = false;
 // monitor AND a `track.ended` event almost simultaneously, and each would
 // otherwise kick off its own stop→start cycle.
 let recovering = false;
-// Set when a dictation-start resume arrives while a recapture() is in flight.
-// recapture() resumes the freshly-built (suspended) context in its finally so
-// the in-progress rebuild does not leave the mic dead for the current take.
+// Set when a dictation-start resume arrives while a suspend-mode recapture()
+// is in flight. recapture() resumes the rebuilt context in its finally so the
+// in-progress rebuild does not leave the current take without a running graph.
 let pendingResume = false;
+
+function setWorkletForwarding(enabled: boolean): void {
+  workletNode?.port.postMessage({ type: 'set-forwarding', enabled });
+}
 
 /**
  * When the OS suspends/resumes (sleep, audio device reset, headset unplug),
@@ -100,6 +110,7 @@ async function startCapture(deviceId?: string): Promise<void> {
         chunkMs: CHUNK_MS
       }
     });
+    setWorkletForwarding(forwardingRequested);
     workletNode.port.onmessage = (
       e: MessageEvent<{ pcm: ArrayBuffer; samples: number; level: number }>
     ) => {
@@ -115,16 +126,25 @@ async function startCapture(deviceId?: string): Promise<void> {
     };
     source.connect(workletNode);
     workletNode.connect(audioCtx.destination);
-    // Idle suspension (issue #7): once the audio graph is wired and
-    // mic permission is granted, suspend the context immediately. The
-    // next `beginForwarding()` on main will fire AUDIO_RESUME_CMD,
-    // which resumes in ~5-15ms — well within perceptual start-recording
-    // latency. This stops the 20Hz IPC + Buffer churn during idle.
-    audioCtx.suspend().catch((e: unknown) => {
-      window.audio.reportError(
-        `audioCtx.suspend failed: ${e instanceof Error ? e.message : String(e)}`
-      );
-    });
+    // macOS/Linux retain the issue #7 idle optimization. Windows deliberately
+    // keeps the graph alive: resuming a suspended Chromium/WASAPI path while
+    // another app uses the same device can yield digital silence for the first
+    // take. The closed worklet gate above avoids idle IPC on every platform.
+    if (idleMode === 'suspend' && !forwardingRequested) {
+      audioCtx.suspend().catch((e: unknown) => {
+        window.audio.reportError(
+          `audioCtx.suspend failed: ${e instanceof Error ? e.message : String(e)}`
+        );
+      });
+    } else if (idleMode === 'keep-warm' && audioCtx.state === 'suspended') {
+      // Electron normally starts this context in `running`, but explicitly
+      // warm it if Chromium's autoplay policy created it suspended.
+      audioCtx.resume().catch((e: unknown) => {
+        window.audio.reportError(
+          `audioCtx warm-up resume failed: ${e instanceof Error ? e.message : String(e)}`
+        );
+      });
+    }
   } catch (err) {
     const msg = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
     window.audio.reportError(msg);
@@ -199,9 +219,9 @@ async function recapture(): Promise<void> {
     );
   } finally {
     recovering = false;
-    // A dictation-start resume arrived mid-rebuild (the new AudioContext ends
-    // suspended). Resume it now so THIS take captures audio instead of waiting
-    // for the next PTT press. resume() is idempotent on a running context.
+    // A dictation-start resume may have arrived mid-rebuild. Resume now so this
+    // take captures audio instead of waiting for the next PTT press. A release
+    // clears pendingResume, and resume() is idempotent on a running context.
     if (pendingResume) {
       pendingResume = false;
       if (audioCtx) {
@@ -250,7 +270,8 @@ function playBeep(kind: 'start' | 'stop'): void {
 
 // ─── wiring ────────────────────────────────────────────────────────────────
 
-window.audio.onStart((deviceId?: string) => {
+window.audio.onStart((deviceId: string | undefined, requestedIdleMode: AudioIdleMode) => {
+  idleMode = requestedIdleMode;
   void startCapture(deviceId);
 });
 window.audio.onStop(() => {
@@ -259,10 +280,14 @@ window.audio.onStop(() => {
 window.audio.onDeviceChange((deviceId: string) => {
   void restartWithDevice(deviceId);
 });
-// Suspend / resume the AudioContext on idle to stop the 20Hz chunk
-// pipeline when the user is not dictating (issue #7).
+// Close/open the worklet forwarding gate around each take. macOS/Linux also
+// suspend the AudioContext (issue #7); Windows keeps it running to prevent a
+// silent WASAPI resume while another application is using the same mic.
 window.audio.onSuspend?.(() => {
-  if (audioCtx && audioCtx.state === 'running') {
+  forwardingRequested = false;
+  pendingResume = false;
+  setWorkletForwarding(false);
+  if (idleMode === 'suspend' && audioCtx && audioCtx.state === 'running') {
     audioCtx.suspend().catch((e: unknown) => {
       window.audio.reportError(
         `audioCtx.suspend failed: ${e instanceof Error ? e.message : String(e)}`
@@ -271,6 +296,8 @@ window.audio.onSuspend?.(() => {
   }
 });
 window.audio.onResume?.(() => {
+  forwardingRequested = true;
+  setWorkletForwarding(true);
   // PTT pressed: this fires at the very start of every dictation. Before
   // resuming the prewarmed graph, verify the mic is still actually live —
   // a silent/`muted` track that never fired `ended` (the most common cause
@@ -301,17 +328,21 @@ window.audio.onResume?.(() => {
 // Power resume / device-loss recovery: rebuild the whole capture graph.
 // `resumeAfterRebuild` is true only when the rebuild fires mid-dictation
 // (e.g. the main-process silence watchdog firing during active forwarding).
-// startCapture suspends every freshly built context (issue #7), so in that
-// case we must resume it after the async rebuild or the rest of the dictation
-// records silence. While IDLE (powerMonitor resume/unlock) the flag is false,
-// so the context correctly stays suspended until the next beginForwarding().
+// In suspend mode, a rebuild that started during an active dictation may need
+// the new context resumed after the async rebuild. The forwardingRequested
+// guard prevents a short take that already ended from waking it back up.
 // Mirror the onResume rebuild branch: resume AFTER awaiting recapture to avoid
 // cross-process races.
 // Param is optional so this stays assignable to the `() => void` callback type
 // declared in env.d.ts; the preload always sends an explicit boolean.
 window.audio.onRecover?.((resumeAfterRebuild?: boolean) => {
   void recapture().then(() => {
-    if (resumeAfterRebuild && audioCtx) {
+    if (
+      idleMode === 'suspend' &&
+      resumeAfterRebuild &&
+      forwardingRequested &&
+      audioCtx
+    ) {
       audioCtx.resume().catch((e: unknown) => {
         window.audio.reportError(
           `audioCtx.resume after recover failed: ${e instanceof Error ? e.message : String(e)}`

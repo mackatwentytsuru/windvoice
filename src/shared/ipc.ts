@@ -35,8 +35,8 @@ export const IPC = {
   AUDIO_START_CMD: 'audio:start',
   AUDIO_STOP_CMD: 'audio:stop',
   AUDIO_DEVICE_CHANGE: 'audio:deviceChange',
-  // Suspend / resume the underlying AudioContext to avoid 20Hz IPC churn
-  // while the user is not actively dictating (issue #7).
+  // Enter/leave idle capture. macOS/Linux suspend the AudioContext; Windows
+  // keeps it warm but gates worklet output. Both avoid 20Hz idle IPC churn.
   AUDIO_SUSPEND_CMD: 'audio:suspend',
   AUDIO_RESUME_CMD: 'audio:resume',
   // Tear down and re-acquire the microphone stream. Fired after the OS
