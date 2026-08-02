@@ -114,6 +114,40 @@ describe('RealtimeClient', () => {
     expect(msg.type).toBe('session.update');
   });
 
+  it('sends dictionary vocabulary as supported transcription context', async () => {
+    const client = new RealtimeClient({
+      apiKey: 'sk-x',
+      language: 'ja',
+      vadEnabled: false,
+      vocabularyHints: ['翔鶴', '9950X', 'Codex']
+    });
+    const p = client.connect();
+    const inst = await openAndReady(p);
+
+    const msg = JSON.parse(inst.sent[0]!) as {
+      session: { audio: { input: { transcription: Record<string, unknown> } } };
+    };
+    expect(msg.session.audio.input.transcription).toEqual({
+      model: 'gpt-live-transcribe',
+      prompt: 'この話者がよく使う固有名詞です。',
+      keywords: ['翔鶴', '9950X', 'Codex'],
+      languages: ['ja']
+    });
+  });
+
+  it('can refresh vocabulary hints on an already-open session', async () => {
+    const client = new RealtimeClient({ apiKey: 'sk-x', vadEnabled: false });
+    const p = client.connect();
+    const inst = await openAndReady(p);
+    inst.sent.length = 0;
+
+    client.updateVocabularyHints(['windvoice']);
+
+    expect(inst.sent).toHaveLength(1);
+    const msg = JSON.parse(inst.sent[0]!);
+    expect(msg.session.audio.input.transcription.keywords).toEqual(['windvoice']);
+  });
+
   it('connect() rejects on `error` before `open`; subsequent connect() does not throw "already connected"', async () => {
     const client = new RealtimeClient({ apiKey: 'sk-x', vadEnabled: false });
     const p1 = client.connect();

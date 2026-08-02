@@ -1,0 +1,24 @@
+{
+  "$comment": "音声入力の誤変換→正しい語の種辞書。司令塔(Claude)が実会話で観測した誤変換ペア。学習ループはここに追記していく。",
+  "version": 1,
+  "entries": [
+    { "correct": "翔鶴", "variants": ["昇格"], "context": "艦隊のMacBook Airの艦名" },
+    { "correct": "大和", "variants": ["オマレックス"], "context": "9950Xマシンの艦名" },
+    { "correct": "9950X", "variants": ["九九五〇X", "QQ50X", "QQゴーマレックス", "九九五マルX", "Q950X", "QQ五〇X", "九九五丸X"], "context": "大和の機体名" },
+    { "correct": "金剛", "variants": ["キングオー", "金号", "金庫", "キング"], "context": "Dellマシンの艦名" },
+    { "correct": "長門", "variants": ["中と"], "context": "NASの艦名" },
+    { "correct": "Gyroflow", "variants": ["エロフロー", "ジャイルフロー"], "context": "映像スタビライズソフト" },
+    { "correct": "Obsidian", "variants": ["オグシリアン"], "context": "ノートアプリ" },
+    { "correct": "テザリング", "variants": ["デザリング"] },
+    { "correct": "Codex", "variants": ["コードックス"], "context": "OpenAIのコーディングCLI" },
+    { "correct": "windvoice", "variants": ["ウィンドボイス", "ウィンドウボイス"], "context": "自作音声入力ソフト" },
+    { "correct": "Fable 5", "variants": ["フェーブルファイブ", "フェイブルファイブ"], "context": "Claudeのモデル名" },
+    { "correct": "FPV", "variants": ["エフピーピー"], "context": "ドローン映像" },
+    { "correct": "任務台帳", "variants": ["二村以上"], "context": "艦隊の任務管理" },
+    { "correct": "UGREEN", "variants": ["URグリーン", "ユーグリーン"], "context": "NASメーカー" },
+    { "correct": "Tailscale", "variants": ["ケイラスケール", "テラスケール"], "context": "VPNサービス" },
+    { "correct": "シャットダウン", "variants": ["シャフトダウン"] },
+    { "correct": "運転免許", "variants": ["家事免許"] },
+    { "correct": "同期", "variants": ["真空", "シンク"], "context": "sync。文脈依存のため置換は慎重に" }
+  ]
+}

@@ -8,6 +8,7 @@
 
 import { BrowserWindow, type WebContents } from 'electron';
 import { reportError } from '@main/report/githubReporter';
+import { scrubSecrets } from '@main/debug';
 import { IPC } from '@shared/ipc';
 
 let audioWebContentsId: number | null = null;
@@ -29,9 +30,19 @@ export function setAudioWebContentsId(id: number | null): void {
  * renderer simply ignores channels it has not subscribed to).
  */
 export function broadcastToUiWindows(channel: string, payload: unknown): void {
-  // Single choke point for user-visible errors: everything surfaced as a
-  // Only explicitly classified bugs become local report previews. External
-  // transmission still requires the user's Send action in Settings.
+  let safePayload = payload;
+  if (
+    typeof payload === 'string' &&
+    (channel === IPC.AUDIO_ERROR ||
+      channel === IPC.SYSTEM_ERROR ||
+      channel === IPC.FORMATTER_ERROR ||
+      (channel === IPC.TRANSCRIPT_FINAL && payload.startsWith('[error]')))
+  ) {
+    safePayload = scrubSecrets(payload);
+  }
+  // Single choke point for user-visible errors. Only explicitly classified
+  // bugs become local report previews. External transmission still requires
+  // the user's Send action in Settings.
   if (channel === IPC.SYSTEM_ERROR || channel === IPC.FORMATTER_ERROR) {
     const p = payload as {
       source?: unknown;
@@ -39,13 +50,16 @@ export function broadcastToUiWindows(channel: string, payload: unknown): void {
       message?: unknown;
       kind?: unknown;
     };
+    if (typeof p?.message === 'string') {
+      safePayload = { ...p, message: scrubSecrets(p.message) };
+    }
     // Setup guidance is sticky so it survives a closed Settings window.
     // Transient conditions remain visible but are neither sticky nor
     // reportable. Unknown/missing classifications fail closed as transient.
     if (channel === IPC.SYSTEM_ERROR && p?.kind === 'setup') {
       const source = typeof p.source === 'string' ? p.source : 'setup';
-      stickySetupErrors.set(source, payload);
-      broadcastOnly(channel, payload);
+      stickySetupErrors.set(source, safePayload);
+      broadcastOnly(channel, safePayload);
       return;
     }
     const source =
@@ -55,10 +69,11 @@ export function broadcastToUiWindows(channel: string, payload: unknown): void {
           ? `formatter:${p.code}`
           : 'formatter';
     if (p?.kind === 'bug' && typeof p?.message === 'string') {
-      reportError(source, p.message, 'bug');
+      const message = scrubSecrets(p.message);
+      reportError(source, message, 'bug');
     }
   }
-  broadcastOnly(channel, payload);
+  broadcastOnly(channel, safePayload);
 }
 
 /** Clear one recovered setup error, or all sticky errors in tests/teardown. */
@@ -77,7 +92,15 @@ export function replayStickySetupErrors(target: Pick<WebContents, 'send'>): void
 function broadcastOnly(channel: string, payload: unknown): void {
   const skip = audioWebContentsId;
   for (const win of BrowserWindow.getAllWindows()) {
-    if (skip !== null && win.webContents.id === skip) continue;
-    win.webContents.send(channel, payload);
+    try {
+      if (win.isDestroyed()) continue;
+      const wc = win.webContents;
+      if (wc.isDestroyed()) continue;
+      if (skip !== null && wc.id === skip) continue;
+      wc.send(channel, payload);
+    } catch {
+      // A window may be destroyed between enumeration and send. UI broadcast
+      // is best-effort and must never crash the Electron main process.
+    }
   }
 }

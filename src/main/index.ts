@@ -51,6 +51,10 @@ import { ensureStatusNotifierWatcher } from '@main/linux/statusNotifier';
 import { IPC } from '@shared/types';
 import { t } from '@shared/i18n';
 import { openExternalSafe } from '@main/util/openExternal';
+import { UserDictionaryStore } from '@main/dictionary/userDictionary';
+import { parseAddCorrectionArgs, CorrectionCliError } from '@main/dictionary/cli';
+import { TranscriptLearningLog } from '@main/dictionary/transcriptLog';
+import type { DictionaryCorrection } from '@main/dictionary/schema';
 
 const PRELOAD_PATH = path.join(__dirname, '../preload/index.js');
 
@@ -64,10 +68,49 @@ let orchestrator: DictationOrchestrator | null = null;
 let lastAudioError: string | null = null;
 let shutdownRunning = false;
 let shutdownComplete = false;
+let userDictionary: UserDictionaryStore | null = null;
+let userDictionaryInit: Promise<UserDictionaryStore> | null = null;
+let offDictionaryChange: (() => void) | null = null;
 
 async function startDictation(): Promise<void> {
   if (isWaylandSession()) portalSidecar.retryForDictation();
   await orchestrator?.start();
+}
+
+let initialCorrection: DictionaryCorrection | null = null;
+let initialCorrectionError: string | null = null;
+try {
+  initialCorrection = parseAddCorrectionArgs(process.argv);
+} catch (err) {
+  initialCorrectionError = err instanceof CorrectionCliError ? err.message : String(err);
+}
+
+async function ensureUserDictionary(): Promise<UserDictionaryStore> {
+  if (userDictionary) return userDictionary;
+  if (userDictionaryInit) return userDictionaryInit;
+  userDictionaryInit = (async () => {
+    const dictionaryDir = path.join(app.getPath('appData'), 'windvoice');
+    const seedPath = path.join(app.getAppPath(), 'dictionary', 'seed-corrections.ja.json');
+    const store = new UserDictionaryStore({ userDataDir: dictionaryDir, seedPath });
+    await store.init();
+    await store.mergeLegacy(settingsStore.get().dictionary);
+    userDictionary = store;
+    return store;
+  })();
+  try {
+    return await userDictionaryInit;
+  } finally {
+    userDictionaryInit = null;
+  }
+}
+
+function correctionFromAdditionalData(value: unknown): DictionaryCorrection | null {
+  if (!value || typeof value !== 'object') return null;
+  const candidate = (value as { addCorrection?: unknown }).addCorrection;
+  if (!candidate || typeof candidate !== 'object') return null;
+  const { variant, correct } = candidate as { variant?: unknown; correct?: unknown };
+  if (typeof variant !== 'string' || typeof correct !== 'string') return null;
+  return { variant, correct };
 }
 
 // `broadcastToUiWindows` now lives in `@main/broadcast` and is shared with
@@ -151,7 +194,14 @@ function startHotkeysWithAccessibilityRecovery(): void {
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     debug('HOTKEY', `start failed (likely missing Accessibility permission): ${message}`);
-    if (process.platform !== 'darwin') return;
+    if (process.platform !== 'darwin') {
+      setStatus('error');
+      broadcastToUiWindows(IPC.SYSTEM_ERROR, {
+        source: 'hotkey',
+        message: 'Global hotkey failed to start. Restart WindVoice or check input permissions.'
+      });
+      return;
+    }
     setAccessibilityWarning(true);
     if (accessibilityPollTimer) return;
     let consecutiveErrors = 0;
@@ -204,11 +254,26 @@ async function ensureApiKey(): Promise<void> {
 // icon. The first instance holds the lock; any later launch fails the
 // lock, asks the primary to surface its settings window via the
 // 'second-instance' event, and quits immediately.
-const gotInstanceLock = app.requestSingleInstanceLock();
+const instanceData: Record<string, unknown> = initialCorrection
+  ? { addCorrection: initialCorrection }
+  : initialCorrectionError
+    ? { addCorrectionError: true }
+    : {};
+const gotInstanceLock = app.requestSingleInstanceLock(instanceData);
 if (!gotInstanceLock) {
   app.quit();
 } else {
-  app.on('second-instance', () => {
+  app.on('second-instance', (_event, _commandLine, _workingDirectory, additionalData) => {
+    const correction = correctionFromAdditionalData(additionalData);
+    if (correction) {
+      void app
+        .whenReady()
+        .then(() => ensureUserDictionary())
+        .then((store) => store.addCorrection(correction))
+        .catch((err) => debug('MAIN', `second-instance correction failed: ${String(err)}`));
+      return;
+    }
+    if ((additionalData as { addCorrectionError?: unknown } | undefined)?.addCorrectionError) return;
     void createSettingsWindow();
   });
 }
@@ -218,6 +283,27 @@ app.whenReady().then(async () => {
   // app.quit() settles — bail so it never touches the tray, hotkeys,
   // audio devices, or the clipboard-recovery file.
   if (!gotInstanceLock) return;
+
+  if (initialCorrectionError) {
+    process.stderr.write(`windvoice: ${initialCorrectionError}\n`);
+    process.exitCode = 2;
+    app.quit();
+    return;
+  }
+
+  const dictionary = await ensureUserDictionary();
+  if (initialCorrection) {
+    await dictionary.addCorrection(initialCorrection);
+    process.stdout.write('windvoice: correction added\n');
+    app.quit();
+    return;
+  }
+
+  offDictionaryChange = dictionary.onDidChange(() => orchestrator?.refreshDictionaryHints());
+  const transcriptLog = new TranscriptLearningLog(
+    path.join(app.getPath('appData'), 'windvoice', 'transcript-learning.jsonl'),
+    () => settingsStore.get().ui.transcriptLogging
+  );
 
   // macOS: hide the Dock icon — WindVoice is a tray-only app.
   if (process.platform === 'darwin' && app.dock) {
@@ -322,6 +408,11 @@ app.whenReady().then(async () => {
       if (next.hotkeys !== prev.hotkeys) {
         hotkeys?.setBindings(next.hotkeys);
       }
+      if (next.dictionary !== prev.dictionary) {
+        void dictionary
+          .mergeLegacy(next.dictionary)
+          .catch((err) => debug('MAIN', `legacy dictionary merge failed: ${String(err)}`));
+      }
       if (!next.ui.overlayEnabled) {
         overlay?.setEnabled(false);
       }
@@ -365,8 +456,15 @@ app.whenReady().then(async () => {
   setStatus('idle');
 
   audio = new AudioBridge();
-  await audio.init(PRELOAD_PATH);
-  const audioWcId = audio.getWebContentsId();
+  try {
+    await audio.init(PRELOAD_PATH);
+  } catch (err) {
+    // init() tears down the failed hidden window, so a second attempt starts
+    // from a clean state instead of leaving capture permanently unavailable.
+    debug('AUDIO', `initial capture-window load failed; retrying once: ${String(err)}`);
+    await audio.init(PRELOAD_PATH);
+  }
+  let audioWcId = audio.getWebContentsId();
   if (audioWcId !== null) trustedMicIds.add(audioWcId);
   // Register the audio renderer with the shared broadcaster so every
   // UI-bound event (including SETTINGS_CHANGED, MEDIUM-6) skips the
@@ -381,6 +479,7 @@ app.whenReady().then(async () => {
     lastAudioError = message;
     debug('AUDIO', message);
     broadcastToUiWindows(IPC.AUDIO_ERROR, message);
+    orchestrator?.handleAudioError(message);
   });
 
   // After the machine wakes from sleep, the microphone's MediaStreamTrack is
@@ -394,10 +493,12 @@ app.whenReady().then(async () => {
   // proactively alongside the microphone.
   powerMonitor.on('resume', () => {
     debug('AUDIO', 'power resume — re-acquiring microphone');
+    hotkeys?.resetState();
     audio?.recapture();
     orchestrator?.recycleConnection('power resume');
   });
   powerMonitor.on('unlock-screen', () => {
+    hotkeys?.resetState();
     audio?.recapture();
     orchestrator?.recycleConnection('unlock-screen');
     // Wayland: mutter refuses RemoteDesktop session creation while the
@@ -407,6 +508,16 @@ app.whenReady().then(async () => {
       debug('DICTATION', 'screen unlocked — retrying portal sidecar');
       portalSidecar.restart();
     }
+  });
+  powerMonitor.on('suspend', () => {
+    debug('AUDIO', 'system suspend — releasing active dictation resources');
+    hotkeys?.resetState();
+    orchestrator?.handleSystemSuspend();
+  });
+  powerMonitor.on('lock-screen', () => {
+    debug('AUDIO', 'screen lock — releasing active dictation resources');
+    hotkeys?.resetState();
+    orchestrator?.handleSystemSuspend();
   });
 
   // Register post-processors. Order matters: formatter first (cleans
@@ -421,12 +532,17 @@ app.whenReady().then(async () => {
   // Audio level updates flow: audio renderer → main → overlay window
   audio.setLevelListener((level) => overlay?.setLevel(level));
 
-  orchestrator = new DictationOrchestrator(audio, overlay);
+  orchestrator = new DictationOrchestrator(audio, overlay, dictionary, transcriptLog);
 
   hotkeys = new HotkeyManager();
   setActiveHotkeyManager(hotkeys);
   hotkeys.setBindings(settingsStore.get().hotkeys);
-  hotkeys.on('start', () => {
+  hotkeys.on('start', (bindingId) => {
+    if (!orchestrator || orchestrator.isActive()) {
+      hotkeys?.rejectToggleStart(bindingId);
+      debug('HOTKEY', `ignored start for ${bindingId}: dictation still active`);
+      return;
+    }
     void startDictation().catch((err) => debug('DICTATION', `hotkey start: ${err}`));
   });
   hotkeys.on('stop', () => {
@@ -508,7 +624,20 @@ app.whenReady().then(async () => {
     fnWatcher.start();
   }
 
-  await audio.prewarm(settingsStore.get().audio.device);
+  try {
+    await audio.prewarm(settingsStore.get().audio.device);
+  } catch (err) {
+    // AudioBridge tears down a non-ready window on timeout/load failure so it
+    // can be rebuilt. Retry once during startup instead of remaining a zombie
+    // until the user restarts the entire app.
+    debug('AUDIO', `initial prewarm failed; rebuilding capture window: ${String(err)}`);
+    if (audioWcId !== null) trustedMicIds.delete(audioWcId);
+    await audio.init(PRELOAD_PATH);
+    audioWcId = audio.getWebContentsId();
+    if (audioWcId !== null) trustedMicIds.add(audioWcId);
+    setAudioWebContentsId(audioWcId);
+    await audio.prewarm(settingsStore.get().audio.device);
+  }
 
   if (await secureStore.hasApiKey()) {
     void orchestrator.prewarmConnection();
@@ -619,6 +748,10 @@ app.on('before-quit', (event) => {
     setAudioWebContentsId(null);
     overlay?.destroy();
     flushHistory();
+    offDictionaryChange?.();
+    offDictionaryChange = null;
+    userDictionary?.dispose();
+    userDictionary = null;
 
     shutdownComplete = true;
     app.quit();

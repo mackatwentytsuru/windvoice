@@ -13,6 +13,7 @@ import type {
   ErrorReportSendResult,
   UpdaterState
 } from '../shared/ipc';
+import type { AudioIdleMode } from '../shared/audioCapturePolicy';
 
 declare module '*?raw' {
   const content: string;
@@ -61,7 +62,9 @@ declare global {
       ready(): void;
       sendChunk(base64: string, samples: number, level?: number): void;
       reportError(message: string): void;
-      onStart(cb: (deviceId?: string) => void): () => void;
+      onStart(
+        cb: (deviceId: string | undefined, idleMode: AudioIdleMode) => void
+      ): () => void;
       onStop(cb: () => void): () => void;
       onDeviceChange(cb: (deviceId: string) => void): () => void;
       onSuspend?(cb: () => void): () => void;

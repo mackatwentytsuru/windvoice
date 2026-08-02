@@ -259,7 +259,7 @@ npm run release        # GitHub Releases に publish
               │                 │
        getUserMedia +     wss://api.openai.com
        AudioWorklet       /v1/realtime?intent=transcription
-       (idle 時 suspend)         │
+       (Win: warm / 他: suspend)     │
               │                  │
        24kHz PCM16        input_audio_buffer.append
        50ms chunk                ▼
@@ -287,7 +287,7 @@ npm run release        # GitHub Releases に publish
 src/
 ├── main/
 │   ├── index.ts                    # 起動 / トレイ / IPC 登録 / CSP / アクセシビリティ回復
-│   ├── audio/bridge.ts             # 隠しレンダラー + idle suspend/resume
+│   ├── audio/bridge.ts             # 隠しレンダラー + platform別 idle capture
 │   ├── audio/duck.ts               # システム音量ダック (mac はデフォルト無効)
 │   ├── autoLaunch.ts               # OS 自動起動
 │   ├── context/activeWindow.ts     # get-windows
@@ -331,7 +331,7 @@ src/
 - **`get-windows`**: アクティブウィンドウ取得
 - **`electron-updater`**: GitHub Releases 経由の差分更新
 - **`loudness`**: システム音量ダック
-- **WebAudio + AudioWorklet**: 24 kHz mono PCM16 ダウンサンプル (idle suspend 対応)
+- **WebAudio + AudioWorklet**: 24 kHz mono PCM16 (Windows idle warm / 他OS suspend)
 
 ---
 

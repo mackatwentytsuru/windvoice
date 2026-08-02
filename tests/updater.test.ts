@@ -138,8 +138,14 @@ vi.mock('@main/report/githubReporter', () => ({
 
 describe('auto updater resident-app flow', () => {
   const originalAppImage = process.env['APPIMAGE'];
+  let platformSpy: ReturnType<typeof vi.spyOn>;
 
   beforeEach(() => {
+    // This suite exercises the Linux delivery matrix (AppImage self-update
+    // versus deb/unknown manual updates) regardless of the host running
+    // Vitest. On macOS, leaving this host-dependent trips the intentional
+    // unsigned-build guard before any resident updater handlers are wired.
+    platformSpy = vi.spyOn(process, 'platform', 'get').mockReturnValue('linux');
     process.env['APPIMAGE'] = '/tmp/WindVoice-0.1.15.AppImage';
     hoisted.updaterListeners.clear();
     hoisted.ipcHandlers.clear();
@@ -162,6 +168,7 @@ describe('auto updater resident-app flow', () => {
   });
 
   afterEach(() => {
+    platformSpy.mockRestore();
     if (originalAppImage === undefined) delete process.env['APPIMAGE'];
     else process.env['APPIMAGE'] = originalAppImage;
   });

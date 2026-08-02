@@ -158,6 +158,8 @@ export const SettingsSchema = z.object({
       /** Last versions notified for each stage, persisted across restarts. */
       notifiedUpdateVersion: z.string().catch('').default(''),
       notifiedDownloadedVersion: z.string().catch('').default(''),
+      /** Opt-in local JSONL transcript pairs for future dictionary learning. */
+      transcriptLogging: z.boolean().catch(false).default(false),
       /**
        * Opt-in only. Reports remain local previews until the user explicitly
        * sends or discards them.

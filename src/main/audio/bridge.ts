@@ -4,6 +4,11 @@ import { is } from './env';
 import { debug, isDebug } from '@main/debug';
 import { IPC, type AudioChunk, type BeepKind } from '@shared/types';
 import { SILENCE_RMS_THRESHOLD } from '@shared/constants';
+import {
+  audioIdleModeForPlatform,
+  shouldRecaptureStalledCapture,
+  type AudioIdleMode
+} from '@shared/audioCapturePolicy';
 
 export interface ChunkPayload {
   /** Either base64-encoded PCM or raw bytes (Buffer/Uint8Array/ArrayBuffer). */
@@ -33,6 +38,7 @@ export type ChunkListener = (chunk: ChunkPayload | AudioChunk) => void;
  * 24 kHz mono PCM16 chunks back over IPC. Also dispatches beep cues.
  */
 export class AudioBridge {
+  private readonly idleMode: AudioIdleMode = audioIdleModeForPlatform(process.platform);
   private win: BrowserWindow | null = null;
   private ready = false;
   private capturing = false;
@@ -42,6 +48,7 @@ export class AudioBridge {
   // in beginForwarding and inspected by the silence watchdog.
   private maxLevelSinceForward = 0;
   private silenceWatchdog: NodeJS.Timeout | null = null;
+  private watchdogRecaptureAttempted = false;
   private readyResolvers: Array<() => void> = [];
   private chunkListener: ((chunk: ChunkPayload | AudioChunk) => void) | null = null;
   private levelListener: ((level: number) => void) | null = null;
@@ -125,12 +132,19 @@ export class AudioBridge {
     });
     this.win = win;
 
-    if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
-      await win.loadURL(`${process.env['ELECTRON_RENDERER_URL']}/audio.html`);
-    } else {
-      await win.loadFile(path.join(__dirname, '../renderer/audio.html'));
+    try {
+      if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
+        await win.loadURL(`${process.env['ELECTRON_RENDERER_URL']}/audio.html`);
+      } else {
+        await win.loadFile(path.join(__dirname, '../renderer/audio.html'));
+      }
+      debug('AUDIO', 'hidden window loaded');
+    } catch (err) {
+      // Do not leave a non-ready window in `this.win`: that makes every
+      // later init() return early and permanently bricks capture.
+      this.destroy();
+      throw err;
     }
-    debug('AUDIO', 'hidden window loaded');
   }
 
   setChunkListener(cb: ChunkListener | null): void {
@@ -153,7 +167,11 @@ export class AudioBridge {
 
   /** Used by main to scope `setPermissionRequestHandler` to this window only. */
   getWebContentsId(): number | null {
-    return this.win?.webContents.id ?? null;
+    try {
+      return this.win?.webContents.id ?? null;
+    } catch {
+      return null;
+    }
   }
 
   /** Returns the most recent audio error message if one occurred within `maxAgeMs`. */
@@ -165,10 +183,18 @@ export class AudioBridge {
 
   async prewarm(deviceId?: string): Promise<void> {
     if (this.capturing) return;
-    await this.waitReady();
-    this.win?.webContents.send(IPC.AUDIO_START_CMD, deviceId);
+    try {
+      await this.waitReady();
+    } catch (err) {
+      this.destroy();
+      throw err;
+    }
+    this.win?.webContents.send(IPC.AUDIO_START_CMD, deviceId, this.idleMode);
     this.capturing = true;
-    debug('AUDIO', `prewarm requested (device=${deviceId ?? 'default'})`);
+    debug(
+      'AUDIO',
+      `prewarm requested (device=${deviceId ?? 'default'} idleMode=${this.idleMode})`
+    );
   }
 
   changeDevice(deviceId: string): void {
@@ -183,13 +209,9 @@ export class AudioBridge {
    */
   recapture(): void {
     if (!this.capturing) return;
-    // Pass the current forwarding state as `resumeAfterRebuild`. The renderer
-    // suspends every freshly built AudioContext (issue #7 idle optimization),
-    // so a recapture that fires DURING an active dictation must tell the
-    // renderer to resume the rebuilt context — otherwise the new context stays
-    // suspended for the rest of the dictation and records silence. While idle
-    // (powerMonitor resume/unlock), forwarding is false and the context
-    // correctly stays suspended until the next beginForwarding().
+    // Pass the current forwarding state as `resumeAfterRebuild`. Platforms
+    // using idle suspension need the rebuilt context resumed during an active
+    // dictation; Windows keep-warm mode already leaves the new graph running.
     this.win?.webContents.send(IPC.AUDIO_RECOVER_CMD, this.forwarding);
     debug('AUDIO', 'recapture requested (power resume / track loss)');
   }
@@ -197,9 +219,9 @@ export class AudioBridge {
   beginForwarding(): { startCount: number } {
     this.forwarding = true;
     this.maxLevelSinceForward = 0;
-    // Resume the AudioContext if it was suspended during idle. The
-    // first chunk after resume arrives in ~5-15ms, well within the
-    // perceived start-recording window.
+    this.watchdogRecaptureAttempted = false;
+    // The renderer either resumes a suspended context or opens the worklet's
+    // forwarding gate while its Windows capture graph stays warm.
     this.win?.webContents.send(IPC.AUDIO_RESUME_CMD);
     this.armSilenceWatchdog(this.chunkCount);
     return { startCount: this.chunkCount };
@@ -208,9 +230,9 @@ export class AudioBridge {
   endForwarding(startCount: number): { delivered: number; maxLevel: number } {
     this.forwarding = false;
     this.clearSilenceWatchdog();
-    // Suspend the AudioContext so the worklet stops generating 50ms
-    // chunks (issue #7). Saves ~20 IPC crossings + Buffer.from copies
-    // per idle second.
+    // The renderer suspends on macOS/Linux. Windows leaves the WASAPI-backed
+    // graph warm but closes its worklet forwarding gate, so idle still avoids
+    // ~20 IPC crossings + Buffer.from copies per second.
     this.win?.webContents.send(IPC.AUDIO_SUSPEND_CMD);
     // `maxLevel` is the peak RMS seen across this take. The orchestrator
     // uses it to tell "the user actually spoke" from a live-but-silent mic
@@ -233,21 +255,24 @@ export class AudioBridge {
       this.silenceWatchdog = null;
       if (!this.forwarding) return;
       const delivered = this.chunkCount - startCount;
-      const silent = delivered === 0 || this.maxLevelSinceForward < SILENCE_RMS_THRESHOLD;
-      if (silent) {
+      const stalled = shouldRecaptureStalledCapture(
+        delivered,
+        this.watchdogRecaptureAttempted
+      );
+      if (stalled) {
+        this.watchdogRecaptureAttempted = true;
         debug(
           'AUDIO',
-          `silent capture detected (delivered=${delivered} maxLevel=${this.maxLevelSinceForward.toFixed(4)}) — rebuilding mic`
+          `stalled capture detected (delivered=0 maxLevel=${this.maxLevelSinceForward.toFixed(4)}) — rebuilding mic once`
         );
         this.recapture();
-        // Re-arm so a rebuild that is STILL silent is detected rather than the
-        // watchdog firing exactly once. Reset the baseline to the current
-        // chunkCount and clear the level high-water mark so the next window
-        // measures only post-rebuild energy. Only while still forwarding.
-        if (this.forwarding) {
-          this.maxLevelSinceForward = 0;
-          this.armSilenceWatchdog(this.chunkCount);
-        }
+      } else if (
+        delivered > 0 &&
+        this.maxLevelSinceForward < SILENCE_RMS_THRESHOLD
+      ) {
+        // Chunks are flowing, so this may simply be a user pausing before
+        // speaking. Defer silent-mic escalation to end-of-take handling.
+        debug('AUDIO', `quiet capture observed (${delivered} chunks); not rebuilding mid-take`);
       }
     }, SILENCE_WATCHDOG_MS);
     if (typeof this.silenceWatchdog.unref === 'function') this.silenceWatchdog.unref();
@@ -266,22 +291,35 @@ export class AudioBridge {
 
   destroy(): void {
     this.clearSilenceWatchdog();
-    this.win?.webContents.send(IPC.AUDIO_STOP_CMD);
+    try {
+      this.win?.webContents.send(IPC.AUDIO_STOP_CMD);
+    } catch {
+      /* the renderer may already be destroyed after a load failure */
+    }
     this.capturing = false;
     this.forwarding = false;
+    this.ready = false;
     if (this.onReadyHandler) ipcMain.removeListener(IPC.AUDIO_READY, this.onReadyHandler);
     if (this.onChunkHandler) ipcMain.removeListener(IPC.AUDIO_CHUNK, this.onChunkHandler);
     if (this.onErrorHandler) ipcMain.removeListener(IPC.AUDIO_ERROR, this.onErrorHandler);
     this.onReadyHandler = null;
     this.onChunkHandler = null;
     this.onErrorHandler = null;
-    this.win?.close();
+    try {
+      this.win?.close();
+    } catch {
+      /* already destroyed */
+    }
     this.win = null;
   }
 
   private isFromOwnedWindow(event: IpcMainEvent): boolean {
     if (!this.win) return false;
-    return event.sender.id === this.win.webContents.id;
+    try {
+      return event.sender.id === this.win.webContents.id;
+    } catch {
+      return false;
+    }
   }
 
   private waitReady(timeoutMs = 8_000): Promise<void> {

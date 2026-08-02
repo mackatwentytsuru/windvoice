@@ -35,6 +35,8 @@ const END_MAX_WAIT_MS = 2_000;
  */
 export class StreamingTyper {
   private originalClipboard: string | null = null;
+  /** Last value this instance wrote; used as a clipboard ownership token. */
+  private lastWrittenClipboard: string | null = null;
   private buffer = '';
   private flushing = false;
   private active = false;
@@ -103,6 +105,7 @@ export class StreamingTyper {
     this.manualPasteRequired = false;
     this.manualNoticeSent = false;
     this.buffer = '';
+    this.lastWrittenClipboard = null;
     this.flushSeq = 0;
     this.idlePromise = null;
     this.resolveIdle = null;
@@ -304,19 +307,30 @@ export class StreamingTyper {
       // user's previously-copied content. Only needed when something was
       // actually pasted (flushSeq > 0).
       if (this.flushSeq > 0) await sleep(this.timing.streamRestoreDelayMs);
-      try {
-        writeClipboardText(this.originalClipboard, this.excludeHistory);
-      } catch (err) {
-        // M11: clipboard restore failure was previously completely silent
-        // here — the streaming path regressed the non-streaming fix in
-        // typer.ts. Surface it to debug + UI so the user knows their
-        // pre-dictation clipboard was replaced.
-        const m = err instanceof Error ? err.message : String(err);
-        debug('DICTATION', `clipboard restore failed: ${m}`);
-        notifyPasteFailed(`clipboard restore failed: ${m}`);
+      const stillOwnsClipboard =
+        this.lastWrittenClipboard !== null &&
+        clipboardHasText() &&
+        clipboard.readText() === this.lastWrittenClipboard;
+      if (stillOwnsClipboard) {
+        try {
+          writeClipboardText(this.originalClipboard, this.excludeHistory);
+        } catch (err) {
+          // M11: clipboard restore failure was previously completely silent
+          // here — the streaming path regressed the non-streaming fix in
+          // typer.ts. Surface it to debug + UI so the user knows their
+          // pre-dictation clipboard was replaced.
+          const m = err instanceof Error ? err.message : String(err);
+          debug('DICTATION', `clipboard restore failed: ${m}`);
+          notifyPasteFailed(`clipboard restore failed: ${m}`);
+        }
+      } else if (this.flushSeq > 0) {
+        // The user copied something after our last paste. Restoring the old
+        // snapshot here would destroy their newer clipboard data.
+        debug('DICTATION', 'clipboard changed during streaming; skipped restore');
       }
       this.originalClipboard = null;
     }
+    this.lastWrittenClipboard = null;
     this.active = false;
     this.buffer = '';
     this.flushing = false;
@@ -435,6 +449,7 @@ export class StreamingTyper {
         }
         try {
           writeClipboardText(chunk, this.excludeHistory);
+          this.lastWrittenClipboard = chunk;
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
           debug('DICTATION', `streaming clipboard.writeText failed: ${msg}`);

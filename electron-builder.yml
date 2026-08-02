@@ -11,6 +11,7 @@ directories:
 files:
   - out/**
   - resources/**
+  - dictionary/**
   - package.json
 asarUnpack:
   # Native modules (.node) and Windows-only DLLs already need to be unpacked

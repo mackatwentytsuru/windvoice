@@ -72,6 +72,47 @@ describe('AudioDuck', () => {
     expect(hoisted.setVolume).toHaveBeenCalledTimes(1);
   });
 
+  it('coalesces concurrent duck() calls before getVolume resolves', async () => {
+    let release!: (value: number) => void;
+    hoisted.getVolume.mockImplementationOnce(
+      () => new Promise<number>((resolve) => {
+        release = resolve;
+      })
+    );
+    const duck = new AudioDuck();
+
+    const first = duck.duck(0.3);
+    const duplicate = duck.duck(0.5);
+    release(50);
+    await Promise.all([first, duplicate]);
+
+    expect(hoisted.getVolume).toHaveBeenCalledTimes(1);
+    expect(hoisted.setVolume).toHaveBeenCalledTimes(1);
+    expect(hoisted.setVolume).toHaveBeenCalledWith(15);
+  });
+
+  it('honors restore() requested while duck() is still lowering the volume', async () => {
+    let releaseSet!: () => void;
+    hoisted.setVolume.mockImplementationOnce(
+      (v: number) =>
+        new Promise<void>((resolve) => {
+          hoisted.state.volume = v;
+          releaseSet = resolve;
+        })
+    );
+    const duck = new AudioDuck();
+
+    const lowering = duck.duck(0.3);
+    await Promise.resolve();
+    const restoring = duck.restore();
+    releaseSet();
+    await Promise.all([lowering, restoring]);
+
+    expect(hoisted.setVolume).toHaveBeenNthCalledWith(1, 15);
+    expect(hoisted.setVolume).toHaveBeenNthCalledWith(2, 50);
+    expect(hoisted.state.volume).toBe(50);
+  });
+
   it('restore is a no-op if never ducked', async () => {
     const duck = new AudioDuck();
     await duck.restore();

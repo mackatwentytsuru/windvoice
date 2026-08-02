@@ -13,7 +13,9 @@ import {
 } from '@shared/constants';
 
 const REALTIME_BASE = 'wss://api.openai.com/v1/realtime';
-const DEFAULT_MODEL = 'gpt-realtime-whisper';
+const DEFAULT_MODEL = 'gpt-live-transcribe';
+const VOCABULARY_PROMPT = 'この話者がよく使う固有名詞です。';
+const MAX_VOCABULARY_HINTS = 200;
 
 // Minimum PCM bytes that must reach the server before a commit can succeed.
 // 100 ms × 24 000 Hz × 2 bytes/sample = 4 800 bytes. Committing below this
@@ -71,6 +73,8 @@ export interface RealtimeClientOptions {
   model?: string;
   language?: string;        // e.g. "ja", "en"; undefined for auto-detect
   vadEnabled?: boolean;
+  /** Literal product names, proper nouns, and acronyms expected in the audio. */
+  vocabularyHints?: string[];
 }
 
 export interface RealtimeClientEvents {
@@ -267,6 +271,7 @@ export class RealtimeClient extends EventEmitter {
 
   private sendSessionUpdate(): void {
     const model = this.opts.model ?? DEFAULT_MODEL;
+    const keywords = normalizeVocabularyHints(this.opts.vocabularyHints ?? []);
     const session: Record<string, unknown> = {
       type: 'transcription',
       audio: {
@@ -274,12 +279,10 @@ export class RealtimeClient extends EventEmitter {
           format: { type: 'audio/pcm', rate: 24_000 },
           transcription: {
             model,
-            ...(this.opts.language ? { language: this.opts.language } : {})
-            // Note: `prompt` (dictionary biasing) was removed here. As of
-            // 2026-05-26 the Realtime API rejects it ("The 'prompt' parameter
-            // is not supported for this model.") right after session.created.
-            // The dictionary is still applied in the gpt-5-mini formatter
-            // step (postprocess/formatter.ts).
+            ...(keywords.length > 0
+              ? { prompt: VOCABULARY_PROMPT, keywords }
+              : {}),
+            ...(this.opts.language ? { languages: [this.opts.language] } : {})
           },
           turn_detection: this.opts.vadEnabled
             ? {
@@ -293,6 +296,12 @@ export class RealtimeClient extends EventEmitter {
       }
     };
     this.send({ type: 'session.update', session });
+  }
+
+  /** Apply a file-watched dictionary update without reconnecting the socket. */
+  updateVocabularyHints(hints: readonly string[]): void {
+    this.opts.vocabularyHints = [...hints];
+    if (this.opened && this.ws?.readyState === WebSocket.OPEN) this.sendSessionUpdate();
   }
 
   private recordBackpressureDrop(): void {
@@ -647,4 +656,17 @@ export class RealtimeClient extends EventEmitter {
         break;
     }
   }
+}
+
+function normalizeVocabularyHints(hints: readonly string[]): string[] {
+  const seen = new Set<string>();
+  const normalized: string[] = [];
+  for (const raw of hints) {
+    const hint = raw.trim();
+    if (!hint || hint.length > 256 || /[<>\r\n]/.test(hint) || seen.has(hint)) continue;
+    seen.add(hint);
+    normalized.push(hint);
+    if (normalized.length >= MAX_VOCABULARY_HINTS) break;
+  }
+  return normalized;
 }
