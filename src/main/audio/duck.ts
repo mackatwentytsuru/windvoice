@@ -38,6 +38,7 @@ function isDuckingAllowed(): boolean {
 export class AudioDuck {
   private originalVolume: number | null = null;
   private active = false;
+  private duckPromise: Promise<void> | null = null;
 
   /**
    * Save the current volume and lower it.
@@ -45,11 +46,22 @@ export class AudioDuck {
    */
   async duck(multiplier: number): Promise<void> {
     if (this.active) return;
+    if (this.duckPromise) return this.duckPromise;
     if (multiplier >= 1) return;
     if (!isDuckingAllowed()) {
       debug('DUCK', 'skipped (mac default; set WINDVOICE_DUCK_MAC=1 to enable)');
       return;
     }
+    const operation = this.performDuck(multiplier);
+    this.duckPromise = operation;
+    try {
+      await operation;
+    } finally {
+      if (this.duckPromise === operation) this.duckPromise = null;
+    }
+  }
+
+  private async performDuck(multiplier: number): Promise<void> {
     try {
       const v = await loudness.getVolume();
       this.originalVolume = v;
@@ -59,12 +71,17 @@ export class AudioDuck {
       debug('DUCK', `${v} → ${target}`);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
+      this.originalVolume = null;
+      this.active = false;
       debug('DUCK', `failed to duck: ${msg}`);
       emitError('duck', msg);
     }
   }
 
   async restore(): Promise<void> {
+    const pendingDuck = this.duckPromise;
+    if (!pendingDuck && (!this.active || this.originalVolume == null)) return;
+    if (pendingDuck) await pendingDuck;
     if (!this.active || this.originalVolume == null) return;
     // Await the restore BEFORE clearing state. If setVolume rejects, keep
     // active=true + originalVolume so duck()'s `if (this.active) return` guard

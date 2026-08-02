@@ -370,6 +370,20 @@ export function GeneralPage({ settings, update }: Props): JSX.Element {
           <span>{t('general.errorReporting')}</span>
         </label>
         <div className="helper" style={{ marginBottom: 8 }}>{t('general.errorReportingHelper')}</div>
+
+        <label className="row" style={{ cursor: 'pointer' }}>
+          <input
+            type="checkbox"
+            checked={settings.ui.transcriptLogging}
+            onChange={(e) =>
+              void update({ ui: { ...settings.ui, transcriptLogging: e.target.checked } })
+            }
+          />
+          <span>{t('general.transcriptLogging')}</span>
+        </label>
+        <div className="helper" style={{ marginBottom: 8 }}>
+          {t('general.transcriptLoggingHelper')}
+        </div>
         <div className="row">
           <button onClick={() => void checkForUpdate()} disabled={checkingUpdate}>
             {t('general.checkForUpdate')}

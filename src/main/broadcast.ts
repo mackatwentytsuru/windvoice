@@ -8,6 +8,7 @@
 
 import { BrowserWindow } from 'electron';
 import { reportError } from '@main/report/githubReporter';
+import { scrubSecrets } from '@main/debug';
 import { IPC } from '@shared/ipc';
 
 let audioWebContentsId: number | null = null;
@@ -28,6 +29,16 @@ export function setAudioWebContentsId(id: number | null): void {
  * renderer simply ignores channels it has not subscribed to).
  */
 export function broadcastToUiWindows(channel: string, payload: unknown): void {
+  let safePayload = payload;
+  if (
+    typeof payload === 'string' &&
+    (channel === IPC.AUDIO_ERROR ||
+      channel === IPC.SYSTEM_ERROR ||
+      channel === IPC.FORMATTER_ERROR ||
+      (channel === IPC.TRANSCRIPT_FINAL && payload.startsWith('[error]')))
+  ) {
+    safePayload = scrubSecrets(payload);
+  }
   // Single choke point for user-visible errors: everything surfaced as a
   // SYSTEM_ERROR / FORMATTER_ERROR banner is also queued for the automatic
   // GitHub issue reporter (deduplicated + scrubbed there; fire-and-forget).
@@ -39,11 +50,23 @@ export function broadcastToUiWindows(channel: string, payload: unknown): void {
         : typeof p?.code === 'string'
           ? `formatter:${p.code}`
           : 'formatter';
-    if (typeof p?.message === 'string') reportError(source, p.message);
+    if (typeof p?.message === 'string') {
+      const message = scrubSecrets(p.message);
+      safePayload = { ...p, message };
+      reportError(source, message);
+    }
   }
   const skip = audioWebContentsId;
   for (const win of BrowserWindow.getAllWindows()) {
-    if (skip !== null && win.webContents.id === skip) continue;
-    win.webContents.send(channel, payload);
+    try {
+      if (win.isDestroyed()) continue;
+      const wc = win.webContents;
+      if (wc.isDestroyed()) continue;
+      if (skip !== null && wc.id === skip) continue;
+      wc.send(channel, safePayload);
+    } catch {
+      // A window may be destroyed between enumeration and send. UI broadcast
+      // is best-effort and must never crash the Electron main process.
+    }
   }
 }

@@ -20,6 +20,11 @@ import { IPC, type DictationStatus } from '@shared/types';
 import type { Settings } from '@shared/types';
 import { t } from '@shared/i18n';
 import {
+  emptyUserDictionary,
+  type UserDictionaryReader
+} from '@main/dictionary/userDictionary';
+import type { TranscriptLogSink } from '@main/dictionary/transcriptLog';
+import {
   CHUNK_MS,
   FINAL_TIMEOUT_MS,
   MIN_AUDIO_MS,
@@ -51,6 +56,9 @@ export class DictationOrchestrator {
   // WS that nothing references (orphan-window fix).
   private disposed = false;
   private inFlight = false;
+  private forwardingStarted = false;
+  private stopPromise: Promise<void> | null = null;
+  private pendingDictionaryRefresh = false;
   private partial = '';
   private startCount = 0;
   private pendingFinal: ((text: string) => void) | null = null;
@@ -66,6 +74,7 @@ export class DictationOrchestrator {
   // commit-wait. stop() checks it after the await so it does not clobber the
   // 'error' status back to 'idle' (and silently drop the partial transcript).
   private cycleErrored = false;
+  private finalReceivedThisCycle = false;
   private duckPromise: Promise<void> | null = null;
   private streamingActive = false;
   /** How many chars of `partial` have already been streaming-pasted. */
@@ -94,7 +103,12 @@ export class DictationOrchestrator {
 
   private maintenanceTimer: NodeJS.Timeout | null = null;
 
-  constructor(private audio: AudioBridge, overlay?: OverlayWindow) {
+  constructor(
+    private audio: AudioBridge,
+    overlay?: OverlayWindow,
+    private readonly dictionary: UserDictionaryReader = emptyUserDictionary,
+    private readonly transcriptLog?: TranscriptLogSink
+  ) {
     this.overlay = overlay ?? null;
     // Idle maintenance: refresh the realtime session before the server's
     // 60-minute cap kills it. unref'd so it never holds the process open.
@@ -129,6 +143,31 @@ export class DictationOrchestrator {
 
   isActive(): boolean {
     return this.inFlight;
+  }
+
+  /** Push a watched dictionary update into an idle live Realtime session. */
+  refreshDictionaryHints(): void {
+    if (this.inFlight) {
+      this.pendingDictionaryRefresh = true;
+      return;
+    }
+    this.pendingDictionaryRefresh = false;
+    this.client?.updateVocabularyHints(this.dictionary.getVocabularyHints());
+  }
+
+  /** Audio renderer failures during a take must abort immediately, not on the next hotkey press. */
+  handleAudioError(message: string): void {
+    if (!this.inFlight) return;
+    this.abortInFlightCycle(`[error] ${message}`, message);
+  }
+
+  /** Release capture, volume, and the half-open socket before the OS sleeps. */
+  handleSystemSuspend(): void {
+    if (this.inFlight) {
+      this.abortInFlightCycle('[error] system suspended', 'system suspended during dictation', false);
+      return;
+    }
+    this.resetClientForReconnect();
   }
 
   /**
@@ -189,10 +228,12 @@ export class DictationOrchestrator {
   async start(): Promise<void> {
     if (this.inFlight) return;
     this.inFlight = true;
+    this.forwardingStarted = false;
     this.cancelRequested = false;
     this.partial = '';
     this.duckedThisCycle = false;
     this.cycleErrored = false;
+    this.finalReceivedThisCycle = false;
     this.streamingActive = false;
     this.streamedPrefixLen = 0;
     const myCycle = ++this.cycleId;
@@ -205,7 +246,7 @@ export class DictationOrchestrator {
     if (recentErr) {
       this.updateStatus('error');
       this.inFlight = false;
-      this.broadcast(IPC.TRANSCRIPT_FINAL, `[error] ${recentErr}`);
+      broadcastToUiWindows(IPC.TRANSCRIPT_FINAL, `[error] ${recentErr}`);
       return;
     }
 
@@ -220,7 +261,11 @@ export class DictationOrchestrator {
     } catch (err) {
       this.updateStatus('error');
       this.inFlight = false;
-      this.broadcast(IPC.TRANSCRIPT_FINAL, `[error] secure storage unavailable: ${errMsg(err)}`);
+      broadcastToUiWindows(
+        IPC.TRANSCRIPT_FINAL,
+        `[error] secure storage unavailable: ${errMsg(err)}`
+      );
+      this.reportTranscriptionError('secure storage unavailable');
       return;
     }
     if (!apiKey) {
@@ -242,7 +287,7 @@ export class DictationOrchestrator {
     } catch (err) {
       this.updateStatus('error');
       this.inFlight = false;
-      this.broadcast(IPC.TRANSCRIPT_FINAL, `[error] ${errMsg(err)}`);
+      broadcastToUiWindows(IPC.TRANSCRIPT_FINAL, `[error] ${errMsg(err)}`);
       this.reportTranscriptionError(errMsg(err));
       return;
     }
@@ -255,6 +300,11 @@ export class DictationOrchestrator {
 
     void client;
     const settings = settingsStore.get();
+
+    if (this.pendingDictionaryRefresh) {
+      this.pendingDictionaryRefresh = false;
+      client.updateVocabularyHints(this.dictionary.getVocabularyHints());
+    }
 
     if (settings.ui.duckOtherAudio) {
       this.duckedThisCycle = true;
@@ -271,7 +321,11 @@ export class DictationOrchestrator {
     // Streaming insertion is clipboard-paste based; it does not apply to
     // the keystroke-based 'type' method, which always inserts the final
     // transcript in one pass.
-    if (settings.insertion.streaming && settings.insertion.method === 'paste') {
+    if (
+      settings.insertion.streaming &&
+      settings.insertion.method === 'paste' &&
+      this.dictionary.getVocabularyHints().length === 0
+    ) {
       streamingTyper.begin(
         settings.insertion.restoreClipboard,
         settings.insertion.pasteCompatibility,
@@ -282,6 +336,7 @@ export class DictationOrchestrator {
 
     const { startCount } = this.audio.beginForwarding();
     this.startCount = startCount;
+    this.forwardingStarted = true;
     // Snapshot UI windows for delta broadcasts now, so the per-delta hot
     // path does not enumerate BrowserWindow.getAllWindows() 20+ times per
     // second (issue #37). The audio renderer is excluded explicitly via
@@ -294,16 +349,43 @@ export class DictationOrchestrator {
     const audioWcId = this.audio.getWebContentsId();
     const targets: WebContents[] = [];
     for (const win of BrowserWindow.getAllWindows()) {
-      if (win.isDestroyed()) continue;
-      const wc = win.webContents;
-      if (audioWcId !== null && audioWcId !== undefined && wc.id === audioWcId) continue;
-      targets.push(wc);
+      try {
+        if (win.isDestroyed()) continue;
+        const wc = win.webContents;
+        if (wc.isDestroyed()) continue;
+        if (audioWcId !== null && audioWcId !== undefined && wc.id === audioWcId) continue;
+        targets.push(wc);
+      } catch {
+        // A BrowserWindow can be destroyed between getAllWindows() and the
+        // webContents property read. Skip that race instead of crashing main.
+      }
     }
     this.deltaTargets = targets;
   }
 
-  async stop(): Promise<void> {
-    if (!this.inFlight) return;
+  stop(): Promise<void> {
+    if (this.stopPromise) return this.stopPromise;
+    if (!this.inFlight) return Promise.resolve();
+    const running = this.stopCycle();
+    const tracked = running.finally(() => {
+      if (this.stopPromise === tracked) this.stopPromise = null;
+    });
+    this.stopPromise = tracked;
+    return tracked;
+  }
+
+  private async stopCycle(): Promise<void> {
+    if (!this.forwardingStarted) {
+      // start() has set inFlight but is still awaiting secure storage or the
+      // warm/open-client microtask. Cancel regardless of socket state so its
+      // continuation can never begin forwarding after this stop returns.
+      this.cancelRequested = true;
+      this.cycleId++;
+      this.inFlight = false;
+      this.updateStatus('idle');
+      debug('DICTATION', 'stop arrived before audio forwarding began');
+      return;
+    }
 
     if (!this.client || !this.client.isOpen()) {
       // Stop arrived before ensureConnected resolved (user tapped the
@@ -314,6 +396,7 @@ export class DictationOrchestrator {
       // dictation until app restart (issue #3).
       this.cancelRequested = true;
       this.inFlight = false;
+      this.forwardingStarted = false;
       this.updateStatus('idle');
       debug('DICTATION', 'stop arrived before connect');
       return;
@@ -323,6 +406,7 @@ export class DictationOrchestrator {
     this.updateStatus('processing');
     const settings = settingsStore.get();
     const { delivered, maxLevel } = this.audio.endForwarding(this.startCount);
+    this.forwardingStarted = false;
     debug('DICTATION', `delivered=${delivered} chunks maxLevel=${maxLevel.toFixed(4)}`);
 
     if (settings.ui.soundCuesEnabled) {
@@ -344,6 +428,7 @@ export class DictationOrchestrator {
     if (!this.client || !this.client.isOpen()) {
       if (myCycle === this.cycleId) {
         this.inFlight = false;
+        this.forwardingStarted = false;
         this.updateStatus('idle');
         if (this.duckedThisCycle) {
           this.duckedThisCycle = false;
@@ -425,8 +510,13 @@ export class DictationOrchestrator {
     // commit-wait; do not clobber it back to 'idle' or re-run teardown.
     if (this.cycleErrored) return;
 
-    this.inFlight = false;
-    this.updateStatus('idle');
+    const rawFinal = final;
+    final = this.dictionary.apply(final);
+    if (rawFinal.trim().length > 0) {
+      void this.transcriptLog?.append(rawFinal, final).catch((err) => {
+        debug('DICTATION', `transcript learning log failed: ${errMsg(err)}`);
+      });
+    }
 
     if (this.duckedThisCycle) {
       this.duckedThisCycle = false;
@@ -459,68 +549,78 @@ export class DictationOrchestrator {
       this.streamedPrefixLen = 0;
       // Still record history (raw transcript).
       if (final.trim().length > 0) {
-        this.broadcast(IPC.TRANSCRIPT_FINAL, final);
+        broadcastToUiWindows(IPC.TRANSCRIPT_FINAL, final);
         this.tryAddHistory(final, delivered);
       }
+      this.finishCycle(myCycle);
       return;
     }
 
-    if (final.trim().length === 0) return;
-
-    // Active window context (best-effort, cached). Used by the formatter
-    // for app-aware behavior and by history for the `app` field.
-    //
-    // Issue #35 — threat model: the `title` and `app` strings returned by
-    // get-windows are OS-derived and effectively attacker-controlled at the
-    // edges (the foreground window can be ANY application, and an adversary
-    // who can rename a window title can plant arbitrary content). Today
-    // neither value flows into any LLM prompt — `app` is stored in history
-    // and `title` is passed via `activeWindowTitle` on the pipeline context
-    // but no registered processor (formatter/replacements/fileTags)
-    // interpolates it into a prompt sent to OpenAI. If a future processor
-    // or formatter change wires the active-window title (or process name)
-    // into a system/user prompt, it MUST escape the value first using
-    // `sanitizePromptValue()` from `@main/postprocess/formatter` —
-    // otherwise a window title containing newlines or quotes could inject
-    // arbitrary directives into the formatter prompt.
-    const active = await getActiveWindow();
-
-    // Post-processing pipeline: formatter (if enabled) → replacements →
-    // file tags. Each step is best-effort; failures fall through.
-    // The formatter resolves the API key lazily from secureStore.
-    const processed = await postProcessorPipeline.run(final, {
-      settings,
-      activeWindowTitle: active?.title,
-      activeWindowApp: active?.app
-    });
-
-    this.broadcast(IPC.TRANSCRIPT_FINAL, processed);
-    try {
-      const ins = settings.insertion;
-      // 'type' mode synthesizes keystrokes (Windows). KEYEVENTF_UNICODE is
-      // reliable for ASCII regardless of IME state, but an active IME
-      // (Japanese/Chinese/Korean) intercepts and garbles non-ASCII VK_PACKET
-      // injection (the "fine in half-width English, garbled in Japanese"
-      // symptom). So non-ASCII text is routed through the IME-safe paste path
-      // even in 'type' mode. typeTextDirect returns false when nothing was
-      // injected (non-Windows / module missing); only then is a paste fallback
-      // safe, since a partial type must not be followed by a full paste.
-      const typed =
-        ins.method === 'type' &&
-        isAsciiTypeable(processed) &&
-        (await typeTextDirect(processed));
-      if (!typed) {
-        await pasteText(
-          processed,
-          ins.restoreClipboard,
-          ins.pasteCompatibility,
-          ins.excludeFromClipboardHistory
-        );
-      }
-    } catch (err) {
-      debug('DICTATION', `insert failed: ${errMsg(err)}`);
+    if (final.trim().length === 0) {
+      this.finishCycle(myCycle);
+      return;
     }
-    this.tryAddHistory(processed, delivered, active?.app);
+
+    try {
+      // Active window context (best-effort, cached). Used by the formatter
+      // for app-aware behavior and by history for the `app` field.
+      //
+      // Issue #35 — threat model: the `title` and `app` strings returned by
+      // get-windows are OS-derived and effectively attacker-controlled at the
+      // edges (the foreground window can be ANY application, and an adversary
+      // who can rename a window title can plant arbitrary content). Today
+      // neither value flows into any LLM prompt — `app` is stored in history
+      // and `title` is passed via `activeWindowTitle` on the pipeline context
+      // but no registered processor (formatter/replacements/fileTags)
+      // interpolates it into a prompt sent to OpenAI. If a future processor
+      // or formatter change wires the active-window title (or process name)
+      // into a system/user prompt, it MUST escape the value first using
+      // `sanitizePromptValue()` from `@main/postprocess/formatter` —
+      // otherwise a window title containing newlines or quotes could inject
+      // arbitrary directives into the formatter prompt.
+      const active = await getActiveWindow();
+
+      // Post-processing pipeline: formatter (if enabled) → replacements →
+      // file tags. Each step is best-effort; failures fall through.
+      // The formatter resolves the API key lazily from secureStore.
+      const processed = await postProcessorPipeline.run(final, {
+        settings,
+        activeWindowTitle: active?.title,
+        activeWindowApp: active?.app
+      });
+
+      broadcastToUiWindows(IPC.TRANSCRIPT_FINAL, processed);
+      try {
+        const ins = settings.insertion;
+        // 'type' mode synthesizes keystrokes (Windows). KEYEVENTF_UNICODE is
+        // reliable for ASCII regardless of IME state, but an active IME
+        // (Japanese/Chinese/Korean) intercepts and garbles non-ASCII VK_PACKET
+        // injection (the "fine in half-width English, garbled in Japanese"
+        // symptom). So non-ASCII text is routed through the IME-safe paste path
+        // even in 'type' mode. typeTextDirect returns false when nothing was
+        // injected (non-Windows / module missing); only then is a paste fallback
+        // safe, since a partial type must not be followed by a full paste.
+        const typed =
+          ins.method === 'type' &&
+          isAsciiTypeable(processed) &&
+          (await typeTextDirect(processed));
+        if (!typed) {
+          await pasteText(
+            processed,
+            ins.restoreClipboard,
+            ins.pasteCompatibility,
+            ins.excludeFromClipboardHistory
+          );
+        }
+      } catch (err) {
+        debug('DICTATION', `insert failed: ${errMsg(err)}`);
+      }
+      this.tryAddHistory(processed, delivered, active?.app);
+    } finally {
+      // Keep the lifecycle usable even if an unexpected active-window or
+      // post-processing failure escapes its best-effort boundary.
+      this.finishCycle(myCycle);
+    }
   }
 
   /** Detach all listeners and tear down the realtime client. */
@@ -552,7 +652,9 @@ export class DictationOrchestrator {
     //     piping samples to a dead consumer)
     // All three are fire-and-forget — we cannot await in dispose().
     this.inFlight = false;
+    this.forwardingStarted = false;
     this.streamingActive = false;
+    this.deltaTargets = [];
     if (this.duckedThisCycle) {
       this.duckedThisCycle = false;
       void audioDuck.restore().catch(() => {
@@ -575,8 +677,18 @@ export class DictationOrchestrator {
    * resource the cycle grabbed and surfaces the error. Shared by onClose's
    * mid-flight branch and onReconnecting so the two stay in lock-step.
    */
-  private abortInFlightCycle(broadcastMsg: string, reportMsg: string): void {
+  private abortInFlightCycle(
+    broadcastMsg: string,
+    reportMsg: string,
+    surfaceError = true
+  ): void {
+    this.cycleId++;
+    this.cancelRequested = true;
+    if (this.pendingFinal) this.pendingFinal('');
+    this.clearPendingFinalTimer();
     this.inFlight = false;
+    this.forwardingStarted = false;
+    this.deltaTargets = [];
     this.duckedThisCycle = false;
     this.audio.endForwarding(this.startCount);
     this.audio.setChunkListener(null);
@@ -590,9 +702,14 @@ export class DictationOrchestrator {
       );
       this.streamingActive = false;
     }
-    this.updateStatus('error');
-    this.broadcast(IPC.TRANSCRIPT_FINAL, broadcastMsg);
-    this.reportTranscriptionError(reportMsg);
+    this.resetClientForReconnect();
+    if (surfaceError) {
+      this.updateStatus('error');
+      broadcastToUiWindows(IPC.TRANSCRIPT_FINAL, broadcastMsg);
+      this.reportTranscriptionError(reportMsg);
+    } else {
+      this.updateStatus('idle');
+    }
   }
 
   private clearPendingFinalTimer(): void {
@@ -629,10 +746,19 @@ export class DictationOrchestrator {
         durationMs: deliveredChunks * CHUNK_MS,
         ...(app ? { app } : {})
       });
-      this.broadcast(IPC.HISTORY_CHANGED, entry);
+      broadcastToUiWindows(IPC.HISTORY_CHANGED, entry);
     } catch (err) {
       debug('DICTATION', `history.add failed: ${errMsg(err)}`);
     }
+  }
+
+  private finishCycle(myCycle: number): void {
+    if (myCycle !== this.cycleId || this.cycleErrored) return;
+    this.inFlight = false;
+    this.forwardingStarted = false;
+    this.deltaTargets = [];
+    this.updateStatus('idle');
+    if (this.pendingDictionaryRefresh) this.refreshDictionaryHints();
   }
 
   private updateStatus(status: DictationStatus): void {
@@ -718,18 +844,16 @@ export class DictationOrchestrator {
     debug('DICTATION', 'reset realtime client after undelivered audio — reconnect on next take');
   }
 
-  private broadcast(channel: string, payload: unknown): void {
-    for (const win of BrowserWindow.getAllWindows()) {
-      win.webContents.send(channel, payload);
-    }
-  }
-
   private broadcastDelta(text: string): void {
     // Hot path: 20+ calls/sec during streaming. Use the per-cycle snapshot
     // (issue #37) instead of enumerating BrowserWindow.getAllWindows().
     for (const wc of this.deltaTargets) {
-      if (wc.isDestroyed()) continue;
-      wc.send(IPC.TRANSCRIPT_DELTA, text);
+      try {
+        if (wc.isDestroyed()) continue;
+        wc.send(IPC.TRANSCRIPT_DELTA, text);
+      } catch {
+        // Window closed during the current streaming cycle.
+      }
     }
   }
 
@@ -793,7 +917,8 @@ export class DictationOrchestrator {
     const client = new RealtimeClient({
       apiKey,
       language: settings.language === 'auto' ? undefined : settings.language,
-      vadEnabled: false
+      vadEnabled: false,
+      vocabularyHints: this.dictionary.getVocabularyHints()
     });
 
     const onDelta = (text: string): void => {
@@ -809,11 +934,20 @@ export class DictationOrchestrator {
       }
     };
     const onFinal = (text: string): void => {
+      this.finalReceivedThisCycle = true;
       if (this.pendingFinal) this.pendingFinal(text);
     };
     const onError = (err: Error): void => {
       debug('REALTIME', err.message);
-      this.broadcast(IPC.TRANSCRIPT_FINAL, `[error] ${err.message}`);
+      if (this.inFlight && this.finalReceivedThisCycle) {
+        // The transcript is already authoritative and may be in formatter /
+        // paste. A late transport error must not discard that user content.
+        // Retire the socket for the next take and let stopCycle finish.
+        debug('REALTIME', 'late error after final; preserving finalized transcript');
+        this.resetClientForReconnect();
+        return;
+      }
+      broadcastToUiWindows(IPC.TRANSCRIPT_FINAL, `[error] ${err.message}`);
       this.reportTranscriptionError(err.message);
       if (this.pendingFinal) {
         this.pendingFinal('');
@@ -838,6 +972,7 @@ export class DictationOrchestrator {
         }
         this.updateStatus('error');
       }
+      this.resetClientForReconnect();
     };
     const onReconnecting = (): void => {
       // The WS dropped mid-dictation and the client is silently
@@ -853,7 +988,8 @@ export class DictationOrchestrator {
     const onClose = (): void => {
       // A clean close after `commit` should resolve pendingFinal, not
       // reject — the server may have closed us right after the final.
-      if (this.pendingFinal) {
+      const wasAwaitingFinal = this.pendingFinal !== null;
+      if (wasAwaitingFinal && this.pendingFinal) {
         this.pendingFinal(this.partial);
       }
       const isOurClient = this.client === client;
@@ -868,9 +1004,9 @@ export class DictationOrchestrator {
       }
       // If the WS reconnects mid-flight, do not keep state — surface the
       // error and reset.
-      if (this.inFlight && !this.pendingFinal) {
+      if (this.inFlight && !wasAwaitingFinal) {
         this.abortInFlightCycle('[error] connection closed', 'connection closed mid-dictation');
-      } else if (isOurClient) {
+      } else if (isOurClient && !wasAwaitingFinal) {
         // H7: WS closed (likely reconnect-attempts exhausted) while no
         // dictation was in flight. Previously the tray stayed on
         // whatever status it had — silently, the next dictation press

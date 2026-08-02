@@ -23,6 +23,8 @@ let logPath: string | null = null;
 // In-memory size of the active log file, so the hot path never calls statSync.
 // Seeded once from the file on first resolve, then tracked per append.
 let logBytes = 0;
+let rotationRetryAt = 0;
+const ROTATION_RETRY_MS = 60_000;
 
 function resolveLogPath(): string | null {
   if (logPathResolved) return logPath;
@@ -61,14 +63,18 @@ function fileLog(domain: Domain, message: string): void {
     // Rotate off an in-memory counter — no statSync on the hot path (debug() is
     // called per WebSocket message, ~10-20 Hz during dictation).
     if (logBytes > LOG_MAX_BYTES) {
+      if (Date.now() < rotationRetryAt) return;
       try {
         renameSync(p, `${p}.1`);
+        logBytes = 0;
+        rotationRetryAt = 0;
       } catch {
-        // Held open by a viewer (EPERM on Windows) — keep appending. We still
-        // reset the counter so we don't attempt rename on every line; rotation
-        // is retried after another LOG_MAX_BYTES accumulates.
+        // Held open by a viewer (EPERM on Windows). Stop appending while over
+        // the cap and retry periodically; resetting the counter here used to
+        // let the real file grow without bound for the lifetime of the app.
+        rotationRetryAt = Date.now() + ROTATION_RETRY_MS;
+        return;
       }
-      logBytes = 0;
     }
     appendFileSync(p, line);
     logBytes += Buffer.byteLength(line);
@@ -84,7 +90,9 @@ function enabledFor(domain: Domain): boolean {
 
 const SECRET_PATTERNS: ReadonlyArray<RegExp> = [
   /sk-[A-Za-z0-9_-]{4,}/g,
-  /Bearer\s+[A-Za-z0-9._-]+/g
+  /Bearer\s+[A-Za-z0-9._~+\/-]+={0,2}/gi,
+  /Authorization\s*:\s*Basic\s+[A-Za-z0-9+/]+={0,2}/gi,
+  /(?:[?&]?\b(?:api[-_]?key|access[-_]?token|auth[-_]?token|key)\b)\s*[:=]\s*[^\s&;,]+/gi
 ];
 
 /** Redact API keys / bearer tokens. Exported for the GitHub error reporter,

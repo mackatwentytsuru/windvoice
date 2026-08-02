@@ -1,0 +1,15 @@
+0000000000000000000000000000000000000000 da41db4a9fdfe1f83469c8aee8fcf1ba704b23bf CodexSandboxOffline <CodexSandboxOffline@DELL.(none)> 1785521812 +0900	branch: Created from release/mac-v0.1.14
+da41db4a9fdfe1f83469c8aee8fcf1ba704b23bf 0cc4972608a8aa8ae6f25658ff30d303d2934726 鶴岡悠生 <yukitsuruoka@tsuruokayuuseinoMacBook-Air.local> 1785521851 +0900	commit: test: add reproducers for dictionary and critical review bugs
+0cc4972608a8aa8ae6f25658ff30d303d2934726 924443fb7eccd6c3941a9e2b9d758ceaaeeb3bb5 鶴岡悠生 <yukitsuruoka@tsuruokayuuseinoMacBook-Air.local> 1785522075 +0900	commit: test: add hotkey reset reproducers
+924443fb7eccd6c3941a9e2b9d758ceaaeeb3bb5 360e89862310ad01312b3df55653982bfa5dc402 鶴岡悠生 <yukitsuruoka@tsuruokayuuseinoMacBook-Air.local> 1785522509 +0900	commit: test: cover concurrent dictionary updates
+360e89862310ad01312b3df55653982bfa5dc402 d66fd8d21cd1ef472ba7351443b24291fd974e01 鶴岡悠生 <yukitsuruoka@tsuruokayuuseinoMacBook-Air.local> 1785522662 +0900	commit: test: reproduce composite hotkey release leak
+d66fd8d21cd1ef472ba7351443b24291fd974e01 10f1f47ebf16d9d06111541bf4c716c159a64dc4 鶴岡悠生 <yukitsuruoka@tsuruokayuuseinoMacBook-Air.local> 1785522713 +0900	commit: test: reproduce suppressed toggle stop
+10f1f47ebf16d9d06111541bf4c716c159a64dc4 9d7b5c694bb68d4d526f5047a841a27eabd9e109 鶴岡悠生 <yukitsuruoka@tsuruokayuuseinoMacBook-Air.local> 1785522785 +0900	commit: test: reproduce streaming clipboard overwrite
+9d7b5c694bb68d4d526f5047a841a27eabd9e109 25c2478b2a8d1e47207755288bd08a5ebfed31d6 鶴岡悠生 <yukitsuruoka@tsuruokayuuseinoMacBook-Air.local> 1785522929 +0900	commit: test: reproduce rejected toggle desynchronization
+25c2478b2a8d1e47207755288bd08a5ebfed31d6 0345d79141679ec1062e84bc612a8b1f9148a074 鶴岡悠生 <yukitsuruoka@tsuruokayuuseinoMacBook-Air.local> 1785523056 +0900	commit: test: reproduce string error IPC secret leak
+0345d79141679ec1062e84bc612a8b1f9148a074 807ccf17d60ff49e35372e39f9ec4313bc5801ba 鶴岡悠生 <yukitsuruoka@tsuruokayuuseinoMacBook-Air.local> 1785523384 +0900	commit: test: reproduce hotkey startup retry failure
+807ccf17d60ff49e35372e39f9ec4313bc5801ba 5d94ad336a7289eeaee0e1f49f35f42ac194a3c7 鶴岡悠生 <yukitsuruoka@tsuruokayuuseinoMacBook-Air.local> 1785523429 +0900	commit: feat: add persistent user dictionary core
+5d94ad336a7289eeaee0e1f49f35f42ac194a3c7 dbb73be81579e0642fae0269e42db4ab5fe8ab6e 鶴岡悠生 <yukitsuruoka@tsuruokayuuseinoMacBook-Air.local> 1785523438 +0900	commit: fix: integrate dictionary and harden critical lifecycles
+dbb73be81579e0642fae0269e42db4ab5fe8ab6e dab7f55d7ec6ffc50bda3b5a779dbe07cb4783bf 鶴岡悠生 <yukitsuruoka@tsuruokayuuseinoMacBook-Air.local> 1785523560 +0900	commit: fix: surface global hotkey startup failure
+dab7f55d7ec6ffc50bda3b5a779dbe07cb4783bf c11006c5625dc332c3af974c398fcfcfeb50d084 鶴岡悠生 <yukitsuruoka@tsuruokayuuseinoMacBook-Air.local> 1785523733 +0900	commit: docs: report dictionary feature results
+c11006c5625dc332c3af974c398fcfcfeb50d084 8e78022bd48698cc3f448d6c3aa47b9bb1b93ac3 鶴岡悠生 <yukitsuruoka@tsuruokayuuseinoMacBook-Air.local> 1785523978 +0900	commit: docs: record sandbox push blocker

@@ -75,7 +75,8 @@ const ja: Dict = {
   'general.duckAudio': '録音中は他の音を小さく',
   'general.duckAudioHelper': '録音開始時にシステム音量を一時的に下げ、停止時に元に戻します。',
   'general.streaming': 'ストリーミング挿入(実験)',
-  'general.streamingHelper': '発話中にリアルタイムで文字が現れます。GPT 整形は無効になります。',
+  'general.streamingHelper':
+    '発話中にリアルタイムで文字が現れます。GPT 整形は無効です。ユーザー辞書の置換候補がある場合は、正確な挿入前置換のため発話終了後の一括挿入に切り替わります。',
   'general.pasteCompat': '貼り付けの確実性',
   'general.pasteCompatHelper':
     '貼り付け後に元のクリップボードへ戻すまでの待ち時間を調整します。「速い」だとターミナルやリモートデスクトップなど反応の遅い環境で直前にコピーした内容が貼り付いてしまう場合があります。',
@@ -93,6 +94,9 @@ const ja: Dict = {
   'general.errorReporting': 'エラーレポートの自動送信',
   'general.errorReportingHelper':
     'エラー発生時に GitHub リポジトリへ診断 issue を自動作成します（重複はまとめられます）。文字起こし本文や API キーは送信されません。',
+  'general.transcriptLogging': '辞書学習用の転写ログを保存',
+  'general.transcriptLoggingHelper':
+    'オプトインです。API キー等をマスクした認識前後のテキストだけをローカルの transcript-learning.jsonl に保存します。発話内容自体は含まれるため、秘密を話す場面では無効にしてください。',
   'general.checkForUpdate': '更新を確認',
   'general.updateAvailable': '新しいバージョンが利用可能',
   'general.updateDownload': 'ダウンロード',
@@ -129,7 +133,7 @@ const ja: Dict = {
 
   // dictionary page
   'dictionary.title': '辞書',
-  'dictionary.helper': 'モデルが聞き取った単語を正しい綴りに置換します。整形ステップで適用されます。',
+  'dictionary.helper': '誤変換を正しい表記へ追加します。ローカル辞書へマージされ、音声認識ヒントと挿入前置換に使われます。',
   'dictionary.from': '聞き取り',
   'dictionary.to': '正しい表記',
   'dictionary.add': '追加',
@@ -253,7 +257,8 @@ const en: Dict = {
   'general.duckAudio': 'Duck other audio while recording',
   'general.duckAudioHelper': 'Temporarily lower the system volume when recording starts; restore when it stops.',
   'general.streaming': 'Streaming paste (experimental)',
-  'general.streamingHelper': 'Type characters as you speak. GPT formatting is disabled in this mode.',
+  'general.streamingHelper':
+    'Type characters as you speak. GPT formatting is disabled. When the user dictionary has replacement candidates, WindVoice switches to final insertion so corrections happen before any text is inserted.',
   'general.pasteCompat': 'Paste reliability',
   'general.pasteCompatHelper':
     'Adjusts how long WindVoice waits before restoring your original clipboard after a paste. "Fast" can paste your previously-copied content instead in slow environments such as terminals or remote desktops.',
@@ -271,6 +276,9 @@ const en: Dict = {
   'general.errorReporting': 'Automatic error reporting',
   'general.errorReportingHelper':
     'When an error occurs, automatically file a diagnostic issue on the GitHub repo (duplicates are merged). Transcripts and API keys are never sent.',
+  'general.transcriptLogging': 'Save transcript log for dictionary learning',
+  'general.transcriptLoggingHelper':
+    'Opt-in. Saves only secret-scrubbed raw/corrected text to local transcript-learning.jsonl. Spoken content is included, so keep this off when dictating secrets.',
   'general.checkForUpdate': 'Check for update',
   'general.updateAvailable': 'A new version is available',
   'general.updateDownload': 'Download',
@@ -310,7 +318,7 @@ const en: Dict = {
   // dictionary page
   'dictionary.title': 'Dictionary',
   'dictionary.helper':
-    'Replace what the model heard with the canonical spelling. Applied during the formatter step.',
+    'Add common mishearings. They are merged into the local dictionary for Realtime hints and pre-insertion replacement.',
   'dictionary.from': 'heard',
   'dictionary.to': 'corrected',
   'dictionary.add': 'Add',

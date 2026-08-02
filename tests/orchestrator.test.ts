@@ -13,6 +13,7 @@ const hoisted = vi.hoisted(() => {
     committed = false;
     closed = false;
     disposed = false;
+    commitCalls = 0;
     connectDelay = 50;
     failConnect = false;
 
@@ -42,6 +43,7 @@ const hoisted = vi.hoisted(() => {
     }
     commit(): boolean {
       if (!this.opened) return false;
+      this.commitCalls++;
       this.committed = true;
       return true;
     }
@@ -66,10 +68,14 @@ const hoisted = vi.hoisted(() => {
     pendingBufferedBytes(): number {
       return this.pendingBuffered;
     }
+    updateVocabularyHints(_hints: string[]): void {
+      /* observed through constructor opts in these tests */
+    }
   }
   return {
     FakeRealtimeClient,
-    instances: [] as InstanceType<typeof FakeRealtimeClient>[]
+    instances: [] as InstanceType<typeof FakeRealtimeClient>[],
+    pipelineRun: vi.fn((text: string) => Promise.resolve(text))
   };
 });
 
@@ -113,6 +119,12 @@ vi.mock('@main/store/settings', () => ({
     })),
     set: vi.fn(),
     reset: vi.fn()
+  }
+}));
+
+vi.mock('@main/postprocess/pipeline', () => ({
+  postProcessorPipeline: {
+    run: (...args: unknown[]) => hoisted.pipelineRun(...(args as [string]))
   }
 }));
 
@@ -163,6 +175,8 @@ class FakeAudioBridge {
   private levelListener: ((level: number) => void) | null = null;
   private chunkCount = 0;
   private maxLevel = 0;
+  forwarding = false;
+  endForwardingCalls = 0;
   beeps: Array<'start' | 'stop'> = [];
   devices: string[] = [];
   recentAudioError: string | null = null;
@@ -178,10 +192,13 @@ class FakeAudioBridge {
     this.levelListener = cb;
   }
   beginForwarding(): { startCount: number } {
+    this.forwarding = true;
     this.maxLevel = 0;
     return { startCount: this.chunkCount };
   }
   endForwarding(start: number): { delivered: number; maxLevel: number } {
+    this.forwarding = false;
+    this.endForwardingCalls++;
     return { delivered: this.chunkCount - start, maxLevel: this.maxLevel };
   }
   recapture(): void {
@@ -227,15 +244,25 @@ import { IPC } from '../src/shared/ipc';
 describe('DictationOrchestrator', () => {
   let audio: FakeAudioBridge;
   let orch: DictationOrchestrator;
+  let dictionary: {
+    apply: ReturnType<typeof vi.fn>;
+    getVocabularyHints: ReturnType<typeof vi.fn>;
+  };
 
   beforeEach(() => {
     hoisted.instances.length = 0;
     audio = new FakeAudioBridge();
-    orch = new DictationOrchestrator(audio as never);
+    dictionary = {
+      apply: vi.fn((text: string) => text),
+      getVocabularyHints: vi.fn(() => ['翔鶴', 'Codex'])
+    };
+    orch = new DictationOrchestrator(audio as never, undefined, dictionary);
     vi.mocked(pasteText).mockClear();
     vi.mocked(historyStore.add).mockClear();
     vi.mocked(broadcastToUiWindows).mockClear();
     vi.mocked(setStatus).mockClear();
+    hoisted.pipelineRun.mockReset();
+    hoisted.pipelineRun.mockImplementation((text: string) => Promise.resolve(text));
   });
 
   afterEach(() => {
@@ -269,6 +296,30 @@ describe('DictationOrchestrator', () => {
       durationMs: 500
     });
     expect(audio.beeps).toEqual(['start', 'stop']);
+  });
+
+  it('applies the user dictionary to the final STT result before paste and history', async () => {
+    dictionary.apply.mockImplementation((text: string) => text.replaceAll('コードックス', 'Codex'));
+    await orch.start();
+    audio.feed(10);
+    const stopP = orch.stop();
+    await new Promise((r) => setTimeout(r, 100));
+    hoisted.instances[0]!.emit('final', 'コードックスを使う');
+    await stopP;
+
+    expect(dictionary.apply).toHaveBeenCalledWith('コードックスを使う');
+    expect(pasteText).toHaveBeenCalledWith('Codexを使う', true, 'balanced', true);
+    expect(historyStore.add).toHaveBeenCalledWith({
+      transcript: 'Codexを使う',
+      durationMs: 500
+    });
+  });
+
+  it('passes current dictionary vocabulary into each new Realtime client', async () => {
+    await orch.prewarmConnection();
+    expect(hoisted.instances[0]!.opts).toMatchObject({
+      vocabularyHints: ['翔鶴', 'Codex']
+    });
   });
 
   it('skips commit when no audio chunks were delivered', async () => {
@@ -374,6 +425,32 @@ describe('DictationOrchestrator', () => {
     expect(hoisted.instances).toHaveLength(1);
   });
 
+  it('cancels a quick tap safely even when a warm client is already open', async () => {
+    await orch.prewarmConnection();
+    const start = orch.start();
+    const stop = orch.stop();
+    await Promise.all([start, stop]);
+
+    expect(orch.isActive()).toBe(false);
+    expect(audio.forwarding).toBe(false);
+    expect(hoisted.instances[0]!.commitCalls).toBe(0);
+    expect(pasteText).not.toHaveBeenCalled();
+  });
+
+  it('coalesces duplicate stop() calls so commit and injection run once', async () => {
+    await orch.start();
+    audio.feed(10);
+    const first = orch.stop();
+    const duplicate = orch.stop();
+    expect(duplicate).toBe(first);
+    await new Promise((r) => setTimeout(r, 100));
+    hoisted.instances[0]!.emit('final', 'once');
+    await first;
+
+    expect(hoisted.instances[0]!.commitCalls).toBe(1);
+    expect(pasteText).toHaveBeenCalledTimes(1);
+  });
+
   it('isActive() returns false initially, true mid-cycle, false after stop', async () => {
     expect(orch.isActive()).toBe(false);
     await orch.start();
@@ -440,6 +517,31 @@ describe('DictationOrchestrator', () => {
     expect(hoisted.instances).toHaveLength(0);
     expect(orch.isActive()).toBe(false);
     // No paste, no commit.
+    expect(pasteText).not.toHaveBeenCalled();
+  });
+
+  it('aborts an active cycle immediately when the audio renderer reports an error', async () => {
+    await orch.start();
+    audio.feed(3);
+    orch.handleAudioError('microphone disconnected');
+
+    expect(orch.isActive()).toBe(false);
+    expect(audio.forwarding).toBe(false);
+    expect(hoisted.instances[0]!.disposed).toBe(true);
+    expect(broadcastToUiWindows).toHaveBeenCalledWith(IPC.SYSTEM_ERROR, {
+      source: 'transcription',
+      message: 'microphone disconnected'
+    });
+  });
+
+  it('aborts and disposes an active cycle before system suspend', async () => {
+    await orch.start();
+    audio.feed(3);
+    orch.handleSystemSuspend();
+
+    expect(orch.isActive()).toBe(false);
+    expect(audio.forwarding).toBe(false);
+    expect(hoisted.instances[0]!.disposed).toBe(true);
     expect(pasteText).not.toHaveBeenCalled();
   });
 
@@ -531,6 +633,32 @@ describe('DictationOrchestrator', () => {
     expect(broadcastToUiWindows).toHaveBeenCalledWith(IPC.SYSTEM_ERROR, {
       source: 'transcription',
       message: 'server blew up mid-commit'
+    });
+  });
+
+  it('keeps an already-finalized transcript when a late socket error lands during post-processing', async () => {
+    let release!: (text: string) => void;
+    hoisted.pipelineRun.mockImplementationOnce(
+      () =>
+        new Promise<string>((resolve) => {
+          release = resolve;
+        })
+    );
+    await orch.start();
+    audio.feed(10);
+    const stopP = orch.stop();
+    await new Promise((r) => setTimeout(r, 100));
+    hoisted.instances[0]!.emit('final', 'already finalized');
+    await Promise.resolve();
+
+    hoisted.instances[0]!.emit('error', new Error('late socket error'));
+    release('already finalized');
+    await stopP;
+
+    expect(pasteText).toHaveBeenCalledWith('already finalized', true, 'balanced', true);
+    expect(historyStore.add).toHaveBeenCalledWith({
+      transcript: 'already finalized',
+      durationMs: 500
     });
   });
 

@@ -61,6 +61,7 @@ export class HotkeyManager extends EventEmitter {
    */
   private toggleHeld: Set<string> = new Set();
   private started = false;
+  private handlersRegistered = false;
   /**
    * When the typer is synthesizing a paste keystroke (uIOhook.keyTap on macOS
    * emits a fresh Meta-down/Meta-up pair), uIOhook reports those synthetic
@@ -100,10 +101,20 @@ export class HotkeyManager extends EventEmitter {
 
   start(): void {
     if (this.started) return;
-    this.started = true;
-    uIOhook.on('keydown', (e) => this.onKey(e, true));
-    uIOhook.on('keyup', (e) => this.onKey(e, false));
-    uIOhook.start();
+    if (!this.handlersRegistered) {
+      uIOhook.on('keydown', (e) => this.onKey(e, true));
+      uIOhook.on('keyup', (e) => this.onKey(e, false));
+      this.handlersRegistered = true;
+    }
+    try {
+      uIOhook.start();
+      this.started = true;
+    } catch (err) {
+      // Accessibility permission can be granted after startup. Leave the
+      // manager retryable so the recovery poll can start the existing hooks.
+      this.started = false;
+      throw err;
+    }
   }
 
   stop(): void {
@@ -114,6 +125,40 @@ export class HotkeyManager extends EventEmitter {
     } catch {
       /* ignore */
     }
+  }
+
+  /**
+   * Forget physical-key state after an OS lifecycle boundary. Suspend and
+   * screen-lock can discard key-up events while uIOhook is paused, otherwise
+   * leaving push-to-talk/toggle bindings and paste waiters permanently stuck.
+   */
+  resetState(): void {
+    this.heldDown.clear();
+    this.toggleActive.clear();
+    this.toggleHeld.clear();
+    this.modifierState.ctrl = false;
+    this.modifierState.alt = false;
+    this.modifierState.shift = false;
+    this.modifierState.meta = false;
+    this.suppressUntil = 0;
+    this.modifierTimeoutTimes.length = 0;
+
+    const waiters = this.modifierReleaseWaiters.slice();
+    this.modifierReleaseWaiters.length = 0;
+    for (const waiter of waiters) {
+      queueMicrotask(() => {
+        try {
+          waiter();
+        } catch {
+          /* ignore — lifecycle recovery must not be interrupted by a waiter */
+        }
+      });
+    }
+  }
+
+  /** Roll back toggle bookkeeping when the orchestrator rejects a busy start. */
+  rejectToggleStart(bindingId: string): void {
+    this.toggleActive.delete(bindingId);
   }
 
   /**
@@ -313,6 +358,31 @@ export class HotkeyManager extends EventEmitter {
           }
         }
       }
+    } else {
+      // Suppression exists to ignore our synthesized Ctrl/Cmd+V paste. It
+      // must not swallow an unrelated physical toggle used to STOP an active
+      // recording (Space/Alt/etc.). Starting remains suppressed, and bindings
+      // that could match the synthesized paste stay fully ignored.
+      for (const nb of this.bindings) {
+        if (nb.binding.mode !== 'toggle') continue;
+        const id = nb.binding.id;
+        if (!down && nb.triggerKeys.includes(e.keycode)) {
+          this.toggleHeld.delete(id);
+          continue;
+        }
+        if (
+          down &&
+          this.toggleActive.has(id) &&
+          !this.toggleHeld.has(id) &&
+          !HotkeyManager.couldMatchSyntheticPaste(nb) &&
+          nb.triggerKeys.includes(e.keycode) &&
+          HotkeyManager.modsMatch(e, nb)
+        ) {
+          this.toggleHeld.add(id);
+          this.toggleActive.delete(id);
+          this.emit('stop', id);
+        }
+      }
     }
 
     // Safety net for the "stuck listening" bug: if a push-to-talk binding
@@ -324,15 +394,19 @@ export class HotkeyManager extends EventEmitter {
       for (const nb of this.bindings) {
         const id = nb.binding.id;
         if (!this.heldDown.has(id)) continue;
-        // Path A: trigger has a modifier flag, and that modifier has
-        // physically transitioned to up. Catches Right-Alt / Right-Cmd /
-        // etc. release lost inside suppressUntil.
-        if (nb.triggerProvidesModifier !== null) {
-          if (!this.modifierState[nb.triggerProvidesModifier]) {
-            this.heldDown.delete(id);
-            this.emit('stop', id);
-            debug('HOTKEY', `force-stop ${id}: ${nb.triggerProvidesModifier} no longer held`);
-          }
+        // Path A: any modifier required by the binding has physically
+        // transitioned to up. This covers modifier triggers (RightAlt) and
+        // composite bindings (Ctrl+Shift+Space) whose modifier is released
+        // before their non-modifier trigger.
+        const requiredModifierReleased =
+          (nb.modifiers.ctrl && !this.modifierState.ctrl) ||
+          (nb.modifiers.alt && !this.modifierState.alt) ||
+          (nb.modifiers.shift && !this.modifierState.shift) ||
+          (nb.modifiers.meta && !this.modifierState.meta);
+        if (requiredModifierReleased) {
+          this.heldDown.delete(id);
+          this.emit('stop', id);
+          debug('HOTKEY', `force-stop ${id}: required modifier no longer held`);
           continue;
         }
         // Path B: non-modifier trigger (F13, Space, etc.). A real keyup
@@ -343,11 +417,6 @@ export class HotkeyManager extends EventEmitter {
         // ambiguous and would otherwise leave the binding stuck.
         if (!down && nb.triggerKeys.includes(e.keycode)) {
           this.heldDown.delete(id);
-          // Bug: a non-modifier trigger keyup lost to the suppressUntil
-          // window skips the toggle branch above, which is where `toggleHeld`
-          // is normally cleared. Mirror the re-arm here so a toggle trigger
-          // doesn't stay permanently armed-off after such a keyup.
-          this.toggleHeld.delete(id);
           this.emit('stop', id);
           debug('HOTKEY', `force-stop ${id}: trigger keyup observed (non-modifier path)`);
         }
@@ -365,6 +434,19 @@ export class HotkeyManager extends EventEmitter {
     if (nb.triggerProvidesModifier !== 'shift' && e.shiftKey !== nb.modifiers.shift) return false;
     if (nb.triggerProvidesModifier !== 'meta' && e.metaKey !== nb.modifiers.meta) return false;
     return true;
+  }
+
+  private static couldMatchSyntheticPaste(nb: NormalizedBinding): boolean {
+    if (nb.triggerProvidesModifier === 'ctrl' && nb.triggerKeys.includes(UiohookKey.Ctrl)) {
+      return true;
+    }
+    if (nb.triggerProvidesModifier === 'meta' && nb.triggerKeys.includes(UiohookKey.Meta)) {
+      return true;
+    }
+    return (
+      nb.triggerKeys.includes(UiohookKey.V) &&
+      (nb.modifiers.ctrl || nb.modifiers.meta)
+    );
   }
 
   private static normalize(b: HotkeyBinding): NormalizedBinding | null {

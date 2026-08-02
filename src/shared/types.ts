@@ -155,6 +155,8 @@ export const SettingsSchema = z.object({
       autoLaunch: z.boolean().catch(false).default(false),
       /** Auto-check + auto-download GitHub releases on startup. */
       autoUpdate: z.boolean().catch(true).default(true),
+      /** Opt-in local JSONL transcript pairs for future dictionary learning. */
+      transcriptLogging: z.boolean().catch(false).default(false),
       /**
        * Automatically file deduplicated, secret-scrubbed error reports as
        * GitHub issues on the project repo (via the local `gh` CLI). Never

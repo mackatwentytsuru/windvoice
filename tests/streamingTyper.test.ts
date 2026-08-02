@@ -145,6 +145,21 @@ describe('StreamingTyper', () => {
     expect(hoisted.writeText).toHaveBeenLastCalledWith('USER-COPY');
   });
 
+  it('does not overwrite a new clipboard value copied by the user during dictation', async () => {
+    hoisted.clipboardText = 'BEFORE-DICTATION';
+    typer.begin(true);
+    typer.append('inserted');
+    await vi.advanceTimersByTimeAsync(80 + 100);
+
+    hoisted.clipboardText = 'NEW-USER-COPY';
+    const endP = typer.end();
+    await vi.advanceTimersByTimeAsync(2_500);
+    await endP;
+
+    expect(hoisted.clipboardText).toBe('NEW-USER-COPY');
+    expect(hoisted.writeText).not.toHaveBeenLastCalledWith('BEFORE-DICTATION');
+  });
+
   it('does NOT restore (overwrite) a non-text clipboard like an image', async () => {
     // User has an image copied — readText() would be '' and restoring it
     // at end() would silently destroy their image. begin() must detect the

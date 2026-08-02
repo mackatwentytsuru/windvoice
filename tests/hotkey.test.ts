@@ -14,6 +14,7 @@ vi.mock('uiohook-napi', () => ({
   }
 }));
 
+import { uIOhook } from 'uiohook-napi';
 import { HotkeyManager } from '../src/main/hotkey/manager';
 
 interface KbdEvent {
@@ -86,6 +87,32 @@ describe('HotkeyManager modifier-self-match', () => {
     expect(stopped).toEqual(['tog']);
   });
 
+  it('does not lose a safe toggle stop during paste-event suppression', () => {
+    mgr.setBindings([{ id: 'tog', keys: ['Space'], mode: 'toggle', format: true }]);
+    const event = { keycode: 57, altKey: false, ctrlKey: false, shiftKey: false, metaKey: false };
+    dispatch(mgr, event, true);
+    dispatch(mgr, event, false);
+    mgr.suppressFor(1_000);
+
+    dispatch(mgr, event, true);
+
+    expect(started).toEqual(['tog']);
+    expect(stopped).toEqual(['tog']);
+  });
+
+  it('re-arms a toggle after its requested start is rejected as busy', () => {
+    mgr.setBindings([{ id: 'tog', keys: ['Space'], mode: 'toggle', format: true }]);
+    const event = { keycode: 57, altKey: false, ctrlKey: false, shiftKey: false, metaKey: false };
+    dispatch(mgr, event, true);
+    mgr.rejectToggleStart('tog');
+    dispatch(mgr, event, false);
+
+    dispatch(mgr, event, true);
+
+    expect(started).toEqual(['tog', 'tog']);
+    expect(stopped).toEqual([]);
+  });
+
   it('requires exact modifier match for non-modifier triggers', () => {
     mgr.setBindings([{ id: 'c', keys: ['Ctrl', 'Shift', 'Space'], mode: 'toggle', format: true }]);
     // ctrl+shift+space → match
@@ -96,10 +123,61 @@ describe('HotkeyManager modifier-self-match', () => {
     expect(started).toEqual(['c']);
   });
 
+  it('stops push-to-talk when a required modifier is released before its trigger', () => {
+    mgr.setBindings([
+      { id: 'combo', keys: ['Ctrl', 'Shift', 'Space'], mode: 'push-to-talk', format: true }
+    ]);
+    dispatch(mgr, { keycode: 57, altKey: false, ctrlKey: true, shiftKey: true, metaKey: false }, true);
+    expect(started).toEqual(['combo']);
+
+    dispatch(mgr, { keycode: 42, altKey: false, ctrlKey: true, shiftKey: false, metaKey: false }, false);
+    expect(stopped).toEqual(['combo']);
+  });
+
   it('ignores keys with the wrong keycode', () => {
     mgr.setBindings([{ id: 'p', keys: ['RightAlt'], mode: 'push-to-talk', format: true }]);
     dispatch(mgr, { keycode: 999, altKey: false, ctrlKey: false, shiftKey: false, metaKey: false }, true);
     expect(started).toEqual([]);
+  });
+
+  it('can retry hook startup after an accessibility failure', () => {
+    vi.mocked(uIOhook.start)
+      .mockImplementationOnce(() => {
+        throw new Error('accessibility denied');
+      })
+      .mockImplementationOnce(() => undefined);
+    vi.mocked(uIOhook.on).mockClear();
+
+    expect(() => mgr.start()).toThrow('accessibility denied');
+    expect(() => mgr.start()).not.toThrow();
+
+    expect(uIOhook.start).toHaveBeenCalledTimes(2);
+    expect(uIOhook.on).toHaveBeenCalledTimes(2);
+  });
+
+  it('clears a stuck push-to-talk and modifier snapshot after suspend', async () => {
+    mgr.setBindings([{ id: 'primary', keys: ['RightAlt'], mode: 'push-to-talk', format: true }]);
+    dispatch(mgr, { keycode: 3640, altKey: true, ctrlKey: false, shiftKey: false, metaKey: false }, true);
+    expect(mgr.isAnyModifierHeld()).toBe(true);
+
+    const modifiersReleased = mgr.untilAllModifiersUp();
+    mgr.resetState();
+
+    await modifiersReleased;
+    expect(mgr.isAnyModifierHeld()).toBe(false);
+
+    dispatch(mgr, { keycode: 3640, altKey: true, ctrlKey: false, shiftKey: false, metaKey: false }, true);
+    expect(started).toEqual(['primary', 'primary']);
+  });
+
+  it('re-arms a toggle binding after the OS discards its key-up event', () => {
+    mgr.setBindings([{ id: 'toggle', keys: ['Space'], mode: 'toggle', format: true }]);
+    const event = { keycode: 57, altKey: false, ctrlKey: false, shiftKey: false, metaKey: false };
+    dispatch(mgr, event, true);
+    mgr.resetState();
+
+    dispatch(mgr, event, true);
+    expect(started).toEqual(['toggle', 'toggle']);
   });
 });
 

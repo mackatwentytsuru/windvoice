@@ -93,6 +93,20 @@ describe('debug()', () => {
     expect(matches.length).toBe(2);
   });
 
+  it.each([
+    ['api-key header', 'api-key: 0123456789abcdef0123456789abcdef', '0123456789abcdef0123456789abcdef'],
+    ['api_key query', 'request failed ?api_key=secret-value-123', 'secret-value-123'],
+    ['generic key query', 'request failed &key=another-secret-456', 'another-secret-456'],
+    ['authorization basic', 'Authorization: Basic dXNlcjpwYXNzd29yZA==', 'dXNlcjpwYXNzd29yZA==']
+  ])('scrubs %s forms', async (_label, input, secret) => {
+    process.env['WINDVOICE_DEBUG'] = '1';
+    const { debug } = await freshDebug();
+    debug('DICTATION', input);
+    const out = String(writeSpy.mock.calls[0]?.[0]);
+    expect(out).not.toContain(secret);
+    expect(out).toContain('***REDACTED***');
+  });
+
   it('passes a normal message through untouched', async () => {
     process.env['WINDVOICE_DEBUG'] = '1';
     const { debug } = await freshDebug();

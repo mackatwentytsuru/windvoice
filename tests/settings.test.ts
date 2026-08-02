@@ -11,6 +11,7 @@ describe('SettingsSchema', () => {
     expect(s.formatter.model).toBe('gpt-5-mini');
     expect(s.insertion.method).toBe('paste');
     expect(s.dictionary).toEqual([]);
+    expect(s.ui.transcriptLogging).toBe(false);
   });
 
   it('preserves user-supplied hotkeys', () => {
