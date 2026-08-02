@@ -1,3 +1,0 @@
-docs: record sandbox push blocker
-
-Document the failed HTTPS, SSH-over-443, and connector push paths plus the exact retry command for the workspace-local Git directory.
