@@ -208,7 +208,7 @@ const ja: Dict = {
     'マイクから音声を取得できません。他のアプリ（Teams や Zoom など）がマイクを使用していないか確認し、Windows の入力デバイス設定を見直してください。',
   'error.audioNotSent': '音声をサーバーに送信できませんでした。ネットワーク接続を確認して、もう一度お試しください。',
   'error.pasteCopiedManual':
-    '転写テキストをクリップボードにコピーしました。手動で貼り付けてください。',
+    '転写テキストをクリップボードにコピーしました。手動で貼り付けてください（端末: Ctrl+Shift+V / その他: Ctrl+V）。',
   'error.statusNotifierUnavailable':
     '常駐アイコンを表示する仕組みが見つかりません。GNOME では gnome-shell-extension-appindicator パッケージ、または extensions.gnome.org の「AppIndicator and KStatusNotifierItem Support」をインストールして有効にすると、常駐アイコンが表示されます。拡張機能が無くても、WindVoice をもう一度起動すれば設定ウィンドウが開きます。',
 
@@ -423,7 +423,7 @@ const en: Dict = {
     "Can't capture audio from the microphone. Check that no other app (e.g. Teams or Zoom) is using it, and review your input device in Windows sound settings.",
   'error.audioNotSent': "Couldn't send audio to the server. Check your network connection and try again.",
   'error.pasteCopiedManual':
-    'The transcript was copied to the clipboard. Please paste it manually.',
+    'The transcript was copied to the clipboard. Paste it manually (terminal: Ctrl+Shift+V; other apps: Ctrl+V).',
   'error.statusNotifierUnavailable':
     'No system tray host was found. On GNOME, install and enable the gnome-shell-extension-appindicator package or “AppIndicator and KStatusNotifierItem Support” from extensions.gnome.org to show the resident icon. Even without the extension, launch WindVoice again to open the Settings window.',
 

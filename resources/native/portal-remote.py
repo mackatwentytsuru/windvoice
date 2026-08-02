@@ -21,12 +21,14 @@ Protocol (one JSON object per line):
         Snapshot current selection (if restore), claim it with text, inject
         Ctrl+V, wait, restore the old selection. Replies when finished.
         -> {"id":1,"ok":true,"claimed":true,"injected":true,
-            "restored":true}
+            "selectionRead":true,"restored":true,
+            "shortcut":"ctrl-shift-v"}
     {"id":2,"op":"snapshot"}            -> {"id":2,"ok":true,"kind":"text",
                                              "text":"..."}
                                             or kind "empty" / "non-text"
     {"id":3,"op":"set_selection","text":"..."}
-    {"id":4,"op":"key_paste"}           inject Ctrl+V only
+    {"id":4,"op":"key_paste","shortcut":"ctrl-shift-v"}
+                                            inject a paste chord only
     {"id":5,"op":"ping"}
   stdout:
     {"event":"ready","clipboard":true}  session established
@@ -40,6 +42,8 @@ import secrets
 import sys
 import threading
 import time
+
+from portal_input import InjectionError, inject_paste_chord as dispatch_paste_chord
 
 try:
     import gi  # noqa: E402
@@ -64,7 +68,6 @@ RD = 'org.freedesktop.portal.RemoteDesktop'
 CLIP = 'org.freedesktop.portal.Clipboard'
 REQ = 'org.freedesktop.portal.Request'
 SESSION_IFACE = 'org.freedesktop.portal.Session'
-KEY_LEFTCTRL, KEY_V = 29, 47
 MIME_TYPES = ['text/plain;charset=utf-8', 'text/plain', 'UTF8_STRING', 'TEXT', 'STRING']
 DBUS_TIMEOUT_MS = 3000
 
@@ -96,11 +99,19 @@ state = {
     # reproduced live on Ubuntu 24.04. Never read blind.
     'foreign_mimes': None,
     'selection_is_owner': False,
+    # Monotonic IDs used to distinguish a target read that happened after a
+    # paste chord from an eager clipboard-manager read that happened as soon
+    # as we claimed the selection.
+    'selection_generation': 0,
+    'transfer_request_seq': 0,
+    'transfer_completed_seq': 0,
+    'transfer_completed_generation': 0,
     # Session paths deliberately closed while replacing a stale restore-token
     # session. Their Closed signals must not terminate the replacement.
     'expected_closes': set(),
 }
 state_lock = threading.Lock()
+transfer_condition = threading.Condition(state_lock)
 
 
 def is_dbus_timeout(error):
@@ -212,7 +223,7 @@ def write_bounded(fd, data, deadline_s=2.0):
         view = view[n:]
 
 
-def serve_selection_transfer(sess, serial, text):
+def serve_selection_transfer(sess, serial, text, generation, request_seq):
     with state_lock:
         if sess != state['session']:
             return
@@ -227,6 +238,11 @@ def serve_selection_transfer(sess, serial, text):
         finally:
             os.close(fd)
         call(CLIP, 'SelectionWriteDone', GLib.Variant('(oub)', (sess, serial, True)))
+        with transfer_condition:
+            if request_seq > state['transfer_completed_seq']:
+                state['transfer_completed_seq'] = request_seq
+                state['transfer_completed_generation'] = generation
+            transfer_condition.notify_all()
     except Exception as e:  # noqa: BLE001 — serving must never kill the loop
         emit({'event': 'transfer_error', 'message': str(e)})
 
@@ -237,12 +253,15 @@ def on_selection_transfer(conn, sender, path, siface, member, params):
         if sess != state['session']:
             return
         text = state['selection_text']
+        generation = state['selection_generation']
+        state['transfer_request_seq'] += 1
+        request_seq = state['transfer_request_seq']
     # SelectionWrite returns an fd and the consumer may take time to drain it.
     # Keep every blocking operation off GLib's signal-dispatch thread so
     # Closed and owner-change signals remain responsive.
     threading.Thread(
         target=serve_selection_transfer,
-        args=(sess, serial, text),
+        args=(sess, serial, text, generation, request_seq),
         daemon=True,
     ).start()
 
@@ -595,6 +614,9 @@ def set_selection(text):
         if not session or not state['clipboard']:
             raise RuntimeError('clipboard capability unavailable')
         previous_text = state['selection_text']
+        previous_generation = state['selection_generation']
+        state['selection_generation'] += 1
+        generation = state['selection_generation']
         # Set this before the D-Bus call because SelectionTransfer can arrive
         # as soon as the claim is accepted.
         state['selection_text'] = text
@@ -604,16 +626,39 @@ def set_selection(text):
     except Exception:
         with state_lock:
             state['selection_text'] = previous_text
+            state['selection_generation'] = previous_generation
         raise
+    return generation
 
 
-class InjectionError(RuntimeError):
-    def __init__(self, error, injected):
-        super().__init__(str(error))
-        self.injected = injected
+def transfer_checkpoint():
+    with state_lock:
+        return state['transfer_request_seq']
 
 
-def inject_ctrl_v():
+def wait_for_selection_read(generation, after_request_seq, timeout_s):
+    """Wait for a post-injection SelectionTransfer to finish.
+
+    XDG Clipboard does not expose the requesting process, so this proves that
+    a consumer drained our data after the chord, not that a specific focused
+    app rendered the text. The distinction is surfaced to the Node client as
+    `selectionRead`, never hidden behind key-dispatch success.
+    """
+    end = time.monotonic() + timeout_s
+    with transfer_condition:
+        while True:
+            if (
+                state['transfer_completed_generation'] == generation
+                and state['transfer_completed_seq'] > after_request_seq
+            ):
+                return True
+            remaining = end - time.monotonic()
+            if remaining <= 0:
+                return False
+            transfer_condition.wait(remaining)
+
+
+def inject_paste_chord(shortcut='ctrl-shift-v'):
     with state_lock:
         session = state['session']
         if not session:
@@ -623,27 +668,23 @@ def inject_ctrl_v():
         call(RD, 'NotifyKeyboardKeycode',
              GLib.Variant('(oa{sv}iu)', (session, {}, code, 1 if down else 0)))
 
-    injected = False
-    try:
-        key(KEY_LEFTCTRL, True)
-        key(KEY_V, True)
-        injected = True
-        time.sleep(0.01)
-        key(KEY_V, False)
-        key(KEY_LEFTCTRL, False)
-    except Exception as e:
-        raise InjectionError(e, injected) from e
-    return True
+    return dispatch_paste_chord(key, shortcut)
 
 
-def emit_paste_result(rid, claimed, injected, restored, stage=None, error=None):
+def emit_paste_result(
+        rid, claimed, injected, selection_read, restored,
+        stage=None, error=None, tainted=False, shortcut='ctrl-shift-v'):
     result = {
         'id': rid,
-        'ok': bool(injected),
+        'ok': injected is True and selection_read is True,
         'claimed': bool(claimed),
-        'injected': bool(injected),
+        'injected': injected,
+        'selectionRead': selection_read,
         'restored': bool(restored),
+        'shortcut': shortcut,
     }
+    if tainted:
+        result['tainted'] = True
     if stage is not None:
         result['stage'] = stage
     if error is not None:
@@ -665,16 +706,21 @@ def exit_if_portal_unavailable(error):
 def handle_paste(msg, rid):
     claimed = False
     injected = False
+    selection_read = False
     restored = False
+    shortcut = 'ctrl-shift-v'
     try:
         text = str(msg.get('text', ''))
         restore = bool(msg.get('restore', True))
         settle = max(0, int(msg.get('settleMs', 150))) / 1000
         restore_delay = max(0, int(msg.get('restoreMs', 1500))) / 1000
+        verify_delay = max(0, int(msg.get('verifyMs', 750))) / 1000
+        shortcut = str(msg.get('shortcut', 'ctrl-shift-v'))
     except (TypeError, ValueError, OverflowError) as e:
         emit_paste_result(
-            rid, claimed, injected, restored, 'snapshot',
+            rid, claimed, injected, selection_read, restored, 'snapshot',
             f'invalid paste options: {e}',
+            shortcut=shortcut,
         )
         return
     old_text = None
@@ -690,26 +736,35 @@ def handle_paste(msg, rid):
             snapshot_problem = 'original selection is non-text and cannot be restored'
 
     try:
-        set_selection(text)
+        generation = set_selection(text)
         claimed = True
     except Exception as e:  # noqa: BLE001
-        emit_paste_result(rid, claimed, injected, restored, 'claim', e)
+        emit_paste_result(
+            rid, claimed, injected, selection_read, restored,
+            'claim', e, shortcut=shortcut)
         exit_if_portal_unavailable(e)
         return
 
     time.sleep(settle)
+    transfer_before_inject = transfer_checkpoint()
     inject_error = None
     try:
-        injected = inject_ctrl_v()
+        injected = inject_paste_chord(shortcut)
     except InjectionError as e:
         injected = e.injected
         inject_error = e
     except Exception as e:  # noqa: BLE001
         inject_error = e
 
+    if injected is True:
+        selection_read = wait_for_selection_read(
+            generation, transfer_before_inject, verify_delay)
+
     restore_error = None
-    if restore and old_text is not None:
-        if injected:
+    # Never erase an unconsumed transcript. Once SelectionWriteDone completed,
+    # the target owns the bytes and fixed-delay guessing is no longer needed.
+    if selection_read and restore and old_text is not None:
+        if restore_delay:
             time.sleep(restore_delay)
         try:
             set_selection(old_text)
@@ -719,19 +774,30 @@ def handle_paste(msg, rid):
 
     if inject_error is not None:
         emit_paste_result(
-            rid, claimed, injected, restored, 'inject', inject_error)
-        exit_if_portal_unavailable(inject_error)
-        if restore_error is not None:
-            exit_if_portal_unavailable(restore_error)
+            rid, claimed, injected, selection_read, restored,
+            'inject', inject_error, tainted=True, shortcut=shortcut)
+        # A partially delivered chord can leave Ctrl/Shift latched even when
+        # best-effort releases also fail. Destroying the RemoteDesktop session
+        # is the only reliable kernel/compositor cleanup boundary.
+        os._exit(1)
     elif restore_error is not None:
         emit_paste_result(
-            rid, claimed, injected, restored, 'restore', restore_error)
+            rid, claimed, injected, selection_read, restored,
+            'restore', restore_error, shortcut=shortcut)
         exit_if_portal_unavailable(restore_error)
+    elif injected is True and not selection_read:
+        emit_paste_result(
+            rid, claimed, injected, selection_read, restored,
+            'verify', 'no post-injection selection read was observed',
+            shortcut=shortcut)
     elif snapshot_problem is not None:
         emit_paste_result(
-            rid, claimed, injected, restored, 'snapshot', snapshot_problem)
+            rid, claimed, injected, selection_read, restored,
+            'snapshot', snapshot_problem, shortcut=shortcut)
     else:
-        emit_paste_result(rid, claimed, injected, restored)
+        emit_paste_result(
+            rid, claimed, injected, selection_read, restored,
+            shortcut=shortcut)
 
 
 def handle(msg):
@@ -756,8 +822,16 @@ def handle(msg):
             set_selection(str(msg.get('text', '')))
             emit({'id': rid, 'ok': True})
         elif op == 'key_paste':
-            inject_ctrl_v()
-            emit({'id': rid, 'ok': True})
+            shortcut = str(msg.get('shortcut', 'ctrl-shift-v'))
+            try:
+                inject_paste_chord(shortcut)
+                emit({'id': rid, 'ok': True, 'injected': True,
+                      'shortcut': shortcut})
+            except InjectionError as e:
+                emit({'id': rid, 'ok': False, 'injected': e.injected,
+                      'tainted': True, 'error': str(e),
+                      'shortcut': shortcut})
+                os._exit(1)
         elif op == 'paste':
             handle_paste(msg, rid)
         else:

@@ -29,6 +29,20 @@ function failed(child: FakeChild, denied: boolean): void {
   );
 }
 
+function ready(child: FakeChild): void {
+  child.stdout.emit('data', '{"event":"ready","clipboard":true}\n');
+}
+
+function lastRequest(child: FakeChild): Record<string, unknown> {
+  const line = child.stdin.write.mock.calls.at(-1)?.[0];
+  if (typeof line !== 'string') throw new Error('sidecar request was not written');
+  return JSON.parse(line) as Record<string, unknown>;
+}
+
+function reply(child: FakeChild, request: Record<string, unknown>, fields: object): void {
+  child.stdout.emit('data', `${JSON.stringify({ id: request.id, ...fields })}\n`);
+}
+
 describe('PortalSidecar supervision', () => {
   let children: FakeChild[];
   let sidecar: PortalSidecar;
@@ -113,7 +127,7 @@ describe('PortalSidecar supervision', () => {
     first.stdout.emit('data', '{"event":"ready","clipboard":true}\n');
 
     const paste = sidecar.pasteText('hello', true, 0, 0);
-    await vi.advanceTimersByTimeAsync(15_000);
+    await vi.advanceTimersByTimeAsync(15_750);
 
     await expect(paste).resolves.toMatchObject({
       ok: false,
@@ -123,6 +137,71 @@ describe('PortalSidecar supervision', () => {
     expect(first.kill).toHaveBeenCalledOnce();
 
     await vi.advanceTimersByTimeAsync(3_000);
+    expect(children).toHaveLength(2);
+  });
+
+  it('uses the terminal-safe chord and does not call a key dispatch a successful paste', async () => {
+    sidecar.start();
+    const child = children[0]!;
+    ready(child);
+
+    const paste = sidecar.pasteText('hello', true, 60, 1_500);
+    const request = lastRequest(child);
+    expect(request).toMatchObject({
+      op: 'paste',
+      shortcut: 'ctrl-shift-v',
+      verifyMs: 750
+    });
+    reply(child, request, {
+      ok: false,
+      claimed: true,
+      injected: true,
+      selectionRead: false,
+      restored: false,
+      stage: 'verify',
+      error: 'selection was not read'
+    });
+
+    await expect(paste).resolves.toMatchObject({
+      ok: false,
+      injected: true,
+      selectionRead: false,
+      sessionRecyclePending: true,
+      stage: 'verify'
+    });
+    expect(child.kill).not.toHaveBeenCalled();
+
+    sidecar.retryForDictation();
+
+    expect(child.kill).toHaveBeenCalledOnce();
+    expect(children).toHaveLength(2);
+  });
+
+  it('recycles a tainted virtual keyboard session before the next paste', async () => {
+    sidecar.start();
+    const first = children[0]!;
+    ready(first);
+
+    const paste = sidecar.pasteText('hello', true, 0, 0);
+    const request = lastRequest(first);
+    reply(first, request, {
+      ok: false,
+      claimed: true,
+      injected: null,
+      selectionRead: false,
+      restored: false,
+      tainted: true,
+      stage: 'inject',
+      error: 'modifier release failed'
+    });
+
+    await expect(paste).resolves.toMatchObject({
+      ok: false,
+      injected: null,
+      selectionRead: false,
+      sessionReset: true
+    });
+    expect(first.kill).toHaveBeenCalledOnce();
     expect(children).toHaveLength(2);
   });
 });

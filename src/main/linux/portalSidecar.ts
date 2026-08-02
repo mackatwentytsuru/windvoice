@@ -2,7 +2,8 @@
 //
 // The sidecar owns the XDG RemoteDesktop session with the Clipboard
 // capability and performs the entire Wayland paste sequence (claim
-// selection → inject Ctrl+V → restore selection). It exists because:
+// selection → inject the paste chord → verify receipt → restore selection).
+// It exists because:
 //   1. On Wayland a background app cannot claim the clipboard for
 //      Wayland-native windows through Electron's clipboard API — selection
 //      ownership requires keyboard focus, and GNOME only bridges an
@@ -22,14 +23,28 @@ const TOKEN_FILE = '.portal-remotedesktop.json';
 const RESPAWN_DELAY_MS = 3000;
 const MAX_RESPAWNS = 5;
 
-export type PasteStage = 'snapshot' | 'claim' | 'inject' | 'restore';
+export type PasteStage = 'snapshot' | 'claim' | 'inject' | 'verify' | 'restore';
+
+export const WAYLAND_PASTE_SHORTCUT = 'ctrl-shift-v' as const;
+export const WAYLAND_PASTE_VERIFICATION_MS = 750;
 
 export interface PortalPasteResult {
   ok: boolean;
   claimed: boolean;
   /** null means the request timed out/exited after dispatch, so injection is unknown. */
   injected: boolean | null;
+  /**
+   * Whether a SelectionTransfer completed after the paste chord was sent.
+   * This is the strongest receipt signal exposed by the portal, but it cannot
+   * identify the requesting process (a clipboard manager may also read it).
+   */
+  selectionRead: boolean | null;
   restored: boolean;
+  /** True when the tainted RemoteDesktop session was discarded. */
+  sessionReset?: boolean;
+  /** True when the current selection is kept for manual paste, then the
+   * virtual keyboard/session will be rebuilt before the next dictation. */
+  sessionRecyclePending?: boolean;
   stage?: PasteStage;
   error?: string;
 }
@@ -59,8 +74,11 @@ interface SidecarReply {
   denied?: boolean;
   message?: string;
   claimed?: boolean;
-  injected?: boolean;
+  injected?: boolean | null;
+  selectionRead?: boolean;
   restored?: boolean;
+  tainted?: boolean;
+  shortcut?: typeof WAYLAND_PASTE_SHORTCUT | 'ctrl-v';
   stage?: PasteStage;
   /** Local-only marker added when a mutating request loses its child. */
   uncertain?: boolean;
@@ -101,6 +119,7 @@ export class PortalSidecar {
   private onUnavailable: SidecarUnavailableListener | null = null;
   private onReady: SidecarReadyListener | null = null;
   private restartTimer: NodeJS.Timeout | null = null;
+  private recycleBeforeNextDictation = false;
   /** Set by stop(), cleared by start() — makes "stopped means stopped" hold. */
   private stopped = false;
   private readonly spawnChild: SpawnSidecar;
@@ -140,6 +159,7 @@ export class PortalSidecar {
    * otherwise burn its respawn budget and stay dead until restarted.
    */
   restart(): void {
+    this.recycleBeforeNextDictation = false;
     this.respawns = 0;
     this.denied = false;
     this.stopped = false;
@@ -154,6 +174,14 @@ export class PortalSidecar {
    * not make paste unavailable for the remainder of the app process.
    */
   retryForDictation(): void {
+    if (this.recycleBeforeNextDictation) {
+      debug(
+        'DICTATION',
+        'recycling portal session before dictation after an unverified paste'
+      );
+      this.restart();
+      return;
+    }
     if (this.isReady() || this.denied || this.stopped) return;
     this.respawns = 0;
     if (!this.child && !this.restartTimer) this.start();
@@ -233,6 +261,7 @@ export class PortalSidecar {
     this.ready = false;
     this.clipboard = false;
     this.stdoutBuf = '';
+    this.recycleBeforeNextDictation = false;
     this.rejectAllPending(reason);
     try {
       child.kill();
@@ -408,27 +437,56 @@ export class PortalSidecar {
     settleMs: number,
     restoreMs: number
   ): Promise<PortalPasteResult> {
-    const budget = settleMs + restoreMs + 15_000;
-    const r = await this.send('paste', { text, restore, settleMs, restoreMs }, budget);
+    const budget = settleMs + restoreMs + WAYLAND_PASTE_VERIFICATION_MS + 15_000;
+    const r = await this.send(
+      'paste',
+      {
+        text,
+        restore,
+        settleMs,
+        restoreMs,
+        verifyMs: WAYLAND_PASTE_VERIFICATION_MS,
+        shortcut: WAYLAND_PASTE_SHORTCUT
+      },
+      budget
+    );
     if (!r.ok) debug('DICTATION', `portal sidecar paste failed: ${r.error}`);
     if (r.uncertain) {
       return {
         ok: false,
         claimed: r.claimed === true,
         injected: null,
+        selectionRead: null,
         restored: false,
+        sessionReset: true,
         stage: r.stage ?? 'inject',
         error: r.error
       };
     }
-    const injected = r.injected === true;
+    const injected = r.injected === null ? null : r.injected === true;
+    const selectionRead = r.selectionRead === true;
+    const sessionReset = r.tainted === true;
+    const sessionRecyclePending =
+      injected === true && !selectionRead && !sessionReset;
+    if (sessionReset) {
+      debug('DICTATION', 'portal sidecar virtual keyboard was tainted — rebuilding session');
+      this.restart();
+    } else if (sessionRecyclePending) {
+      // Keep the transcript on the live portal selection for the user's
+      // manual paste. Rebuild at the next dictation boundary, before another
+      // chord can inherit any silently latched modifier state.
+      this.recycleBeforeNextDictation = true;
+    }
     return {
-      // The protocol defines successful delivery by injection, even when
-      // the later clipboard restore failed.
-      ok: injected,
+      // A successful D-Bus key dispatch is not a delivery receipt. Require a
+      // completed SelectionTransfer before reporting success.
+      ok: injected === true && selectionRead,
       claimed: r.claimed === true,
       injected,
+      selectionRead,
       restored: r.restored === true,
+      ...(sessionReset ? { sessionReset: true } : {}),
+      ...(sessionRecyclePending ? { sessionRecyclePending: true } : {}),
       ...(r.stage ? { stage: r.stage } : {}),
       ...(r.error ? { error: r.error } : {})
     };
@@ -457,12 +515,17 @@ export class PortalSidecar {
     };
   }
 
-  /** Inject the Ctrl+V chord only (legacy-path fallback injection). */
+  /** Inject the Wayland paste chord only (legacy-path fallback injection). */
   async keyPaste(): Promise<PortalMutationResult> {
-    const r = await this.send('key_paste', {}, 10_000);
+    const r = await this.send(
+      'key_paste',
+      { shortcut: WAYLAND_PASTE_SHORTCUT },
+      10_000
+    );
+    if (r.tainted === true) this.restart();
     return {
       ok: r.ok === true,
-      uncertain: r.uncertain === true,
+      uncertain: r.uncertain === true || r.injected === null,
       ...(r.error ? { error: r.error } : {})
     };
   }

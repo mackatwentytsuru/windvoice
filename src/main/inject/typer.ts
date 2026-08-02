@@ -6,7 +6,10 @@ import { debug } from '@main/debug';
 import { getActiveHotkeyManager } from '@main/hotkey/manager';
 import { sendPasteKeystroke } from '@main/inject/paste';
 import { isWaylandSession } from '@main/linux/wayland';
-import { portalSidecar } from '@main/linux/portalSidecar';
+import {
+  portalSidecar,
+  WAYLAND_PASTE_SHORTCUT
+} from '@main/linux/portalSidecar';
 import { pasteTiming, type PasteCompatibility } from '@main/inject/pasteTiming';
 import { writeClipboardText } from '@main/inject/clipboardWrite';
 import { sleep } from '@main/util/sleep';
@@ -219,7 +222,7 @@ export function recoverClipboardIfPending(): void {
  * Insert text at the focused cursor by:
  *   1. saving current clipboard text (also persists to disk for crash safety)
  *   2. writing the new text into clipboard
- *   3. simulating Ctrl+V (Cmd+V on macOS)
+ *   3. simulating the platform paste chord
  *   4. restoring the original clipboard
  *
  * Compared to per-character typing, this is faster and IME-safe.
@@ -234,19 +237,26 @@ export async function pasteText(
 
   const timing = pasteTiming(compatibility);
 
-  // Wayland: delegate the ENTIRE sequence (claim selection → Ctrl+V →
+  // Wayland: delegate the ENTIRE sequence (claim selection → paste chord →
   // restore selection) to the portal sidecar. Electron's own clipboard is
   // useless here: a background app's clipboard write never becomes the
   // Wayland selection (ownership needs keyboard focus), so the legacy path
   // below pastes whatever was previously on the Wayland clipboard — the
   // exact bug observed live (an old API key pasted instead of the
   // transcript). Wait for physical modifier release first so the synth
-  // Ctrl+V is not perceived as Alt+Ctrl+V by the target.
+  // Ctrl+Shift+V is not perceived with an extra physical modifier by the
+  // target.
   if (isWaylandSession()) {
     if (portalSidecar.isReady()) {
       const hkmW = getActiveHotkeyManager();
       if (hkmW) await hkmW.untilAllModifiersUp(600);
-      hkmW?.suppressFor(40);
+      // Cover sidecar settle + key dispatch, but not the later receipt wait.
+      // The old
+      // 40ms suppression expired before the Wayland settle delay even began,
+      // allowing our virtual paste chord to re-enter the hotkey state machine.
+      // Keeping suppression through the 750ms receipt window would instead
+      // swallow a legitimate next dictation after a fast successful paste.
+      hkmW?.suppressFor(timing.settleMs + 250);
       debug('DICTATION', `wayland paste: sidecar path (len=${text.length} restore=${restoreClipboard})`);
       const result = await portalSidecar.pasteText(
         text,
@@ -256,21 +266,35 @@ export async function pasteText(
       );
       debug(
         'DICTATION',
-        `wayland paste: sidecar result ok=${result.ok} injected=${String(result.injected)} restored=${result.restored}`
+        `wayland paste: sidecar result shortcut=${WAYLAND_PASTE_SHORTCUT} ` +
+          `ok=${result.ok} injected=${String(result.injected)} ` +
+          `selectionRead=${String(result.selectionRead)} restored=${result.restored} ` +
+          `stage=${result.stage ?? 'none'} sessionReset=${result.sessionReset === true} ` +
+          `recyclePending=${result.sessionRecyclePending === true}`
       );
-      if (result.injected === true) {
-        // Injection is the delivery boundary. A later restore failure must
-        // never cause a second paste of the same transcript.
+      if (result.ok && result.selectionRead === true) {
+        // A completed selection read is the delivery boundary. A later
+        // restore failure must never cause a second paste of the transcript.
         if (restoreClipboard && !result.restored && result.stage === 'restore') {
           notifyPasteFailed(`Wayland clipboard restore failed: ${result.error ?? 'unknown error'}`);
         }
         return;
       }
+      if (
+        result.sessionReset ||
+        result.sessionRecyclePending ||
+        (result.stage === 'inject' && result.injected !== true)
+      ) {
+        // The virtual device/session has been destroyed by PortalSidecar.
+        // Clear the corresponding in-process snapshot as well so one missed
+        // synthetic key-up cannot poison every later untilAllModifiersUp().
+        hkmW?.resetState();
+      }
       if (result.injected === null) {
         // Timeout/child loss after dispatch is an indeterminate delivery:
         // the sidecar has been recycled, but the target may already have
-        // received Ctrl+V. Never synthesize another paste; preserve the text
-        // for a deliberate manual paste instead.
+        // received the paste chord. Never synthesize another paste; preserve
+        // the text for a deliberate manual paste instead.
         copyTextForManualPaste(text, excludeFromClipboardHistory);
         notifyPasteFailed(
           `Wayland portal paste outcome is unknown: ${result.error ?? 'request interrupted'}. ${manualPasteMessage()}`
@@ -278,6 +302,12 @@ export async function pasteText(
         return;
       }
       copyTextForManualPaste(text, excludeFromClipboardHistory);
+      if (result.injected === true && result.selectionRead === false) {
+        notifyPasteFailed(
+          `Wayland paste target receipt was not confirmed: ${result.error ?? 'the selection was not read'}. ${manualPasteMessage()}`
+        );
+        return;
+      }
       notifyPasteFailed(
         `Wayland portal paste failed: ${result.error ?? 'unknown error'}. ${manualPasteMessage()}`
       );

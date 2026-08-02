@@ -420,21 +420,30 @@ export class StreamingTyper {
           const hkmW = getActiveHotkeyManager();
           if (hkmW) await hkmW.untilAllModifiersUp(400);
           if (gen !== this.generation) return;
-          hkmW?.suppressFor(40);
+          hkmW?.suppressFor(this.timing.streamSettleMs + 250);
           const paste = portalSidecar.pasteText(chunk, false, this.timing.streamSettleMs, 0);
           this.inFlight = paste;
           const result = await paste;
           if (this.inFlight === paste) this.inFlight = null;
           this.waylandClaimed =
             this.waylandClaimed || result.claimed || result.injected === true;
-          if (result.injected !== true) {
+          if (!result.ok || result.selectionRead !== true) {
             // Preserve the undelivered/uncertain chunk and stop this session.
             // Retrying an uncertain operation could duplicate dictated text.
             this.buffer = chunk + this.buffer;
             const detail =
               result.injected === null
                 ? 'delivery outcome is unknown'
-                : `delivery failed at ${result.stage ?? 'unknown stage'}`;
+                : result.injected === true && result.selectionRead === false
+                  ? 'target selection read was not confirmed'
+                  : `delivery failed at ${result.stage ?? 'unknown stage'}`;
+            if (
+              result.sessionReset ||
+              result.sessionRecyclePending ||
+              (result.stage === 'inject' && result.injected !== true)
+            ) {
+              hkmW?.resetState();
+            }
             debug('DICTATION', `streaming portal paste failed for a chunk: ${detail}`);
             this.requireManualPaste(
               `Wayland streaming paste stopped — ${detail}: ${result.error ?? 'unknown error'}`

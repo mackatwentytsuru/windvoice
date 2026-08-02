@@ -23,6 +23,7 @@ vi.mock('@main/linux/wayland', () => ({
 }));
 
 vi.mock('@main/linux/portalSidecar', () => ({
+  WAYLAND_PASTE_VERIFICATION_MS: 750,
   portalSidecar: {
     isReady: () => hoisted.ready,
     pasteText: hoisted.pasteText,
@@ -37,6 +38,10 @@ vi.mock('@main/inject/typer', () => ({
   copyTextForManualPaste: hoisted.copyForManualPaste,
   manualPasteMessage: () =>
     'クリップボードにコピーしました。手動で貼り付けてください。'
+}));
+
+vi.mock('@main/inject/paste', () => ({
+  sendPasteKeystroke: vi.fn()
 }));
 
 vi.mock('@main/inject/pasteTiming', () => ({
@@ -79,6 +84,7 @@ describe('StreamingTyper Wayland lifecycle', () => {
       ok: false,
       claimed: false,
       injected: false,
+      selectionRead: false,
       restored: false,
       stage: 'claim',
       error: 'claim failed'
@@ -122,6 +128,7 @@ describe('StreamingTyper Wayland lifecycle', () => {
       ok: true,
       claimed: true,
       injected: true,
+      selectionRead: true,
       restored: false
     });
     const typer = new StreamingTyper();
@@ -140,6 +147,7 @@ describe('StreamingTyper Wayland lifecycle', () => {
       ok: false,
       claimed: true,
       injected: false,
+      selectionRead: false,
       restored: false,
       stage: 'inject',
       error: 'inject failed'
@@ -161,6 +169,7 @@ describe('StreamingTyper Wayland lifecycle', () => {
       ok: true;
       claimed: true;
       injected: true;
+      selectionRead: true;
       restored: false;
     }) => void;
     hoisted.pasteText.mockReturnValueOnce(
@@ -175,10 +184,36 @@ describe('StreamingTyper Wayland lifecycle', () => {
     const ending = typer.end();
     expect(typer.begin(true)).toBe(false);
 
-    finishPaste({ ok: true, claimed: true, injected: true, restored: false });
+    finishPaste({
+      ok: true,
+      claimed: true,
+      injected: true,
+      selectionRead: true,
+      restored: false
+    });
     await vi.runAllTimersAsync();
     await ending;
 
     expect(typer.begin(true)).toBe(true);
+  });
+
+  it('stops streaming when dispatch succeeded but no selection read was observed', async () => {
+    hoisted.pasteText.mockResolvedValue({
+      ok: false,
+      claimed: true,
+      injected: true,
+      selectionRead: false,
+      restored: false,
+      stage: 'verify',
+      error: 'selection was not read'
+    });
+    const typer = new StreamingTyper();
+
+    expect(typer.begin(true)).toBe(true);
+    typer.append('x'.repeat(200));
+    await vi.runAllTimersAsync();
+
+    expect(hoisted.copyForManualPaste).toHaveBeenCalledWith('x'.repeat(200), false);
+    expect(hoisted.notify).toHaveBeenCalledWith(expect.stringContaining('streaming'));
   });
 });

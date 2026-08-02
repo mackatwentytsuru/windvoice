@@ -5,7 +5,10 @@ const hoisted = vi.hoisted(() => ({
   pasteText: vi.fn(),
   legacyPaste: vi.fn(),
   writeClipboard: vi.fn(),
-  notify: vi.fn()
+  notify: vi.fn(),
+  untilModifiersUp: vi.fn(() => Promise.resolve()),
+  suppress: vi.fn(),
+  resetHotkeys: vi.fn()
 }));
 
 vi.mock('electron', () => ({
@@ -37,6 +40,8 @@ vi.mock('@main/linux/wayland', () => ({
 }));
 
 vi.mock('@main/linux/portalSidecar', () => ({
+  WAYLAND_PASTE_SHORTCUT: 'ctrl-shift-v',
+  WAYLAND_PASTE_VERIFICATION_MS: 750,
   portalSidecar: {
     isReady: () => hoisted.ready,
     pasteText: hoisted.pasteText
@@ -62,7 +67,11 @@ vi.mock('@main/inject/pasteTiming', () => ({
 }));
 
 vi.mock('@main/hotkey/manager', () => ({
-  getActiveHotkeyManager: () => null
+  getActiveHotkeyManager: () => ({
+    untilAllModifiersUp: hoisted.untilModifiersUp,
+    suppressFor: hoisted.suppress,
+    resetState: hoisted.resetHotkeys
+  })
 }));
 
 vi.mock('@main/util/sleep', () => ({
@@ -78,6 +87,9 @@ describe('pasteText Wayland routing', () => {
     hoisted.legacyPaste.mockReset();
     hoisted.writeClipboard.mockReset();
     hoisted.notify.mockReset();
+    hoisted.untilModifiersUp.mockClear();
+    hoisted.suppress.mockReset();
+    hoisted.resetHotkeys.mockReset();
     setPasteFailureListener(hoisted.notify);
   });
 
@@ -90,6 +102,7 @@ describe('pasteText Wayland routing', () => {
       ok: true,
       claimed: true,
       injected: true,
+      selectionRead: true,
       restored: false,
       stage: 'restore',
       error: 'restore failed'
@@ -98,6 +111,7 @@ describe('pasteText Wayland routing', () => {
     await pasteText('hello', true);
 
     expect(hoisted.legacyPaste).not.toHaveBeenCalled();
+    expect(hoisted.suppress).toHaveBeenCalledWith(250);
     expect(hoisted.notify).toHaveBeenCalledWith(expect.stringContaining('restore'));
   });
 
@@ -106,6 +120,7 @@ describe('pasteText Wayland routing', () => {
       ok: false,
       claimed: false,
       injected: false,
+      selectionRead: false,
       restored: false,
       stage: 'claim',
       error: 'claim failed'
@@ -125,6 +140,7 @@ describe('pasteText Wayland routing', () => {
       ok: false,
       claimed: false,
       injected: null,
+      selectionRead: false,
       restored: false,
       stage: 'inject',
       error: 'paste timed out'
@@ -134,6 +150,27 @@ describe('pasteText Wayland routing', () => {
 
     expect(hoisted.legacyPaste).not.toHaveBeenCalled();
     expect(hoisted.notify).toHaveBeenCalledWith(expect.stringContaining('unknown'));
+    expect(hoisted.resetHotkeys).toHaveBeenCalledOnce();
+  });
+
+  it('preserves and surfaces text when the target never reads the selection', async () => {
+    hoisted.pasteText.mockResolvedValue({
+      ok: false,
+      claimed: true,
+      injected: true,
+      selectionRead: false,
+      restored: false,
+      sessionRecyclePending: true,
+      stage: 'verify',
+      error: 'selection was not read'
+    });
+
+    await pasteText('hello', true);
+
+    expect(hoisted.legacyPaste).not.toHaveBeenCalled();
+    expect(hoisted.writeClipboard).toHaveBeenLastCalledWith('hello', false);
+    expect(hoisted.notify).toHaveBeenCalledWith(expect.stringContaining('not confirmed'));
+    expect(hoisted.resetHotkeys).toHaveBeenCalledOnce();
   });
 
   it('keeps text for manual paste when the sidecar is not ready', async () => {
