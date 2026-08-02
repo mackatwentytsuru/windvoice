@@ -638,18 +638,21 @@ describe('DictationOrchestrator', () => {
 
   it('keeps an already-finalized transcript when a late socket error lands during post-processing', async () => {
     let release!: (text: string) => void;
-    hoisted.pipelineRun.mockImplementationOnce(
-      () =>
-        new Promise<string>((resolve) => {
-          release = resolve;
-        })
-    );
+    const pipelineStarted = new Promise<void>((resolveStarted) => {
+      hoisted.pipelineRun.mockImplementationOnce(
+        () =>
+          new Promise<string>((resolve) => {
+            release = resolve;
+            resolveStarted();
+          })
+      );
+    });
     await orch.start();
     audio.feed(10);
     const stopP = orch.stop();
     await new Promise((r) => setTimeout(r, 100));
     hoisted.instances[0]!.emit('final', 'already finalized');
-    await Promise.resolve();
+    await pipelineStarted;
 
     hoisted.instances[0]!.emit('error', new Error('late socket error'));
     release('already finalized');
