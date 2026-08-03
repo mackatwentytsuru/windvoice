@@ -1,0 +1,36 @@
+=== 実機証拠(雪風 2026-08-03) ===
+=== ウィンドウ一覧(GNOME) ===
+bs false ""
+=== プロセス ===
+=== 設定ファイル ===
+-rw-rw-r-- 1 yukitsuruoka yukitsuruoka 1781  7月 29 20:13 /home/yukitsuruoka/.config/windvoice/error-reports.json
+-rw------- 1 yukitsuruoka yukitsuruoka 2226  8月  2 22:57 /home/yukitsuruoka/.config/windvoice/user-dictionary.json
+-rw------- 1 yukitsuruoka yukitsuruoka 5297  8月  3 11:26 /home/yukitsuruoka/.config/windvoice/windvoice-history.json
+-rw------- 1 yukitsuruoka yukitsuruoka  875  7月 29 18:41 /home/yukitsuruoka/.config/windvoice/windvoice-settings.json
+=== rendererのasar内index ===
+=== トレイ拡張 ===
+ding@rastersoft.com
+tiling-assistant@ubuntu.com
+ubuntu-appindicators@ubuntu.com
+ubuntu-dock@ubuntu.com
+=== debug log 直近 ===
+2026-08-03T02:28:00.866Z [audio] renderer reported ready
+2026-08-03T02:28:00.867Z [audio] hidden window loaded
+2026-08-03T02:28:01.014Z [hotkey] evdev: reading /dev/input/event3
+2026-08-03T02:28:01.014Z [hotkey] evdev: reading /dev/input/event4
+2026-08-03T02:28:01.014Z [hotkey] evdev: reading /dev/input/event7
+2026-08-03T02:28:01.014Z [hotkey] evdev monitor ready (3 keyboard device(s))
+2026-08-03T02:28:01.027Z [audio] prewarm requested (device=default idleMode=suspend)
+2026-08-03T02:28:01.055Z [dictation] autoLaunch enabled (wrote XDG autostart entry)
+2026-08-03T02:28:01.202Z [dictation] portal sidecar ready (clipboard=true)
+2026-08-03T02:28:02.096Z [realtime] session.created
+2026-08-03T02:28:02.482Z [realtime] session.updated
+2026-08-03T02:29:57.969Z [dictation] portal sidecar exited (null)
+
+=== 症状 ===
+- フルビルド版(renderer込み)に差し替え済み。AppRunは$APPDIR未設定で壊れるためバイナリ直起動に変更
+- 起動直後のログは完全に正常(audio ready / evdev 3台 / portal sidecar ready / realtime session.created)
+- しかし数分でプロセスが消える。GNOMEのウィンドウ一覧にWindVoiceのウィンドウが存在しない
+- 設定UIを開いても中身がほぼ表示されない(提督報告)
+- 音声入力: 認識・整形は成功、貼り付けで「no post-injection selection read was observed」→なのに上位はok=true
+- トレイ拡張 ubuntu-appindicators は有効
