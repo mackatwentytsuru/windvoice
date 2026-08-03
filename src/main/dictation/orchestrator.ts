@@ -610,12 +610,27 @@ export class DictationOrchestrator {
           isAsciiTypeable(processed) &&
           (await typeTextDirect(processed));
         if (!typed) {
-          await pasteText(
+          const insertion = await pasteText(
             processed,
             ins.restoreClipboard,
             ins.pasteCompatibility,
             ins.excludeFromClipboardHistory
           );
+          if (!insertion.ok) {
+            // Preserve the failure above the injector boundary. Previously
+            // pasteText resolved Promise<void> after notifying locally, so
+            // finishCycle immediately overwrote 'error' with 'idle'.
+            this.cycleErrored = true;
+            this.inFlight = false;
+            this.forwardingStarted = false;
+            this.deltaTargets = [];
+            this.updateStatus('error');
+            debug(
+              'DICTATION',
+              `insert result ok=false injected=${String(insertion.injected)} ` +
+                `selectionRead=${String(insertion.selectionRead)} stage=${insertion.stage ?? 'none'}`
+            );
+          }
         }
       } catch (err) {
         debug('DICTATION', `insert failed: ${errMsg(err)}`);

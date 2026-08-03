@@ -10,8 +10,11 @@ import {
 } from './schema';
 
 const USER_DICTIONARY_FILE = 'user-dictionary.json';
+const WATCH_PROBE_FILE = '.user-dictionary-watch-probe';
 const CONTEXT_DEPENDENT_MARKER = '文脈依存';
 const WATCH_DEBOUNCE_MS = 75;
+const WATCH_ARM_ATTEMPTS = 20;
+const WATCH_ARM_INTERVAL_MS = 50;
 const REALTIME_UNSAFE_KEYWORD = /[<>\r\n]/;
 
 export interface UserDictionaryReader {
@@ -28,6 +31,8 @@ export interface UserDictionaryStoreOptions {
   userDataDir: string;
   seedPath: string;
   watch?: boolean;
+  /** Test seam; production always uses node:fs.watch. */
+  watchFactory?: typeof watch;
 }
 
 function cloneDictionary(dictionary: UserDictionary): UserDictionary {
@@ -125,6 +130,7 @@ export class UserDictionaryStore implements UserDictionaryReader {
   private current: UserDictionary = { version: 1, entries: [] };
   private watcher: FSWatcher | null = null;
   private reloadTimer: NodeJS.Timeout | null = null;
+  private watchArmResolve: (() => void) | null = null;
   private listeners = new Set<(dictionary: UserDictionary) => void>();
   private serialized = '';
   private mutationChain: Promise<void> = Promise.resolve();
@@ -142,6 +148,8 @@ export class UserDictionaryStore implements UserDictionaryReader {
       if (!isNodeError(err) || err.code !== 'EEXIST') throw err;
     }
 
+    if (this.options.watch !== false) await this.startWatching();
+
     if (!(await this.reload())) {
       // A corrupt user file must not brick dictation. Keep it untouched for
       // manual recovery and use the packaged seed in memory for this run.
@@ -149,7 +157,6 @@ export class UserDictionaryStore implements UserDictionaryReader {
       this.setCurrent(normalizeDictionary(seed), false);
       debug('MAIN', 'user dictionary invalid; using packaged seed in memory');
     }
-    if (this.options.watch !== false) this.startWatching();
   }
 
   apply(text: string): string {
@@ -235,6 +242,7 @@ export class UserDictionaryStore implements UserDictionaryReader {
     this.reloadTimer = null;
     this.watcher?.close();
     this.watcher = null;
+    this.watchArmResolve = null;
     this.listeners.clear();
   }
 
@@ -266,16 +274,49 @@ export class UserDictionaryStore implements UserDictionaryReader {
     }
   }
 
-  private startWatching(): void {
-    this.watcher = watch(this.options.userDataDir, { persistent: false }, (_event, filename) => {
-      if (filename && filename.toString() !== USER_DICTIONARY_FILE) return;
+  private async startWatching(): Promise<void> {
+    const armed = new Promise<void>((resolve) => {
+      this.watchArmResolve = resolve;
+    });
+    const watchDirectory = this.options.watchFactory ?? watch;
+    this.watcher = watchDirectory(this.options.userDataDir, { persistent: false }, (_event, filename) => {
+      const name = filename == null ? null : path.basename(filename.toString());
+      if (this.watchArmResolve && (name === null || name === WATCH_PROBE_FILE)) {
+        this.watchArmResolve();
+        if (name === WATCH_PROBE_FILE || name === null) return;
+      }
+      // A null filename means the backend cannot identify the changed entry.
+      // Re-read safely instead of silently dropping a real external edit.
+      if (name !== null && name !== USER_DICTIONARY_FILE) return;
       if (this.reloadTimer) clearTimeout(this.reloadTimer);
       this.reloadTimer = setTimeout(() => {
         this.reloadTimer = null;
         void this.reload();
       }, WATCH_DEBOUNCE_MS);
+      if (typeof this.reloadTimer.unref === 'function') this.reloadTimer.unref();
     });
     this.watcher.on('error', (err) => debug('MAIN', `user dictionary watcher failed: ${errMsg(err)}`));
+
+    const probePath = path.join(this.options.userDataDir, WATCH_PROBE_FILE);
+    let observed = false;
+    try {
+      for (let attempt = 0; attempt < WATCH_ARM_ATTEMPTS; attempt++) {
+        await writeFile(probePath, `${Date.now()}-${attempt}`, 'utf8');
+        observed = await Promise.race([
+          armed.then(() => true),
+          new Promise<boolean>((resolve) =>
+            setTimeout(() => resolve(false), WATCH_ARM_INTERVAL_MS)
+          )
+        ]);
+        if (observed) break;
+      }
+      if (!observed) {
+        debug('MAIN', 'user dictionary watcher readiness probe timed out');
+      }
+    } finally {
+      this.watchArmResolve = null;
+      await rm(probePath, { force: true }).catch(() => undefined);
+    }
   }
 }
 

@@ -8,7 +8,8 @@ import { sendPasteKeystroke } from '@main/inject/paste';
 import { isWaylandSession } from '@main/linux/wayland';
 import {
   portalSidecar,
-  WAYLAND_PASTE_SHORTCUT
+  WAYLAND_PASTE_SHORTCUT,
+  type PortalPasteResult
 } from '@main/linux/portalSidecar';
 import { pasteTiming, type PasteCompatibility } from '@main/inject/pasteTiming';
 import { writeClipboardText } from '@main/inject/clipboardWrite';
@@ -73,6 +74,12 @@ export function manualPasteMessage(): string {
  * without libsecret would re-fire the same notification.
  */
 let warnedUnencryptedClipboard = false;
+
+/** Result returned above the injector boundary, not merely logged locally. */
+export type PasteTextResult = Pick<
+  PortalPasteResult,
+  'ok' | 'injected' | 'selectionRead' | 'stage' | 'error'
+>;
 
 // Note: pasteModifier() and releaseStuckModifiers() existed here as
 // historical helpers but were removed (issue #12):
@@ -232,8 +239,8 @@ export async function pasteText(
   restoreClipboard = true,
   compatibility: PasteCompatibility = 'balanced',
   excludeFromClipboardHistory = false
-): Promise<void> {
-  if (!text) return;
+): Promise<PasteTextResult> {
+  if (!text) return { ok: true, injected: false, selectionRead: null };
 
   const timing = pasteTiming(compatibility);
 
@@ -278,7 +285,7 @@ export async function pasteText(
         if (restoreClipboard && !result.restored && result.stage === 'restore') {
           notifyPasteFailed(`Wayland clipboard restore failed: ${result.error ?? 'unknown error'}`);
         }
-        return;
+        return result;
       }
       if (
         result.sessionReset ||
@@ -299,27 +306,33 @@ export async function pasteText(
         notifyPasteFailed(
           `Wayland portal paste outcome is unknown: ${result.error ?? 'request interrupted'}. ${manualPasteMessage()}`
         );
-        return;
+        return result;
       }
       copyTextForManualPaste(text, excludeFromClipboardHistory);
       if (result.injected === true && result.selectionRead === false) {
         notifyPasteFailed(
           `Wayland paste target receipt was not confirmed: ${result.error ?? 'the selection was not read'}. ${manualPasteMessage()}`
         );
-        return;
+        return result;
       }
       notifyPasteFailed(
         `Wayland portal paste failed: ${result.error ?? 'unknown error'}. ${manualPasteMessage()}`
       );
-      return;
+      return result;
     } else {
       // XTest reaches only XWayland clients. A native Wayland session may
       // have no X11 clients at all, so falling through would report success
       // while discarding the transcript into the void.
       debug('DICTATION', 'wayland paste: sidecar NOT ready — preserving text for manual paste');
       copyTextForManualPaste(text, excludeFromClipboardHistory);
-      notifyPasteFailed(manualPasteMessage());
-      return;
+      const error = manualPasteMessage();
+      notifyPasteFailed(error);
+      return {
+        ok: false,
+        injected: false,
+        selectionRead: false,
+        error
+      };
     }
   }
 
@@ -380,9 +393,10 @@ export async function pasteText(
       }
       clearPersistedClipboard();
     }
-    return;
+    return { ok: false, injected: false, selectionRead: null, error: msg };
   }
 
+  let restoreError: string | undefined;
   if (clipboardWasText) {
     // Wait long enough for the receiving app to consume the paste before
     // we put the old clipboard back. Too short here and a slow target
@@ -402,7 +416,14 @@ export async function pasteText(
       // gone, replaced by the dictated text. Surface to debug + UI.
       debug('DICTATION', `clipboard restore failed: ${m}`);
       notifyPasteFailed(`clipboard restore failed: ${m}`);
+      restoreError = m;
     }
     clearPersistedClipboard();
   }
+  return {
+    ok: true,
+    injected: true,
+    selectionRead: null,
+    ...(restoreError ? { error: restoreError } : {})
+  };
 }

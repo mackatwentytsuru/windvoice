@@ -129,7 +129,11 @@ vi.mock('@main/postprocess/pipeline', () => ({
 }));
 
 vi.mock('@main/inject/typer', () => ({
-  pasteText: vi.fn().mockResolvedValue(undefined)
+  pasteText: vi.fn().mockResolvedValue({
+    ok: true,
+    injected: true,
+    selectionRead: true
+  })
 }));
 
 // Keep the REAL isAsciiTypeable (the routing decision under test) but stub
@@ -296,6 +300,26 @@ describe('DictationOrchestrator', () => {
       durationMs: 500
     });
     expect(audio.beeps).toEqual(['start', 'stop']);
+  });
+
+  it('keeps the upper lifecycle failed when target receipt was not confirmed', async () => {
+    vi.mocked(pasteText).mockResolvedValueOnce({
+      ok: false,
+      injected: true,
+      selectionRead: false,
+      stage: 'verify',
+      error: 'no post-injection selection read was observed'
+    } as never);
+    await orch.start();
+    audio.feed(10);
+
+    const stopP = orch.stop();
+    await new Promise((r) => setTimeout(r, 100));
+    hoisted.instances[0]!.emit('final', 'not delivered');
+
+    await stopP;
+    expect(orch.isActive()).toBe(false);
+    expect(vi.mocked(setStatus).mock.calls.map((call) => call[0]).at(-1)).toBe('error');
   });
 
   it('applies the user dictionary to the final STT result before paste and history', async () => {

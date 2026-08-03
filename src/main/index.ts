@@ -48,6 +48,8 @@ import { isWaylandSession } from '@main/linux/wayland';
 import { EvdevKeyboardMonitor } from '@main/hotkey/evdev';
 import { portalSidecar } from '@main/linux/portalSidecar';
 import { ensureStatusNotifierWatcher } from '@main/linux/statusNotifier';
+import { registerResidentWindowLifecycle } from '@main/appLifecycle';
+import { surfacePasteFailure } from '@main/pasteFailure';
 import { IPC } from '@shared/types';
 import { t } from '@shared/i18n';
 import { openExternalSafe } from '@main/util/openExternal';
@@ -157,7 +159,12 @@ async function createSettingsWindow(): Promise<BrowserWindow> {
   // Restrict privileged IPCs (APIKEY_SET, CLIPBOARD_WRITE) to this sender.
   setTrustedSettingsSender(winWebContentsId);
 
-  win.on('ready-to-show', () => win.show());
+  const showSettingsWindow = (): void => {
+    if (win.isDestroyed()) return;
+    win.show();
+    win.focus();
+  };
+  win.on('ready-to-show', showSettingsWindow);
   win.on('closed', () => {
     trustedMicIds.delete(winWebContentsId);
     settingsWindow = null;
@@ -169,6 +176,10 @@ async function createSettingsWindow(): Promise<BrowserWindow> {
   } else {
     await win.loadFile(path.join(__dirname, '../renderer/index.html'));
   }
+  // `ready-to-show` is a paint optimization, not a visibility contract.
+  // Once navigation completed, explicitly map the Wayland surface so GNOME
+  // lists the Settings window even if that event was missed.
+  showSettingsWindow();
   replayStickySetupErrors(win.webContents);
   return win;
 }
@@ -366,8 +377,9 @@ app.whenReady().then(async () => {
   // but it never landed in their target app, AND there is now no signal
   // to that fact without this event.
   setPasteFailureListener((message) => {
-    setStatus('error');
-    broadcastToUiWindows(IPC.SYSTEM_ERROR, { source: 'paste', message, kind: 'transient' });
+    surfacePasteFailure(message, () => {
+      void createSettingsWindow();
+    });
   });
   setPasteLanguageProvider(() => settingsStore.get().ui.uiLanguage);
 
@@ -702,12 +714,7 @@ app.whenReady().then(async () => {
   }
 });
 
-app.on('window-all-closed', () => {
-  // WindVoice is a tray-resident dictation app: closing the Settings window
-  // (or any other transient UI window) MUST NOT quit the process. The tray
-  // icon, the global hotkey hook, and the persistent Realtime connection
-  // all need to stay alive until the user explicitly chooses Tray → Quit.
-});
+registerResidentWindowLifecycle(app);
 
 app.on('before-quit', (event) => {
   // The second app.quit(), issued after the asynchronous barrier, must pass

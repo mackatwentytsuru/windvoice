@@ -165,8 +165,14 @@ describe('pasteText Wayland routing', () => {
       error: 'selection was not read'
     });
 
-    await pasteText('hello', true);
+    const result = await pasteText('hello', true);
 
+    expect(result).toMatchObject({
+      ok: false,
+      injected: true,
+      selectionRead: false,
+      stage: 'verify'
+    });
     expect(hoisted.legacyPaste).not.toHaveBeenCalled();
     expect(hoisted.writeClipboard).toHaveBeenLastCalledWith('hello', false);
     expect(hoisted.notify).toHaveBeenCalledWith(expect.stringContaining('not confirmed'));

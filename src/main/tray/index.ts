@@ -1,9 +1,10 @@
-import { Tray, Menu, nativeImage, app, BrowserWindow } from 'electron';
+import { Tray, Menu, nativeImage, app } from 'electron';
 import path from 'node:path';
 import { IPC, type DictationStatus } from '@shared/types';
 import type { UpdaterState } from '@shared/ipc';
 import { t } from '@shared/i18n';
 import { settingsStore } from '@main/store/settings';
+import { broadcastToUiWindows } from '@main/broadcast';
 
 let tray: Tray | null = null;
 let bindings: TrayBindings | null = null;
@@ -123,9 +124,7 @@ export function setStatus(status: DictationStatus): void {
     if (!img.isEmpty()) tray.setImage(img);
     refreshMenu();
   }
-  for (const win of BrowserWindow.getAllWindows()) {
-    win.webContents.send(IPC.STATUS_CHANGED, status);
-  }
+  broadcastToUiWindows(IPC.STATUS_CHANGED, status);
   for (const l of statusListeners) {
     try {
       l(status);

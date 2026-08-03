@@ -172,7 +172,12 @@ describe('pasteText', () => {
     const p = pasteText('hello', true);
     // Don't need RESTORE_DELAY_MS in the failure path — it short-circuits.
     await vi.advanceTimersByTimeAsync(50);
-    await expect(p).resolves.toBeUndefined();
+    await expect(p).resolves.toMatchObject({
+      ok: false,
+      injected: false,
+      selectionRead: null,
+      error: 'uiohook-napi: keyTap not available'
+    });
 
     // Last write restores the original clipboard.
     expect(hoisted.writeText).toHaveBeenLastCalledWith('PREVIOUS');

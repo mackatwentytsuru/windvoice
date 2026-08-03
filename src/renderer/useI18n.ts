@@ -21,7 +21,13 @@ function ensureInitialized(): void {
   initialized = true;
   // Defensive: window.windvoice is attached by preload; only call when present.
   if (typeof window === 'undefined' || !window.windvoice) return;
-  void window.windvoice.getSettings().then((s: Settings) => setCached(s.ui.uiLanguage));
+  void window.windvoice
+    .getSettings()
+    .then((s: Settings) => setCached(s.ui.uiLanguage))
+    .catch(() => {
+      // App.tsx owns the visible retry state; keep the built-in Japanese
+      // fallback here instead of creating an unhandled renderer rejection.
+    });
   // Tear down any previous subscription before installing a fresh one.
   // In production this never matters (`initialized` short-circuits), but
   // under Vite HMR the renderer module reloads while the preload-side

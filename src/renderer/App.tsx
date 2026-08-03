@@ -32,9 +32,18 @@ export function App(): JSX.Element {
   const [tab, setTab] = useState<Tab>('general');
   const [status, setStatus] = useState<DictationStatus>('idle');
   const [settings, setSettings] = useState<Settings | null>(null);
+  const [settingsLoadError, setSettingsLoadError] = useState(false);
   const [banner, setBanner] = useState<ErrorBanner | null>(null);
   const tabRefs = useRef<Map<Tab, HTMLButtonElement | null>>(new Map());
   const dismissTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  function loadSettings(): void {
+    setSettingsLoadError(false);
+    void window.windvoice.getSettings().then(
+      (next) => setSettings(next),
+      () => setSettingsLoadError(true)
+    );
+  }
 
   useEffect(() => {
     // Guard against the async settings load resolving after the
@@ -42,9 +51,15 @@ export function App(): JSX.Element {
     // fast-close + reopen of the Settings window). Without this the
     // `setSettings` call lands on a dead component and React warns.
     let cancelled = false;
-    void window.windvoice.getSettings().then((s) => {
-      if (!cancelled) setSettings(s);
-    });
+    setSettingsLoadError(false);
+    void window.windvoice.getSettings().then(
+      (s) => {
+        if (!cancelled) setSettings(s);
+      },
+      () => {
+        if (!cancelled) setSettingsLoadError(true);
+      }
+    );
     const showBanner = (next: ErrorBanner): void => {
       if (dismissTimerRef.current != null) {
         clearTimeout(dismissTimerRef.current);
@@ -217,6 +232,17 @@ export function App(): JSX.Element {
               }}
             >
               ×
+            </button>
+          </div>
+        )}
+        {!settings && !settingsLoadError && (
+          <div role="status" className="helper">{t('general.loading')}</div>
+        )}
+        {!settings && settingsLoadError && (
+          <div role="alert">
+            <p>{t('error.settingsLoadFailed')}</p>
+            <button type="button" className="button-secondary" onClick={loadSettings}>
+              {t('general.retry')}
             </button>
           </div>
         )}

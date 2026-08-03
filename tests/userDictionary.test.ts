@@ -1,7 +1,7 @@
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   UserDictionaryStore,
   applyDictionary,
@@ -193,7 +193,28 @@ describe('UserDictionaryStore', () => {
       JSON.stringify({ version: 1, entries: [{ correct: 'A', variants: ['a'] }] }),
       'utf8'
     );
-    const store = new UserDictionaryStore({ userDataDir, seedPath });
+    let emitWatchChange: ((filename: string | null) => void) | null = null;
+    const fakeWatcher = {
+      close: vi.fn(),
+      on: vi.fn()
+    };
+    fakeWatcher.on.mockReturnValue(fakeWatcher);
+    const watchFactory = vi.fn(
+      (
+        _dir: string,
+        _options: { persistent: boolean },
+        listener: (_event: string, filename: string | null) => void
+      ) => {
+        emitWatchChange = (filename) => listener('change', filename);
+        queueMicrotask(() => emitWatchChange?.('.user-dictionary-watch-probe'));
+        return fakeWatcher;
+      }
+    );
+    const store = new UserDictionaryStore({
+      userDataDir,
+      seedPath,
+      watchFactory: watchFactory as never
+    });
     await store.init();
     const changed = new Promise<void>((resolve, reject) => {
       const timer = setTimeout(() => reject(new Error('dictionary watcher timed out')), 3_000);
@@ -209,6 +230,7 @@ describe('UserDictionaryStore', () => {
       JSON.stringify({ version: 1, entries: [{ correct: 'B', variants: ['b'] }] }),
       'utf8'
     );
+    emitWatchChange?.('user-dictionary.json');
     await changed;
 
     expect(store.apply('b')).toBe('B');

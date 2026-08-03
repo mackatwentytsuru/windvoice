@@ -47,6 +47,8 @@ const ja: Dict = {
   'general.save': '保存',
   'general.saving': '保存中…',
   'general.saved': '保存しました',
+  'general.loading': '読み込み中…',
+  'general.retry': '再試行',
   'general.apiKeyHelper': 'API キーは資格情報ストアに保存され、ディスクには書かれません。',
   'general.apiKeyHelper.darwin': 'API キーは macOS Keychain に保存されます。',
   'general.apiKeyHelper.win32': 'API キーは Windows 資格情報マネージャに保存されます。',
@@ -209,6 +211,8 @@ const ja: Dict = {
   'error.audioNotSent': '音声をサーバーに送信できませんでした。ネットワーク接続を確認して、もう一度お試しください。',
   'error.pasteCopiedManual':
     '転写テキストをクリップボードにコピーしました。手動で貼り付けてください（端末: Ctrl+Shift+V / その他: Ctrl+V）。',
+  'error.settingsLoadFailed':
+    '設定を読み込めませんでした。WindVoice を終了せず、この画面から再試行できます。',
   'error.statusNotifierUnavailable':
     '常駐アイコンを表示する仕組みが見つかりません。GNOME では gnome-shell-extension-appindicator パッケージ、または extensions.gnome.org の「AppIndicator and KStatusNotifierItem Support」をインストールして有効にすると、常駐アイコンが表示されます。拡張機能が無くても、WindVoice をもう一度起動すれば設定ウィンドウが開きます。',
 
@@ -257,6 +261,8 @@ const en: Dict = {
   'general.save': 'Save',
   'general.saving': 'Saving...',
   'general.saved': 'Saved.',
+  'general.loading': 'Loading…',
+  'general.retry': 'Retry',
   'general.apiKeyHelper': 'Your API key is stored in the system credential store. Not written to disk.',
   'general.apiKeyHelper.darwin': 'Your API key is stored in macOS Keychain.',
   'general.apiKeyHelper.win32': 'Your API key is stored in Windows Credential Manager.',
@@ -424,6 +430,8 @@ const en: Dict = {
   'error.audioNotSent': "Couldn't send audio to the server. Check your network connection and try again.",
   'error.pasteCopiedManual':
     'The transcript was copied to the clipboard. Paste it manually (terminal: Ctrl+Shift+V; other apps: Ctrl+V).',
+  'error.settingsLoadFailed':
+    'Settings could not be loaded. You can retry here without quitting WindVoice.',
   'error.statusNotifierUnavailable':
     'No system tray host was found. On GNOME, install and enable the gnome-shell-extension-appindicator package or “AppIndicator and KStatusNotifierItem Support” from extensions.gnome.org to show the resident icon. Even without the extension, launch WindVoice again to open the Settings window.',
 
