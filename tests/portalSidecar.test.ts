@@ -225,4 +225,34 @@ describe('PortalSidecar supervision', () => {
     expect(first.kill).toHaveBeenCalledOnce();
     expect(children).toHaveLength(2);
   });
+
+  it('keeps a delivered paste successful when restore times out and rebuilds the session', async () => {
+    sidecar.start();
+    const first = children[0]!;
+    ready(first);
+
+    const paste = sidecar.pasteText('hello', true, 0, 0);
+    const request = lastRequest(first);
+    reply(first, request, {
+      ok: true,
+      claimed: true,
+      injected: true,
+      selectionRead: true,
+      restored: false,
+      tainted: true,
+      stage: 'restore',
+      error: 'selection ownership was not confirmed before the deadline'
+    });
+
+    await expect(paste).resolves.toMatchObject({
+      ok: true,
+      injected: true,
+      selectionRead: true,
+      restored: false,
+      sessionReset: true,
+      stage: 'restore'
+    });
+    expect(first.kill).toHaveBeenCalledOnce();
+    expect(children).toHaveLength(2);
+  });
 });

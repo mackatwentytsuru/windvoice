@@ -300,7 +300,10 @@ def on_owner_changed(conn, sender, path, siface, member, params):
     with state_lock:
         if sess != state['session']:
             return
-        state['selection_is_owner'] = bool(options.get('session_is_owner'))
+        owner_value = options.get('session_is_owner')
+        if hasattr(owner_value, 'unpack'):
+            owner_value = owner_value.unpack()
+        state['selection_is_owner'] = bool(owner_value)
         if state['selection_is_owner']:
             state['foreign_mimes'] = []
         else:
