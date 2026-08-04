@@ -204,4 +204,25 @@ describe('PortalSidecar supervision', () => {
     expect(first.kill).toHaveBeenCalledOnce();
     expect(children).toHaveLength(2);
   });
+
+  it('rebuilds a session whose standalone selection claim timed out', async () => {
+    sidecar.start();
+    const first = children[0]!;
+    ready(first);
+
+    const mutation = sidecar.setSelection('hello');
+    const request = lastRequest(first);
+    reply(first, request, {
+      ok: false,
+      tainted: true,
+      error: 'selection ownership was not confirmed before the deadline'
+    });
+
+    await expect(mutation).resolves.toMatchObject({
+      ok: false,
+      uncertain: true
+    });
+    expect(first.kill).toHaveBeenCalledOnce();
+    expect(children).toHaveLength(2);
+  });
 });

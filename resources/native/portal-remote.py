@@ -43,6 +43,11 @@ import sys
 import threading
 import time
 
+from portal_clipboard import (
+    OwnerChangeBarrier,
+    SelectionOwnerTimeout,
+    apply_selection_and_wait_for_owner,
+)
 from portal_input import InjectionError, inject_paste_chord as dispatch_paste_chord
 
 try:
@@ -70,6 +75,7 @@ REQ = 'org.freedesktop.portal.Request'
 SESSION_IFACE = 'org.freedesktop.portal.Session'
 MIME_TYPES = ['text/plain;charset=utf-8', 'text/plain', 'UTF8_STRING', 'TEXT', 'STRING']
 DBUS_TIMEOUT_MS = 3000
+SELECTION_OWNER_TIMEOUT_S = 2.0
 
 TOKEN_FILE = sys.argv[1] if len(sys.argv) > 1 else None
 
@@ -112,6 +118,7 @@ state = {
 }
 state_lock = threading.Lock()
 transfer_condition = threading.Condition(state_lock)
+owner_change_barrier = OwnerChangeBarrier()
 
 
 def is_dbus_timeout(error):
@@ -298,6 +305,8 @@ def on_owner_changed(conn, sender, path, siface, member, params):
             state['foreign_mimes'] = []
         else:
             state['foreign_mimes'] = flatten_mimes(options.get('mime_types'))
+        is_owner = state['selection_is_owner']
+    owner_change_barrier.owner_changed(is_owner)
 
 
 def on_session_closed(conn, sender, path, siface, member, params):
@@ -311,6 +320,7 @@ def on_session_closed(conn, sender, path, siface, member, params):
         state['clipboard'] = False
         state['selection_is_owner'] = False
         state['foreign_mimes'] = None
+    owner_change_barrier.reset()
     emit({'event': 'closed'})
     # A sidecar without its session is useless — exit so the parent
     # respawns a fresh one instead of queueing ops against nothing.
@@ -393,6 +403,7 @@ def setup_session(allow_retry=True):
         state['clipboard'] = False
         state['selection_is_owner'] = False
         state['foreign_mimes'] = None
+    owner_change_barrier.reset()
 
     # Subscribe BEFORE Start: the portal emits SelectionOwnerChanged as soon
     # as the clipboard is enabled, and a Closed can land during setup. A
@@ -482,6 +493,7 @@ def setup_session(allow_retry=True):
                 state['selection_is_owner'] = False
                 state['foreign_mimes'] = None
             state['expected_closes'].add(session)
+        owner_change_barrier.reset()
         try:
             call_at(
                 session,
@@ -620,9 +632,23 @@ def set_selection(text):
         # Set this before the D-Bus call because SelectionTransfer can arrive
         # as soon as the claim is accepted.
         state['selection_text'] = text
-    try:
+
+    def apply_selection():
         call(CLIP, 'SetSelection', GLib.Variant('(oa{sv})', (session, {
             'mime_types': GLib.Variant('as', MIME_TYPES)})))
+
+    try:
+        apply_selection_and_wait_for_owner(
+            owner_change_barrier,
+            apply_selection,
+            SELECTION_OWNER_TIMEOUT_S,
+        )
+    except SelectionOwnerTimeout:
+        # The front portal accepted the asynchronous request, so the backend
+        # may still apply it later. Keep the matching text/generation ready for
+        # a late SelectionTransfer, but do not inject against an unconfirmed
+        # clipboard owner.
+        raise
     except Exception:
         with state_lock:
             state['selection_text'] = previous_text
@@ -738,6 +764,11 @@ def handle_paste(msg, rid):
     try:
         generation = set_selection(text)
         claimed = True
+    except SelectionOwnerTimeout as e:
+        emit_paste_result(
+            rid, claimed, injected, selection_read, restored,
+            'claim', e, tainted=True, shortcut=shortcut)
+        return
     except Exception as e:  # noqa: BLE001
         emit_paste_result(
             rid, claimed, injected, selection_read, restored,
@@ -761,6 +792,7 @@ def handle_paste(msg, rid):
             generation, transfer_before_inject, verify_delay)
 
     restore_error = None
+    restore_tainted = False
     # Never erase an unconsumed transcript. Once SelectionWriteDone completed,
     # the target owns the bytes and fixed-delay guessing is no longer needed.
     if selection_read and restore and old_text is not None:
@@ -769,6 +801,9 @@ def handle_paste(msg, rid):
         try:
             set_selection(old_text)
             restored = True
+        except SelectionOwnerTimeout as e:
+            restore_error = e
+            restore_tainted = True
         except Exception as e:  # noqa: BLE001
             restore_error = e
 
@@ -783,7 +818,8 @@ def handle_paste(msg, rid):
     elif restore_error is not None:
         emit_paste_result(
             rid, claimed, injected, selection_read, restored,
-            'restore', restore_error, shortcut=shortcut)
+            'restore', restore_error, tainted=restore_tainted,
+            shortcut=shortcut)
         exit_if_portal_unavailable(restore_error)
     elif injected is True and not selection_read:
         emit_paste_result(
@@ -819,8 +855,12 @@ def handle(msg):
             if '_exception' in snapshot:
                 exit_if_portal_unavailable(snapshot['_exception'])
         elif op == 'set_selection':
-            set_selection(str(msg.get('text', '')))
-            emit({'id': rid, 'ok': True})
+            try:
+                set_selection(str(msg.get('text', '')))
+                emit({'id': rid, 'ok': True})
+            except SelectionOwnerTimeout as e:
+                emit({'id': rid, 'ok': False, 'tainted': True,
+                      'error': str(e)})
         elif op == 'key_paste':
             shortcut = str(msg.get('shortcut', 'ctrl-shift-v'))
             try:

@@ -469,7 +469,7 @@ export class PortalSidecar {
     const sessionRecyclePending =
       injected === true && !selectionRead && !sessionReset;
     if (sessionReset) {
-      debug('DICTATION', 'portal sidecar virtual keyboard was tainted — rebuilding session');
+      debug('DICTATION', 'portal sidecar session was tainted — rebuilding session');
       this.restart();
     } else if (sessionRecyclePending) {
       // Keep the transcript on the live portal selection for the user's
@@ -507,10 +507,13 @@ export class PortalSidecar {
 
   /** Claim the selection with `text` without injecting anything. */
   async setSelection(text: string): Promise<PortalMutationResult> {
-    const r = await this.send('set_selection', { text }, 5000);
+    // The Python side waits for SelectionOwnerChanged after SetSelection;
+    // allow its D-Bus + ownership deadlines to expire before supervising it.
+    const r = await this.send('set_selection', { text }, 7000);
+    if (r.tainted === true) this.restart();
     return {
       ok: r.ok === true,
-      uncertain: r.uncertain === true,
+      uncertain: r.uncertain === true || r.tainted === true,
       ...(r.error ? { error: r.error } : {})
     };
   }

@@ -1,0 +1,100 @@
+===== アプリログ(最新200行) =====
+/home/yukitsuruoka/.config/windvoice/windvoice-debug.log
+/home/yukitsuruoka/.config/windvoice/Session Storage/000003.log
+/home/yukitsuruoka/.config/windvoice/Local Storage/leveldb/000003.log
+--- /home/yukitsuruoka/.config/windvoice/windvoice-debug.log ---
+2026-08-04T01:05:16.829Z [realtime] session.updated
+2026-08-04T01:56:15.835Z [dictation] proactive session refresh (approaching 60-min server cap)
+2026-08-04T01:56:16.769Z [realtime] session.created
+2026-08-04T01:56:16.970Z [realtime] session.updated
+2026-08-04T02:47:16.343Z [dictation] proactive session refresh (approaching 60-min server cap)
+2026-08-04T02:47:17.322Z [realtime] session.created
+2026-08-04T02:47:17.525Z [realtime] session.updated
+2026-08-04T03:06:08.027Z [duck] 40 → 12
+2026-08-04T03:06:08.194Z [dictation] portal sidecar ready (clipboard=true)
+2026-08-04T03:06:09.716Z [dictation] delivered=33 chunks maxLevel=0.2863
+2026-08-04T03:06:09.738Z [realtime] commit gate: buffered=79200B (floor 4800B) droppedNotOpen=0 droppedBackpressure=0 wsBuffered=0
+2026-08-04T03:06:09.739Z [dictation] take result: delivered=33 maxLevel=0.2863 isOpen=true enoughChunks=true silent=false committed=true
+2026-08-04T03:06:09.894Z [realtime] input_audio_buffer.committed
+2026-08-04T03:06:09.898Z [realtime] conversation.item.added
+2026-08-04T03:06:09.899Z [realtime] conversation.item.done
+2026-08-04T03:06:10.483Z [realtime] conversation.item.input_audio_transcription.completed
+2026-08-04T03:06:10.513Z [duck] restored to 40
+2026-08-04T03:06:11.926Z [dictation] formatter ok in 1410ms (len=7 timeout=5175ms)
+2026-08-04T03:06:11.927Z [dictation] wayland paste: sidecar path (len=3 restore=true)
+2026-08-04T03:06:12.204Z [dictation] wayland paste: sidecar result shortcut=ctrl-shift-v ok=true injected=true selectionRead=true restored=true stage=none sessionReset=false recyclePending=false
+2026-08-04T03:06:13.732Z [duck] 40 → 12
+2026-08-04T03:06:16.906Z [dictation] delivered=64 chunks maxLevel=0.3237
+2026-08-04T03:06:16.927Z [realtime] commit gate: buffered=153600B (floor 4800B) droppedNotOpen=0 droppedBackpressure=0 wsBuffered=0
+2026-08-04T03:06:16.927Z [dictation] take result: delivered=64 maxLevel=0.3237 isOpen=true enoughChunks=true silent=false committed=true
+2026-08-04T03:06:17.076Z [realtime] input_audio_buffer.committed
+2026-08-04T03:06:17.079Z [realtime] conversation.item.added
+2026-08-04T03:06:17.081Z [realtime] conversation.item.done
+2026-08-04T03:06:17.649Z [realtime] conversation.item.input_audio_transcription.completed
+2026-08-04T03:06:17.703Z [duck] restored to 40
+2026-08-04T03:06:18.879Z [dictation] formatter ok in 1172ms (len=27 timeout=5675ms)
+2026-08-04T03:06:18.879Z [dictation] wayland paste: sidecar path (len=18 restore=true)
+2026-08-04T03:06:19.168Z [dictation] wayland paste: sidecar result shortcut=ctrl-shift-v ok=true injected=true selectionRead=true restored=true stage=none sessionReset=false recyclePending=false
+2026-08-04T03:06:27.726Z [duck] 40 → 12
+2026-08-04T03:06:30.671Z [dictation] delivered=59 chunks maxLevel=1.0000
+2026-08-04T03:06:30.692Z [realtime] commit gate: buffered=141600B (floor 4800B) droppedNotOpen=0 droppedBackpressure=0 wsBuffered=0
+2026-08-04T03:06:30.692Z [dictation] take result: delivered=59 maxLevel=1.0000 isOpen=true enoughChunks=true silent=false committed=true
+2026-08-04T03:06:30.858Z [realtime] input_audio_buffer.committed
+2026-08-04T03:06:30.859Z [realtime] conversation.item.added
+2026-08-04T03:06:30.860Z [realtime] conversation.item.done
+2026-08-04T03:06:31.472Z [realtime] conversation.item.input_audio_transcription.completed
+2026-08-04T03:06:31.519Z [duck] restored to 40
+2026-08-04T03:06:32.606Z [dictation] formatter ok in 1083ms (len=16 timeout=5400ms)
+2026-08-04T03:06:32.608Z [dictation] wayland paste: sidecar path (len=16 restore=true)
+2026-08-04T03:06:33.452Z [dictation] portal sidecar paste failed: no post-injection selection read was observed
+2026-08-04T03:06:33.452Z [dictation] wayland paste: sidecar result shortcut=ctrl-shift-v ok=false injected=true selectionRead=false restored=false stage=verify sessionReset=false recyclePending=true
+2026-08-04T03:06:33.528Z [dictation] insert result ok=false injected=true selectionRead=false stage=verify
+2026-08-04T03:06:36.683Z [dictation] recycling portal session before dictation after an unverified paste
+2026-08-04T03:06:36.708Z [dictation] portal sidecar exited (null)
+2026-08-04T03:06:36.793Z [duck] 40 → 12
+2026-08-04T03:06:36.971Z [dictation] portal sidecar ready (clipboard=true)
+2026-08-04T03:06:39.123Z [dictation] delivered=46 chunks maxLevel=1.0000
+2026-08-04T03:06:39.144Z [realtime] commit gate: buffered=110400B (floor 4800B) droppedNotOpen=0 droppedBackpressure=0 wsBuffered=0
+2026-08-04T03:06:39.144Z [dictation] take result: delivered=46 maxLevel=1.0000 isOpen=true enoughChunks=true silent=false committed=true
+2026-08-04T03:06:39.293Z [realtime] input_audio_buffer.committed
+2026-08-04T03:06:39.294Z [realtime] conversation.item.added
+2026-08-04T03:06:39.295Z [realtime] conversation.item.done
+2026-08-04T03:06:39.868Z [realtime] conversation.item.input_audio_transcription.completed
+2026-08-04T03:06:39.918Z [duck] restored to 40
+2026-08-04T03:06:41.719Z [dictation] formatter ok in 1797ms (len=15 timeout=5375ms)
+2026-08-04T03:06:41.719Z [dictation] wayland paste: sidecar path (len=11 restore=true)
+2026-08-04T03:06:42.572Z [dictation] portal sidecar paste failed: no post-injection selection read was observed
+2026-08-04T03:06:42.573Z [dictation] wayland paste: sidecar result shortcut=ctrl-shift-v ok=false injected=true selectionRead=false restored=false stage=verify sessionReset=false recyclePending=true
+2026-08-04T03:06:42.617Z [dictation] insert result ok=false injected=true selectionRead=false stage=verify
+2026-08-04T03:06:52.574Z [dictation] recycling portal session before dictation after an unverified paste
+2026-08-04T03:06:52.599Z [dictation] portal sidecar exited (null)
+2026-08-04T03:06:52.686Z [duck] 40 → 12
+2026-08-04T03:06:52.843Z [dictation] portal sidecar ready (clipboard=true)
+2026-08-04T03:06:55.238Z [dictation] delivered=51 chunks maxLevel=1.0000
+2026-08-04T03:06:55.259Z [realtime] commit gate: buffered=122400B (floor 4800B) droppedNotOpen=0 droppedBackpressure=0 wsBuffered=0
+2026-08-04T03:06:55.260Z [dictation] take result: delivered=51 maxLevel=1.0000 isOpen=true enoughChunks=true silent=false committed=true
+2026-08-04T03:06:55.411Z [realtime] input_audio_buffer.committed
+2026-08-04T03:06:55.414Z [realtime] conversation.item.added
+2026-08-04T03:06:55.415Z [realtime] conversation.item.done
+2026-08-04T03:06:55.948Z [realtime] conversation.item.input_audio_transcription.completed
+2026-08-04T03:06:55.998Z [duck] restored to 40
+2026-08-04T03:06:57.180Z [dictation] formatter ok in 1178ms (len=22 timeout=5550ms)
+2026-08-04T03:06:57.181Z [dictation] wayland paste: sidecar path (len=16 restore=true)
+2026-08-04T03:06:58.033Z [dictation] portal sidecar paste failed: no post-injection selection read was observed
+2026-08-04T03:06:58.033Z [dictation] wayland paste: sidecar result shortcut=ctrl-shift-v ok=false injected=true selectionRead=false restored=false stage=verify sessionReset=false recyclePending=true
+2026-08-04T03:06:58.081Z [dictation] insert result ok=false injected=true selectionRead=false stage=verify
+--- /home/yukitsuruoka/.config/windvoice/Session ---
+tail: '/home/yukitsuruoka/.config/windvoice/Session' を 読み込み用に開くことが出来ません--- Storage/000003.log ---
+: そのようなファイルやディレクトリはありません
+--- /home/yukitsuruoka/.config/windvoice/Local ---
+tail: 'Storage/000003.log' を 読み込み用に開くことが出来ません: そのようなファイルやディレクトリはありません
+tail: '/home/yukitsuruoka/.config/windvoice/Local' を 読み込み用に開くことが出来ません--- Storage/leveldb/000003.log ---
+: そのようなファイルやディレクトリはありません
+===== sidecar/portalログ =====
+tail: 'Storage/leveldb/000003.log' を 読み込み用に開くことが出来ません: そのようなファイルやディレクトリはありません
+/home/yukitsuruoka/.config/windvoice/.portal-remotedesktop.json
+/home/yukitsuruoka/windvoice:
+LICENSE
+README.md
+WINDOWS_TESTING.md
+build
