@@ -29,6 +29,10 @@ export interface PasteTiming {
   streamIntervalMs: number;
   /** Streaming: wait after the final chunk before restoring the clipboard. */
   streamRestoreDelayMs: number;
+  /** Wayland portal: gap between synthesized key events. */
+  keyEventDelayMs: number;
+  /** Wayland portal: slower gap used by verified fallback attempts. */
+  retryKeyEventDelayMs: number;
 }
 
 const PROFILES: Record<PasteCompatibility, PasteTiming> = {
@@ -39,7 +43,9 @@ const PROFILES: Record<PasteCompatibility, PasteTiming> = {
     restoreDelayMs: 60,
     streamSettleMs: 12,
     streamIntervalMs: 60,
-    streamRestoreDelayMs: 80
+    streamRestoreDelayMs: 80,
+    keyEventDelayMs: 12,
+    retryKeyEventDelayMs: 40
   },
   // Default. Restores the safer margin that existed before the constants
   // were tuned down without live timing data — eliminates the stale-paste
@@ -49,7 +55,9 @@ const PROFILES: Record<PasteCompatibility, PasteTiming> = {
     restoreDelayMs: 180,
     streamSettleMs: 25,
     streamIntervalMs: 110,
-    streamRestoreDelayMs: 220
+    streamRestoreDelayMs: 220,
+    keyEventDelayMs: 20,
+    retryKeyEventDelayMs: 60
   },
   // Maximum compatibility for terminals, remote-desktop / VM sessions and
   // other high-latency targets where 'balanced' still drops the paste.
@@ -58,7 +66,9 @@ const PROFILES: Record<PasteCompatibility, PasteTiming> = {
     restoreDelayMs: 400,
     streamSettleMs: 55,
     streamIntervalMs: 200,
-    streamRestoreDelayMs: 450
+    streamRestoreDelayMs: 450,
+    keyEventDelayMs: 30,
+    retryKeyEventDelayMs: 90
   }
 };
 
@@ -81,7 +91,9 @@ const WAYLAND_MIN: PasteTiming = {
   restoreDelayMs: 0,
   streamSettleMs: 50,
   streamIntervalMs: 150,
-  streamRestoreDelayMs: 0
+  streamRestoreDelayMs: 0,
+  keyEventDelayMs: 0,
+  retryKeyEventDelayMs: 0
 };
 
 export function pasteTiming(profile: PasteCompatibility | undefined): PasteTiming {
@@ -92,6 +104,11 @@ export function pasteTiming(profile: PasteCompatibility | undefined): PasteTimin
     restoreDelayMs: Math.max(base.restoreDelayMs, WAYLAND_MIN.restoreDelayMs),
     streamSettleMs: Math.max(base.streamSettleMs, WAYLAND_MIN.streamSettleMs),
     streamIntervalMs: Math.max(base.streamIntervalMs, WAYLAND_MIN.streamIntervalMs),
-    streamRestoreDelayMs: Math.max(base.streamRestoreDelayMs, WAYLAND_MIN.streamRestoreDelayMs)
+    streamRestoreDelayMs: Math.max(base.streamRestoreDelayMs, WAYLAND_MIN.streamRestoreDelayMs),
+    keyEventDelayMs: Math.max(base.keyEventDelayMs, WAYLAND_MIN.keyEventDelayMs),
+    retryKeyEventDelayMs: Math.max(
+      base.retryKeyEventDelayMs,
+      WAYLAND_MIN.retryKeyEventDelayMs
+    )
   };
 }

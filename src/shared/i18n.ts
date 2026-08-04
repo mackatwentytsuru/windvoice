@@ -83,7 +83,7 @@ const ja: Dict = {
     '発話中にリアルタイムで文字が現れます。GPT 整形は無効です。ユーザー辞書の置換候補がある場合は、正確な挿入前置換のため発話終了後の一括挿入に切り替わります。',
   'general.pasteCompat': '貼り付けの確実性',
   'general.pasteCompatHelper':
-    '貼り付け後に元のクリップボードへ戻すまでの待ち時間を調整します。「速い」だとターミナルやリモートデスクトップなど反応の遅い環境で直前にコピーした内容が貼り付いてしまう場合があります。',
+    'クリップボード復元の待ち時間と、Linux Wayland での合成キー間隔を調整します。「速い」だとターミナルやリモートデスクトップなど反応の遅い環境で貼り付けに失敗する場合があります。',
   'general.pasteCompatFast': '速い(低遅延)',
   'general.pasteCompatBalanced': '標準(推奨)',
   'general.pasteCompatSafe': '確実(ターミナル/リモート向け)',
@@ -298,7 +298,7 @@ const en: Dict = {
     'Type characters as you speak. GPT formatting is disabled. When the user dictionary has replacement candidates, WindVoice switches to final insertion so corrections happen before any text is inserted.',
   'general.pasteCompat': 'Paste reliability',
   'general.pasteCompatHelper':
-    'Adjusts how long WindVoice waits before restoring your original clipboard after a paste. "Fast" can paste your previously-copied content instead in slow environments such as terminals or remote desktops.',
+    'Adjusts clipboard restore timing and synthesized key pacing on Linux Wayland. "Fast" can fail in slow environments such as terminals or remote desktops.',
   'general.pasteCompatFast': 'Fast (low latency)',
   'general.pasteCompatBalanced': 'Balanced (recommended)',
   'general.pasteCompatSafe': 'Safe (terminals / remote)',

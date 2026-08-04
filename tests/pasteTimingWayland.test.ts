@@ -16,21 +16,27 @@ describe('pasteTiming (Wayland floor)', () => {
       restoreDelayMs: 60,
       streamSettleMs: 50,
       streamIntervalMs: 150,
-      streamRestoreDelayMs: 80
+      streamRestoreDelayMs: 80,
+      keyEventDelayMs: 12,
+      retryKeyEventDelayMs: 40
     });
     expect(pasteTiming('balanced')).toEqual({
       settleMs: 60,
       restoreDelayMs: 180,
       streamSettleMs: 50,
       streamIntervalMs: 150,
-      streamRestoreDelayMs: 220
+      streamRestoreDelayMs: 220,
+      keyEventDelayMs: 20,
+      retryKeyEventDelayMs: 60
     });
     expect(pasteTiming('safe')).toEqual({
       settleMs: 60,
       restoreDelayMs: 400,
       streamSettleMs: 55,
       streamIntervalMs: 200,
-      streamRestoreDelayMs: 450
+      streamRestoreDelayMs: 450,
+      keyEventDelayMs: 30,
+      retryKeyEventDelayMs: 90
     });
   });
 

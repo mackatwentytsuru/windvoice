@@ -421,7 +421,14 @@ export class StreamingTyper {
           if (hkmW) await hkmW.untilAllModifiersUp(400);
           if (gen !== this.generation) return;
           hkmW?.suppressFor(this.timing.streamSettleMs + 250);
-          const paste = portalSidecar.pasteText(chunk, false, this.timing.streamSettleMs, 0);
+          const paste = portalSidecar.pasteText(
+            chunk,
+            false,
+            this.timing.streamSettleMs,
+            0,
+            this.timing.keyEventDelayMs,
+            this.timing.retryKeyEventDelayMs
+          );
           this.inFlight = paste;
           const result = await paste;
           if (this.inFlight === paste) this.inFlight = null;

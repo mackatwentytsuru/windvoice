@@ -127,7 +127,9 @@ describe('PortalSidecar supervision', () => {
     first.stdout.emit('data', '{"event":"ready","clipboard":true}\n');
 
     const paste = sidecar.pasteText('hello', true, 0, 0);
-    await vi.advanceTimersByTimeAsync(15_750);
+    // Three verified attempts each own a 750ms receipt window before the
+    // supervisor's fixed 15s safety margin expires.
+    await vi.advanceTimersByTimeAsync(17_250);
 
     await expect(paste).resolves.toMatchObject({
       ok: false,
@@ -150,7 +152,12 @@ describe('PortalSidecar supervision', () => {
     expect(request).toMatchObject({
       op: 'paste',
       shortcut: 'ctrl-shift-v',
-      verifyMs: 750
+      verifyMs: 750,
+      attempts: [
+        { shortcut: 'ctrl-shift-v', method: 'keycode', interEventMs: 20 },
+        { shortcut: 'ctrl-shift-v', method: 'keycode', interEventMs: 60 },
+        { shortcut: 'ctrl-v', method: 'keysym', interEventMs: 60 }
+      ]
     });
     reply(child, request, {
       ok: false,
@@ -158,6 +165,10 @@ describe('PortalSidecar supervision', () => {
       injected: true,
       selectionRead: false,
       restored: false,
+      targetApp: 'unknown',
+      attemptCount: 3,
+      shortcut: 'ctrl-v',
+      injectionMethod: 'keysym',
       stage: 'verify',
       error: 'selection was not read'
     });
@@ -167,6 +178,10 @@ describe('PortalSidecar supervision', () => {
       injected: true,
       selectionRead: false,
       sessionRecyclePending: true,
+      targetApp: 'unknown',
+      attemptCount: 3,
+      shortcut: 'ctrl-v',
+      injectionMethod: 'keysym',
       stage: 'verify'
     });
     expect(child.kill).not.toHaveBeenCalled();

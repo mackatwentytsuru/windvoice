@@ -19,7 +19,8 @@ Protocol (one JSON object per line):
     {"id":1,"op":"paste","text":"...","restore":true,
      "settleMs":150,"restoreMs":1500}
         Snapshot current selection (if restore), claim it with text, inject
-        Ctrl+V, wait, restore the old selection. Replies when finished.
+        Ctrl+Shift+V with verified fallbacks, then restore the old selection.
+        Replies when finished.
         -> {"id":1,"ok":true,"claimed":true,"injected":true,
             "selectionRead":true,"restored":true,
             "shortcut":"ctrl-shift-v"}
@@ -48,7 +49,12 @@ from portal_clipboard import (
     SelectionOwnerTimeout,
     apply_selection_and_wait_for_owner,
 )
-from portal_input import InjectionError, inject_paste_chord as dispatch_paste_chord
+from portal_focus import focused_app_id
+from portal_input import (
+    InjectionError,
+    inject_paste_chord as dispatch_paste_chord,
+    run_verified_paste_attempts,
+)
 
 try:
     import gi  # noqa: E402
@@ -76,6 +82,9 @@ SESSION_IFACE = 'org.freedesktop.portal.Session'
 MIME_TYPES = ['text/plain;charset=utf-8', 'text/plain', 'UTF8_STRING', 'TEXT', 'STRING']
 DBUS_TIMEOUT_MS = 3000
 SELECTION_OWNER_TIMEOUT_S = 2.0
+GNOME_INTROSPECT = 'org.gnome.Shell.Introspect'
+GNOME_INTROSPECT_PATH = '/org/gnome/Shell/Introspect'
+MAX_KEY_EVENT_DELAY_MS = 250
 
 TOKEN_FILE = sys.argv[1] if len(sys.argv) > 1 else None
 
@@ -687,22 +696,61 @@ def wait_for_selection_read(generation, after_request_seq, timeout_s):
             transfer_condition.wait(remaining)
 
 
-def inject_paste_chord(shortcut='ctrl-shift-v'):
+def get_focused_app_id():
+    """Best-effort GNOME Shell focus lookup; restricted installs return unknown."""
+    def get_windows():
+        result = bus.call_sync(
+            GNOME_INTROSPECT,
+            GNOME_INTROSPECT_PATH,
+            GNOME_INTROSPECT,
+            'GetWindows',
+            GLib.Variant('()', ()),
+            GLib.VariantType('(a{ta{sv}})'),
+            0,
+            800,
+            None,
+        )
+        return result.unpack()
+
+    # TODO: A GNOME extension could expose focus metadata more reliably (as in
+    # xremap), but WindVoice must not install or require one for paste support.
+    return focused_app_id(get_windows)
+
+
+def inject_paste_chord(
+        shortcut='ctrl-shift-v', method='keycode', inter_event_ms=20):
     with state_lock:
         session = state['session']
         if not session:
             raise RuntimeError('session unavailable')
 
     def key(code, down):
-        call(RD, 'NotifyKeyboardKeycode',
+        dbus_method = (
+            'NotifyKeyboardKeysym'
+            if method == 'keysym'
+            else 'NotifyKeyboardKeycode'
+        )
+        call(RD, dbus_method,
              GLib.Variant('(oa{sv}iu)', (session, {}, code, 1 if down else 0)))
 
-    return dispatch_paste_chord(key, shortcut)
+    delay_ms = min(MAX_KEY_EVENT_DELAY_MS, max(0, int(inter_event_ms)))
+    return dispatch_paste_chord(
+        key,
+        shortcut,
+        method=method,
+        inter_event_delay_s=delay_ms / 1000,
+    )
 
 
 def emit_paste_result(
         rid, claimed, injected, selection_read, restored,
-        stage=None, error=None, tainted=False, shortcut='ctrl-shift-v'):
+        stage=None, error=None, tainted=False, shortcut='ctrl-shift-v',
+        injection_method=None, target_app='unknown', attempts=None):
+    attempts = list(attempts or [])
+    if attempts:
+        last_attempt = attempts[-1]
+        shortcut = last_attempt.get('shortcut', shortcut)
+        injection_method = last_attempt.get('method', injection_method)
     result = {
         'id': rid,
         'ok': injected is True and selection_read is True,
@@ -711,6 +759,10 @@ def emit_paste_result(
         'selectionRead': selection_read,
         'restored': bool(restored),
         'shortcut': shortcut,
+        'injectionMethod': injection_method,
+        'targetApp': target_app,
+        'attemptCount': len(attempts),
+        'attempts': attempts,
     }
     if tainted:
         result['tainted'] = True
@@ -738,6 +790,8 @@ def handle_paste(msg, rid):
     selection_read = False
     restored = False
     shortcut = 'ctrl-shift-v'
+    target_app = get_focused_app_id()
+    attempts = []
     try:
         text = str(msg.get('text', ''))
         restore = bool(msg.get('restore', True))
@@ -745,11 +799,38 @@ def handle_paste(msg, rid):
         restore_delay = max(0, int(msg.get('restoreMs', 1500))) / 1000
         verify_delay = max(0, int(msg.get('verifyMs', 750))) / 1000
         shortcut = str(msg.get('shortcut', 'ctrl-shift-v'))
+        raw_attempts = msg.get('attempts', [
+            {
+                'shortcut': shortcut,
+                'method': 'keycode',
+                'interEventMs': 20,
+            },
+        ])
+        if not isinstance(raw_attempts, list) or not 1 <= len(raw_attempts) <= 4:
+            raise ValueError('attempts must contain between 1 and 4 entries')
+        for raw_attempt in raw_attempts:
+            if not isinstance(raw_attempt, dict):
+                raise ValueError('every paste attempt must be an object')
+            attempt_shortcut = str(raw_attempt.get('shortcut', shortcut))
+            method = str(raw_attempt.get('method', 'keycode'))
+            inter_event_ms = min(
+                MAX_KEY_EVENT_DELAY_MS,
+                max(0, int(raw_attempt.get('interEventMs', 20))),
+            )
+            if attempt_shortcut not in ('ctrl-shift-v', 'ctrl-v'):
+                raise ValueError(f'unsupported paste shortcut: {attempt_shortcut!r}')
+            if method not in ('keycode', 'keysym'):
+                raise ValueError(f'unsupported injection method: {method!r}')
+            attempts.append({
+                'shortcut': attempt_shortcut,
+                'method': method,
+                'interEventMs': inter_event_ms,
+            })
     except (TypeError, ValueError, OverflowError) as e:
         emit_paste_result(
             rid, claimed, injected, selection_read, restored, 'snapshot',
             f'invalid paste options: {e}',
-            shortcut=shortcut,
+            shortcut=shortcut, target_app=target_app,
         )
         return
     old_text = None
@@ -770,29 +851,59 @@ def handle_paste(msg, rid):
     except SelectionOwnerTimeout as e:
         emit_paste_result(
             rid, claimed, injected, selection_read, restored,
-            'claim', e, tainted=True, shortcut=shortcut)
+            'claim', e, tainted=True, shortcut=shortcut,
+            target_app=target_app)
         return
     except Exception as e:  # noqa: BLE001
         emit_paste_result(
             rid, claimed, injected, selection_read, restored,
-            'claim', e, shortcut=shortcut)
+            'claim', e, shortcut=shortcut, target_app=target_app)
         exit_if_portal_unavailable(e)
         return
 
     time.sleep(settle)
-    transfer_before_inject = transfer_checkpoint()
     inject_error = None
+    attempt_results = []
+    active_attempt = None
+
+    def inject_attempt(attempt):
+        nonlocal active_attempt
+        active_attempt = attempt
+        return inject_paste_chord(
+            attempt['shortcut'],
+            attempt['method'],
+            attempt['interEventMs'],
+        )
+
+    def verify_attempt(after_request_seq):
+        return wait_for_selection_read(
+            generation, after_request_seq, verify_delay)
+
     try:
-        injected = inject_paste_chord(shortcut)
+        delivery = run_verified_paste_attempts(
+            attempts,
+            inject_attempt,
+            transfer_checkpoint,
+            verify_attempt,
+        )
+        injected = delivery['injected']
+        selection_read = delivery['selectionRead']
+        attempt_results = delivery['attempts']
     except InjectionError as e:
         injected = e.injected
         inject_error = e
+        if active_attempt is not None:
+            attempt_result = dict(active_attempt)
+            attempt_result['injected'] = injected
+            attempt_result['selectionRead'] = False
+            attempt_results.append(attempt_result)
     except Exception as e:  # noqa: BLE001
         inject_error = e
-
-    if injected is True:
-        selection_read = wait_for_selection_read(
-            generation, transfer_before_inject, verify_delay)
+        if active_attempt is not None:
+            attempt_result = dict(active_attempt)
+            attempt_result['injected'] = injected
+            attempt_result['selectionRead'] = False
+            attempt_results.append(attempt_result)
 
     restore_error = None
     restore_tainted = False
@@ -813,7 +924,8 @@ def handle_paste(msg, rid):
     if inject_error is not None:
         emit_paste_result(
             rid, claimed, injected, selection_read, restored,
-            'inject', inject_error, tainted=True, shortcut=shortcut)
+            'inject', inject_error, tainted=True, shortcut=shortcut,
+            target_app=target_app, attempts=attempt_results)
         # A partially delivered chord can leave Ctrl/Shift latched even when
         # best-effort releases also fail. Destroying the RemoteDesktop session
         # is the only reliable kernel/compositor cleanup boundary.
@@ -822,21 +934,25 @@ def handle_paste(msg, rid):
         emit_paste_result(
             rid, claimed, injected, selection_read, restored,
             'restore', restore_error, tainted=restore_tainted,
-            shortcut=shortcut)
+            shortcut=shortcut, target_app=target_app,
+            attempts=attempt_results)
         exit_if_portal_unavailable(restore_error)
     elif injected is True and not selection_read:
         emit_paste_result(
             rid, claimed, injected, selection_read, restored,
             'verify', 'no post-injection selection read was observed',
-            shortcut=shortcut)
+            shortcut=shortcut, target_app=target_app,
+            attempts=attempt_results)
     elif snapshot_problem is not None:
         emit_paste_result(
             rid, claimed, injected, selection_read, restored,
-            'snapshot', snapshot_problem, shortcut=shortcut)
+            'snapshot', snapshot_problem, shortcut=shortcut,
+            target_app=target_app, attempts=attempt_results)
     else:
         emit_paste_result(
             rid, claimed, injected, selection_read, restored,
-            shortcut=shortcut)
+            shortcut=shortcut, target_app=target_app,
+            attempts=attempt_results)
 
 
 def handle(msg):
@@ -866,14 +982,16 @@ def handle(msg):
                       'error': str(e)})
         elif op == 'key_paste':
             shortcut = str(msg.get('shortcut', 'ctrl-shift-v'))
+            method = str(msg.get('method', 'keycode'))
+            inter_event_ms = int(msg.get('interEventMs', 20))
             try:
-                inject_paste_chord(shortcut)
+                inject_paste_chord(shortcut, method, inter_event_ms)
                 emit({'id': rid, 'ok': True, 'injected': True,
-                      'shortcut': shortcut})
+                      'shortcut': shortcut, 'injectionMethod': method})
             except InjectionError as e:
                 emit({'id': rid, 'ok': False, 'injected': e.injected,
                       'tainted': True, 'error': str(e),
-                      'shortcut': shortcut})
+                      'shortcut': shortcut, 'injectionMethod': method})
                 os._exit(1)
         elif op == 'paste':
             handle_paste(msg, rid)

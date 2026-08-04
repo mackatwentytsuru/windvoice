@@ -27,6 +27,17 @@ export type PasteStage = 'snapshot' | 'claim' | 'inject' | 'verify' | 'restore';
 
 export const WAYLAND_PASTE_SHORTCUT = 'ctrl-shift-v' as const;
 export const WAYLAND_PASTE_VERIFICATION_MS = 750;
+export const WAYLAND_KEY_EVENT_DELAY_MS = 20;
+export const WAYLAND_RETRY_KEY_EVENT_DELAY_MS = 60;
+
+export type PortalInjectionMethod = 'keycode' | 'keysym';
+export interface PortalPasteAttempt {
+  shortcut: typeof WAYLAND_PASTE_SHORTCUT | 'ctrl-v';
+  method: PortalInjectionMethod;
+  interEventMs: number;
+  injected?: boolean | null;
+  selectionRead?: boolean;
+}
 
 export interface PortalPasteResult {
   ok: boolean;
@@ -40,6 +51,11 @@ export interface PortalPasteResult {
    */
   selectionRead: boolean | null;
   restored: boolean;
+  targetApp: string;
+  attemptCount: number;
+  attempts: PortalPasteAttempt[];
+  shortcut: PortalPasteAttempt['shortcut'];
+  injectionMethod: PortalInjectionMethod | null;
   /** True when the tainted RemoteDesktop session was discarded. */
   sessionReset?: boolean;
   /** True when the current selection is kept for manual paste, then the
@@ -79,6 +95,10 @@ interface SidecarReply {
   restored?: boolean;
   tainted?: boolean;
   shortcut?: typeof WAYLAND_PASTE_SHORTCUT | 'ctrl-v';
+  injectionMethod?: PortalInjectionMethod;
+  targetApp?: string;
+  attemptCount?: number;
+  attempts?: PortalPasteAttempt[];
   stage?: PasteStage;
   /** Local-only marker added when a mutating request loses its child. */
   uncertain?: boolean;
@@ -435,9 +455,32 @@ export class PortalSidecar {
     text: string,
     restore: boolean,
     settleMs: number,
-    restoreMs: number
+    restoreMs: number,
+    keyEventDelayMs = WAYLAND_KEY_EVENT_DELAY_MS,
+    retryKeyEventDelayMs = WAYLAND_RETRY_KEY_EVENT_DELAY_MS
   ): Promise<PortalPasteResult> {
-    const budget = settleMs + restoreMs + WAYLAND_PASTE_VERIFICATION_MS + 15_000;
+    const attempts: PortalPasteAttempt[] = [
+      {
+        shortcut: WAYLAND_PASTE_SHORTCUT,
+        method: 'keycode',
+        interEventMs: keyEventDelayMs
+      },
+      {
+        shortcut: WAYLAND_PASTE_SHORTCUT,
+        method: 'keycode',
+        interEventMs: retryKeyEventDelayMs
+      },
+      {
+        shortcut: 'ctrl-v',
+        method: 'keysym',
+        interEventMs: retryKeyEventDelayMs
+      }
+    ];
+    const budget =
+      settleMs +
+      restoreMs +
+      WAYLAND_PASTE_VERIFICATION_MS * attempts.length +
+      15_000;
     const r = await this.send(
       'paste',
       {
@@ -446,7 +489,8 @@ export class PortalSidecar {
         settleMs,
         restoreMs,
         verifyMs: WAYLAND_PASTE_VERIFICATION_MS,
-        shortcut: WAYLAND_PASTE_SHORTCUT
+        shortcut: WAYLAND_PASTE_SHORTCUT,
+        attempts
       },
       budget
     );
@@ -458,6 +502,11 @@ export class PortalSidecar {
         injected: null,
         selectionRead: null,
         restored: false,
+        targetApp: 'unknown',
+        attemptCount: 0,
+        attempts: [],
+        shortcut: WAYLAND_PASTE_SHORTCUT,
+        injectionMethod: null,
         sessionReset: true,
         stage: r.stage ?? 'inject',
         error: r.error
@@ -468,6 +517,21 @@ export class PortalSidecar {
     const sessionReset = r.tainted === true;
     const sessionRecyclePending =
       injected === true && !selectionRead && !sessionReset;
+    const resultAttempts = Array.isArray(r.attempts) ? r.attempts : [];
+    const shortcut = r.shortcut === 'ctrl-v' ? 'ctrl-v' : WAYLAND_PASTE_SHORTCUT;
+    const injectionMethod =
+      r.injectionMethod === 'keycode' || r.injectionMethod === 'keysym'
+        ? r.injectionMethod
+        : null;
+    const targetApp = typeof r.targetApp === 'string' && r.targetApp ? r.targetApp : 'unknown';
+    const attemptCount =
+      typeof r.attemptCount === 'number' ? r.attemptCount : resultAttempts.length;
+    debug(
+      'DICTATION',
+      `portal paste result targetApp=${targetApp} attempts=${attemptCount} ` +
+        `shortcut=${shortcut} method=${injectionMethod ?? 'none'} ` +
+        `injected=${String(injected)} selectionRead=${selectionRead}`
+    );
     if (sessionReset) {
       debug('DICTATION', 'portal sidecar session was tainted — rebuilding session');
       this.restart();
@@ -485,6 +549,11 @@ export class PortalSidecar {
       injected,
       selectionRead,
       restored: r.restored === true,
+      targetApp,
+      attemptCount,
+      attempts: resultAttempts,
+      shortcut,
+      injectionMethod,
       ...(sessionReset ? { sessionReset: true } : {}),
       ...(sessionRecyclePending ? { sessionRecyclePending: true } : {}),
       ...(r.stage ? { stage: r.stage } : {}),

@@ -8,7 +8,6 @@ import { sendPasteKeystroke } from '@main/inject/paste';
 import { isWaylandSession } from '@main/linux/wayland';
 import {
   portalSidecar,
-  WAYLAND_PASTE_SHORTCUT,
   type PortalPasteResult
 } from '@main/linux/portalSidecar';
 import { pasteTiming, type PasteCompatibility } from '@main/inject/pasteTiming';
@@ -269,11 +268,15 @@ export async function pasteText(
         text,
         restoreClipboard,
         timing.settleMs,
-        timing.restoreDelayMs
+        timing.restoreDelayMs,
+        timing.keyEventDelayMs,
+        timing.retryKeyEventDelayMs
       );
       debug(
         'DICTATION',
-        `wayland paste: sidecar result shortcut=${WAYLAND_PASTE_SHORTCUT} ` +
+        `wayland paste: sidecar result targetApp=${result.targetApp} ` +
+          `attempts=${result.attemptCount} shortcut=${result.shortcut} ` +
+          `method=${result.injectionMethod ?? 'none'} ` +
           `ok=${result.ok} injected=${String(result.injected)} ` +
           `selectionRead=${String(result.selectionRead)} restored=${result.restored} ` +
           `stage=${result.stage ?? 'none'} sessionReset=${result.sessionReset === true} ` +
