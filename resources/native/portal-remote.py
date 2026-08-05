@@ -44,6 +44,10 @@ import sys
 import threading
 import time
 
+INTEGRATION_TEST_SCENARIO = os.environ.get(
+    'WINDVOICE_PORTAL_INTEGRATION_TEST', '')
+INTEGRATION_TEST_MODE = INTEGRATION_TEST_SCENARIO == 'verify-fail-v1'
+
 from portal_clipboard import (
     OwnerChangeBarrier,
     SelectionOwnerTimeout,
@@ -56,22 +60,23 @@ from portal_input import (
     run_verified_paste_attempts,
 )
 
-try:
-    import gi  # noqa: E402
-    from gi.repository import GLib, Gio  # noqa: E402
-except Exception as e:  # noqa: BLE001 — report missing/broken PyGObject cleanly
-    sys.stdout.write(json.dumps({
-        'event': 'failed',
-        'code': -2,
-        'denied': False,
-        'stage': 'import',
-        'message': (
-            'PyGObject is required; install python3-gi (Debian/Ubuntu) or '
-            f'python3-gobject (Fedora/Arch): {e}'
-        ),
-    }, ensure_ascii=False) + '\n')
-    sys.stdout.flush()
-    raise SystemExit(2)
+if not INTEGRATION_TEST_MODE:
+    try:
+        import gi  # noqa: E402
+        from gi.repository import GLib, Gio  # noqa: E402
+    except Exception as e:  # noqa: BLE001 — report missing/broken PyGObject cleanly
+        sys.stdout.write(json.dumps({
+            'event': 'failed',
+            'code': -2,
+            'denied': False,
+            'stage': 'import',
+            'message': (
+                'PyGObject is required; install python3-gi (Debian/Ubuntu) or '
+                f'python3-gobject (Fedora/Arch): {e}'
+            ),
+        }, ensure_ascii=False) + '\n')
+        sys.stdout.flush()
+        raise SystemExit(2)
 
 PORTAL = 'org.freedesktop.portal.Desktop'
 PPATH = '/org/freedesktop/portal/desktop'
@@ -97,8 +102,8 @@ def emit(obj):
         sys.stdout.flush()
 
 
-bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
-unique = bus.get_unique_name()
+bus = None if INTEGRATION_TEST_MODE else Gio.bus_get_sync(Gio.BusType.SESSION, None)
+unique = ':1.integration_test' if INTEGRATION_TEST_MODE else bus.get_unique_name()
 sender_token = unique[1:].replace('.', '_')
 counter = 0
 state = {
@@ -633,6 +638,12 @@ def read_selection_snapshot(deadline_s=1.0):
 
 
 def set_selection(text):
+    if globals().get('INTEGRATION_TEST_MODE', False):
+        with state_lock:
+            state['selection_generation'] += 1
+            state['selection_text'] = text
+            state['selection_is_owner'] = True
+            return state['selection_generation']
     with state_lock:
         session = state['session']
         if not session or not state['clipboard']:
@@ -682,6 +693,12 @@ def wait_for_selection_read(generation, after_request_seq, timeout_s):
     app rendered the text. The distinction is surfaced to the Node client as
     `selectionRead`, never hidden behind key-dispatch success.
     """
+    if globals().get('INTEGRATION_TEST_MODE', False):
+        # Deliberately preserve the production verification window. The
+        # process integration test proves that three failed receipts consume
+        # three windows instead of returning after the first ~750 ms.
+        time.sleep(timeout_s)
+        return False
     end = time.monotonic() + timeout_s
     with transfer_condition:
         while True:
@@ -698,6 +715,9 @@ def wait_for_selection_read(generation, after_request_seq, timeout_s):
 
 def get_focused_app_id():
     """Best-effort GNOME Shell focus lookup; restricted installs return unknown."""
+    if globals().get('INTEGRATION_TEST_MODE', False):
+        return 'windvoice.integration.test'
+
     def get_windows():
         result = bus.call_sync(
             GNOME_INTROSPECT,
@@ -725,6 +745,8 @@ def inject_paste_chord(
             raise RuntimeError('session unavailable')
 
     def key(code, down):
+        if globals().get('INTEGRATION_TEST_MODE', False):
+            return
         dbus_method = (
             'NotifyKeyboardKeysym'
             if method == 'keysym'
@@ -740,6 +762,73 @@ def inject_paste_chord(
         method=method,
         inter_event_delay_s=delay_ms / 1000,
     )
+
+
+def clamp_key_event_delay(value):
+    return min(MAX_KEY_EVENT_DELAY_MS, max(0, int(value)))
+
+
+def build_mandatory_paste_attempts(msg):
+    """Build the invariant chain inside Python, independent of TS version.
+
+    71fb09e accepted an `attempts` array from Node but defaulted to a single
+    attempt when that field was absent. A new portal-remote.py paired with an
+    older/stale app bundle therefore returned after the first 750 ms verify
+    miss. Legacy arrays are consulted only for timing compatibility; callers
+    cannot remove or reorder fallback stages.
+    """
+    raw_attempts = msg.get('attempts')
+
+    initial_delay = msg.get('keyEventDelayMs')
+    retry_delay = msg.get('retryKeyEventDelayMs')
+    if isinstance(raw_attempts, list):
+        if initial_delay is None and raw_attempts and isinstance(raw_attempts[0], dict):
+            initial_delay = raw_attempts[0].get('interEventMs')
+        if retry_delay is None and len(raw_attempts) > 1 and isinstance(raw_attempts[1], dict):
+            retry_delay = raw_attempts[1].get('interEventMs')
+
+    initial_delay = clamp_key_event_delay(
+        20 if initial_delay is None else initial_delay)
+    retry_delay = clamp_key_event_delay(
+        60 if retry_delay is None else retry_delay)
+    return [
+        {
+            'stage': 'initial',
+            'shortcut': 'ctrl-shift-v',
+            'method': 'keycode',
+            'interEventMs': initial_delay,
+        },
+        {
+            'stage': 'slow-retry',
+            'shortcut': 'ctrl-shift-v',
+            'method': 'keycode',
+            'interEventMs': retry_delay,
+        },
+        {
+            'stage': 'keysym',
+            'shortcut': 'ctrl-v',
+            'method': 'keysym',
+            'interEventMs': retry_delay,
+        },
+    ]
+
+
+def emit_fallback_trace(stage, result, target_app, attempt=None):
+    """Write one bounded line that Node mirrors to windvoice-debug.log."""
+    safe_app = str(target_app or 'unknown').replace('\r', ' ').replace('\n', ' ')
+    fields = [
+        'fallback',
+        f'stage={stage}',
+        f'result={result}',
+        f'app_id={safe_app}',
+    ]
+    if attempt is not None:
+        fields.extend((
+            f"shortcut={attempt.get('shortcut', 'unknown')}",
+            f"method={attempt.get('method', 'unknown')}",
+        ))
+    sys.stderr.write(' '.join(fields) + '\n')
+    sys.stderr.flush()
 
 
 def emit_paste_result(
@@ -799,33 +888,7 @@ def handle_paste(msg, rid):
         restore_delay = max(0, int(msg.get('restoreMs', 1500))) / 1000
         verify_delay = max(0, int(msg.get('verifyMs', 750))) / 1000
         shortcut = str(msg.get('shortcut', 'ctrl-shift-v'))
-        raw_attempts = msg.get('attempts', [
-            {
-                'shortcut': shortcut,
-                'method': 'keycode',
-                'interEventMs': 20,
-            },
-        ])
-        if not isinstance(raw_attempts, list) or not 1 <= len(raw_attempts) <= 4:
-            raise ValueError('attempts must contain between 1 and 4 entries')
-        for raw_attempt in raw_attempts:
-            if not isinstance(raw_attempt, dict):
-                raise ValueError('every paste attempt must be an object')
-            attempt_shortcut = str(raw_attempt.get('shortcut', shortcut))
-            method = str(raw_attempt.get('method', 'keycode'))
-            inter_event_ms = min(
-                MAX_KEY_EVENT_DELAY_MS,
-                max(0, int(raw_attempt.get('interEventMs', 20))),
-            )
-            if attempt_shortcut not in ('ctrl-shift-v', 'ctrl-v'):
-                raise ValueError(f'unsupported paste shortcut: {attempt_shortcut!r}')
-            if method not in ('keycode', 'keysym'):
-                raise ValueError(f'unsupported injection method: {method!r}')
-            attempts.append({
-                'shortcut': attempt_shortcut,
-                'method': method,
-                'interEventMs': inter_event_ms,
-            })
+        attempts = build_mandatory_paste_attempts(msg)
     except (TypeError, ValueError, OverflowError) as e:
         emit_paste_result(
             rid, claimed, injected, selection_read, restored, 'snapshot',
@@ -879,12 +942,22 @@ def handle_paste(msg, rid):
         return wait_for_selection_read(
             generation, after_request_seq, verify_delay)
 
+    def trace_attempt(attempt_result):
+        result = (
+            'verified'
+            if attempt_result['selectionRead']
+            else 'verify-failed'
+        )
+        emit_fallback_trace(
+            attempt_result['stage'], result, target_app, attempt_result)
+
     try:
         delivery = run_verified_paste_attempts(
             attempts,
             inject_attempt,
             transfer_checkpoint,
             verify_attempt,
+            trace_attempt,
         )
         injected = delivery['injected']
         selection_read = delivery['selectionRead']
@@ -897,6 +970,9 @@ def handle_paste(msg, rid):
             attempt_result['injected'] = injected
             attempt_result['selectionRead'] = False
             attempt_results.append(attempt_result)
+            emit_fallback_trace(
+                attempt_result['stage'], 'inject-failed',
+                target_app, attempt_result)
     except Exception as e:  # noqa: BLE001
         inject_error = e
         if active_attempt is not None:
@@ -904,6 +980,9 @@ def handle_paste(msg, rid):
             attempt_result['injected'] = injected
             attempt_result['selectionRead'] = False
             attempt_results.append(attempt_result)
+            emit_fallback_trace(
+                attempt_result['stage'], 'inject-failed',
+                target_app, attempt_result)
 
     restore_error = None
     restore_tainted = False
@@ -922,6 +1001,7 @@ def handle_paste(msg, rid):
             restore_error = e
 
     if inject_error is not None:
+        emit_fallback_trace('manual', 'required', target_app)
         emit_paste_result(
             rid, claimed, injected, selection_read, restored,
             'inject', inject_error, tainted=True, shortcut=shortcut,
@@ -938,6 +1018,7 @@ def handle_paste(msg, rid):
             attempts=attempt_results)
         exit_if_portal_unavailable(restore_error)
     elif injected is True and not selection_read:
+        emit_fallback_trace('manual', 'required', target_app)
         emit_paste_result(
             rid, claimed, injected, selection_read, restored,
             'verify', 'no post-injection selection read was observed',
@@ -1024,7 +1105,12 @@ def setup_session_guarded():
 
 
 def stdin_worker():
-    if not setup_session_guarded():
+    if INTEGRATION_TEST_MODE:
+        with state_lock:
+            state['session'] = '/windvoice/integration/test'
+            state['clipboard'] = True
+        emit({'event': 'ready', 'clipboard': True})
+    elif not setup_session_guarded():
         # Stay alive so the parent reads the failure event before EOF races;
         # it will kill us.
         time.sleep(3600)
@@ -1042,5 +1128,8 @@ def stdin_worker():
     os._exit(0)  # parent closed stdin
 
 
-threading.Thread(target=stdin_worker, daemon=True).start()
-GLib.MainLoop().run()
+if INTEGRATION_TEST_MODE:
+    stdin_worker()
+else:
+    threading.Thread(target=stdin_worker, daemon=True).start()
+    GLib.MainLoop().run()

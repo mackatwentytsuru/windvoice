@@ -15,11 +15,17 @@ sys.path.insert(0, sys.argv[2])
 from portal_input import run_verified_paste_attempts
 
 tree = ast.parse(open(source_path, encoding='utf-8').read(), source_path)
-function = next(
+function_names = {
+    'clamp_key_event_delay',
+    'build_mandatory_paste_attempts',
+    'emit_fallback_trace',
+    'handle_paste',
+}
+functions = [
     node for node in tree.body
-    if isinstance(node, ast.FunctionDef) and node.name == 'handle_paste'
-)
-module = ast.Module(body=[function], type_ignores=[])
+    if isinstance(node, ast.FunctionDef) and node.name in function_names
+]
+module = ast.Module(body=functions, type_ignores=[])
 
 receipt_plan = [value == 'true' for value in sys.argv[3].split(',')]
 claims = []
@@ -78,21 +84,25 @@ namespace = {
     'emit_paste_result': emit_result,
     'exit_if_portal_unavailable': lambda _error: None,
     'MAX_KEY_EVENT_DELAY_MS': 250,
+    'sys': sys,
 }
 exec(compile(module, source_path, 'exec'), namespace)
 
-namespace['handle_paste']({
+message = {
     'text': 'hello',
     'restore': False,
     'settleMs': 0,
     'restoreMs': 0,
     'verifyMs': 750,
-    'attempts': [
+}
+if sys.argv[4] == 'with-attempts':
+    message['attempts'] = [
         {'shortcut': 'ctrl-shift-v', 'method': 'keycode', 'interEventMs': 20},
         {'shortcut': 'ctrl-shift-v', 'method': 'keycode', 'interEventMs': 60},
         {'shortcut': 'ctrl-v', 'method': 'keysym', 'interEventMs': 60},
-    ],
-}, 42)
+    ]
+
+namespace['handle_paste'](message, 42)
 
 print(json.dumps({
     'claims': claims,
@@ -103,10 +113,12 @@ print(json.dumps({
 }))
 `;
 
-function probe(receipts: string): Record<string, unknown> {
-  const run = spawnSync('python3', ['-c', PROBE, source, helperDir, receipts], {
-    encoding: 'utf8'
-  });
+function probe(receipts: string, includeAttempts = true): Record<string, unknown> {
+  const run = spawnSync(
+    'python3',
+    ['-c', PROBE, source, helperDir, receipts, includeAttempts ? 'with-attempts' : 'legacy'],
+    { encoding: 'utf8' }
+  );
   expect(run.status, run.stderr).toBe(0);
   return JSON.parse(run.stdout) as Record<string, unknown>;
 }
@@ -156,6 +168,26 @@ describe('portal-remote verified paste fallback integration', () => {
           'verify',
           'no post-injection selection read was observed'
         ]
+      }
+    });
+  });
+
+  it('runs the mandatory fallback chain when an older TS caller omits attempts', () => {
+    expect(probe('false,false,false', false)).toMatchObject({
+      injections: [
+        { shortcut: 'ctrl-shift-v', method: 'keycode', interEventMs: 20 },
+        { shortcut: 'ctrl-shift-v', method: 'keycode', interEventMs: 60 },
+        { shortcut: 'ctrl-v', method: 'keysym', interEventMs: 60 }
+      ],
+      checkpoints: [100, 101, 102],
+      emission: {
+        kwargs: {
+          attempts: [
+            { shortcut: 'ctrl-shift-v', method: 'keycode', selectionRead: false },
+            { shortcut: 'ctrl-shift-v', method: 'keycode', selectionRead: false },
+            { shortcut: 'ctrl-v', method: 'keysym', selectionRead: false }
+          ]
+        }
       }
     });
   });

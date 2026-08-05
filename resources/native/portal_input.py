@@ -87,7 +87,8 @@ def inject_paste_chord(
     return True
 
 
-def run_verified_paste_attempts(attempts, inject, checkpoint, verify):
+def run_verified_paste_attempts(
+        attempts, inject, checkpoint, verify, on_result=None):
     """Run ordered paste attempts, requiring a fresh receipt after each one.
 
     A successful SelectionTransfer is the stop condition. Keeping checkpoint
@@ -108,6 +109,8 @@ def run_verified_paste_attempts(attempts, inject, checkpoint, verify):
         result['injected'] = last_injected
         result['selectionRead'] = selection_read
         results.append(result)
+        if on_result is not None:
+            on_result(result)
         if selection_read:
             return {
                 'injected': True,

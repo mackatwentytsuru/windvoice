@@ -1,6 +1,14 @@
 import { EventEmitter } from 'node:events';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+const hoisted = vi.hoisted(() => ({
+  debug: vi.fn()
+}));
+
+vi.mock('@main/debug', () => ({
+  debug: hoisted.debug
+}));
+
 vi.mock('electron', () => ({
   app: {
     getPath: () => '/tmp/windvoice-test',
@@ -50,6 +58,7 @@ describe('PortalSidecar supervision', () => {
 
   beforeEach(() => {
     vi.useFakeTimers();
+    hoisted.debug.mockReset();
     children = [];
     unavailable = vi.fn();
     sidecar = new PortalSidecar({
@@ -153,12 +162,10 @@ describe('PortalSidecar supervision', () => {
       op: 'paste',
       shortcut: 'ctrl-shift-v',
       verifyMs: 750,
-      attempts: [
-        { shortcut: 'ctrl-shift-v', method: 'keycode', interEventMs: 20 },
-        { shortcut: 'ctrl-shift-v', method: 'keycode', interEventMs: 60 },
-        { shortcut: 'ctrl-v', method: 'keysym', interEventMs: 60 }
-      ]
+      keyEventDelayMs: 20,
+      retryKeyEventDelayMs: 60
     });
+    expect(request).not.toHaveProperty('attempts');
     reply(child, request, {
       ok: false,
       claimed: true,
@@ -190,6 +197,27 @@ describe('PortalSidecar supervision', () => {
 
     expect(child.kill).toHaveBeenCalledOnce();
     expect(children).toHaveLength(2);
+  });
+
+  it('mirrors each structured Python fallback line directly to dictation logging', () => {
+    sidecar.start();
+    const child = children[0]!;
+    ready(child);
+
+    child.stderr.emit(
+      'data',
+      'fallback stage=slow-retry result=verify-failed app_id=org.example.Target\n' +
+        'fallback stage=keysym result=verified app_id=org.example.Target\n'
+    );
+
+    expect(hoisted.debug).toHaveBeenCalledWith(
+      'DICTATION',
+      'fallback stage=slow-retry result=verify-failed app_id=org.example.Target'
+    );
+    expect(hoisted.debug).toHaveBeenCalledWith(
+      'DICTATION',
+      'fallback stage=keysym result=verified app_id=org.example.Target'
+    );
   });
 
   it('recycles a tainted virtual keyboard session before the next paste', async () => {

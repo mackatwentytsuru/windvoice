@@ -32,6 +32,7 @@ export const WAYLAND_RETRY_KEY_EVENT_DELAY_MS = 60;
 
 export type PortalInjectionMethod = 'keycode' | 'keysym';
 export interface PortalPasteAttempt {
+  stage?: 'initial' | 'slow-retry' | 'keysym';
   shortcut: typeof WAYLAND_PASTE_SHORTCUT | 'ctrl-v';
   method: PortalInjectionMethod;
   interEventMs: number;
@@ -136,6 +137,7 @@ export class PortalSidecar {
     }
   >();
   private stdoutBuf = '';
+  private stderrBuf = '';
   private onUnavailable: SidecarUnavailableListener | null = null;
   private onReady: SidecarReadyListener | null = null;
   private restartTimer: NodeJS.Timeout | null = null;
@@ -236,6 +238,7 @@ export class PortalSidecar {
     this.ready = false;
     this.clipboard = false;
     this.stdoutBuf = '';
+    this.stderrBuf = '';
     // A write to a dead child's pipe surfaces as an ASYNC 'error' event, not
     // a synchronous throw from write() — without this listener an EPIPE
     // (sidecar exited between our paste call and Node noticing) becomes an
@@ -247,10 +250,7 @@ export class PortalSidecar {
     child.stdout.setEncoding('utf8');
     child.stdout.on('data', (chunk: string) => this.onStdout(child, chunk));
     child.stderr.setEncoding('utf8');
-    child.stderr.on('data', (chunk: string) => {
-      if (this.child !== child) return;
-      debug('DICTATION', `portal sidecar stderr: ${chunk.trim().slice(0, 300)}`);
-    });
+    child.stderr.on('data', (chunk: string) => this.onStderr(child, chunk));
     child.on('error', (err) => {
       debug('DICTATION', `portal sidecar error: ${err.message}`);
       this.onExit(child);
@@ -281,6 +281,7 @@ export class PortalSidecar {
     this.ready = false;
     this.clipboard = false;
     this.stdoutBuf = '';
+    this.stderrBuf = '';
     this.recycleBeforeNextDictation = false;
     this.rejectAllPending(reason);
     try {
@@ -366,6 +367,25 @@ export class PortalSidecar {
           clearTimeout(p.timer);
           p.resolve(msg);
         }
+      }
+    }
+  }
+
+  private onStderr(child: ChildProcessWithoutNullStreams, chunk: string): void {
+    if (this.child !== child) return;
+    this.stderrBuf += chunk;
+    let idx: number;
+    while ((idx = this.stderrBuf.indexOf('\n')) !== -1) {
+      const line = this.stderrBuf.slice(0, idx).trim();
+      this.stderrBuf = this.stderrBuf.slice(idx + 1);
+      if (!line) continue;
+      // Python emits one structured trace for every executed chain stage.
+      // Mirror it without a prefix so windvoice-debug.log contains the exact
+      // searchable `[dictation] fallback stage=...` shape.
+      if (line.startsWith('fallback ')) {
+        debug('DICTATION', line.slice(0, 500));
+      } else {
+        debug('DICTATION', `portal sidecar stderr: ${line.slice(0, 300)}`);
       }
     }
   }
@@ -459,27 +479,14 @@ export class PortalSidecar {
     keyEventDelayMs = WAYLAND_KEY_EVENT_DELAY_MS,
     retryKeyEventDelayMs = WAYLAND_RETRY_KEY_EVENT_DELAY_MS
   ): Promise<PortalPasteResult> {
-    const attempts: PortalPasteAttempt[] = [
-      {
-        shortcut: WAYLAND_PASTE_SHORTCUT,
-        method: 'keycode',
-        interEventMs: keyEventDelayMs
-      },
-      {
-        shortcut: WAYLAND_PASTE_SHORTCUT,
-        method: 'keycode',
-        interEventMs: retryKeyEventDelayMs
-      },
-      {
-        shortcut: 'ctrl-v',
-        method: 'keysym',
-        interEventMs: retryKeyEventDelayMs
-      }
-    ];
+    // The Python side owns the invariant stage order. Sending only timing
+    // knobs prevents a caller-side array (or a stale bundle omitting it) from
+    // accidentally disabling the verified fallback chain.
+    const requestAttemptCount = 3;
     const budget =
       settleMs +
       restoreMs +
-      WAYLAND_PASTE_VERIFICATION_MS * attempts.length +
+      WAYLAND_PASTE_VERIFICATION_MS * requestAttemptCount +
       15_000;
     const r = await this.send(
       'paste',
@@ -490,7 +497,8 @@ export class PortalSidecar {
         restoreMs,
         verifyMs: WAYLAND_PASTE_VERIFICATION_MS,
         shortcut: WAYLAND_PASTE_SHORTCUT,
-        attempts
+        keyEventDelayMs,
+        retryKeyEventDelayMs
       },
       budget
     );
