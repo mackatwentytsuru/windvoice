@@ -384,11 +384,11 @@ describe('DictationOrchestrator', () => {
     expect(hoisted.instances[1]!.opened).toBe(true);
   });
 
-  it('recycleConnection is a no-op while a dictation is in flight', async () => {
+  it('defers recycleConnection until the active dictation finishes', async () => {
     await orch.start();
     audio.feed(5);
 
-    orch.recycleConnection('power resume');
+    orch.recycleConnection('network change');
     expect(hoisted.instances).toHaveLength(1);
     expect(hoisted.instances[0]!.disposed).toBe(false);
 
@@ -397,6 +397,10 @@ describe('DictationOrchestrator', () => {
     hoisted.instances[0]!.emit('final', 'kept');
     await stop;
     expect(pasteText).toHaveBeenCalledWith('kept', true, 'balanced', true);
+    expect(hoisted.instances[0]!.disposed).toBe(true);
+    expect(hoisted.instances).toHaveLength(2);
+    await new Promise((r) => setTimeout(r, 100));
+    expect(hoisted.instances[1]!.opened).toBe(true);
   });
 
   it('surfaces connect failures without throwing', async () => {

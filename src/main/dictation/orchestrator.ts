@@ -102,6 +102,7 @@ export class DictationOrchestrator {
   private deltaTargets: WebContents[] = [];
 
   private maintenanceTimer: NodeJS.Timeout | null = null;
+  private pendingConnectionRecycleReason: string | null = null;
 
   constructor(
     private audio: AudioBridge,
@@ -175,11 +176,17 @@ export class DictationOrchestrator {
    * resume / screen unlock: system sleep kills the TCP connection under the
    * socket without a FIN/RST, so the client keeps reporting isOpen() while
    * every appended chunk piles up in the send buffer and the take is lost
-   * (issue #54). No-op mid-dictation and when there is no client to
-   * recycle — the stale-socket gate in ensureConnected() covers those.
+   * (issue #54). A request received mid-dictation is deferred until the take
+   * finishes so the current audio is not discarded. No-op when there is no
+   * client to recycle — the stale-socket gate in ensureConnected() covers it.
    */
   recycleConnection(reason: string): void {
-    if (this.disposed || this.inFlight) return;
+    if (this.disposed) return;
+    if (this.inFlight) {
+      this.pendingConnectionRecycleReason = reason;
+      debug('DICTATION', `defer realtime connection recycle until take ends (${reason})`);
+      return;
+    }
     const client = this.client;
     if (!client) return;
     debug('DICTATION', `recycle realtime connection (${reason})`);
@@ -631,6 +638,7 @@ export class DictationOrchestrator {
   /** Detach all listeners and tear down the realtime client. */
   dispose(): void {
     this.disposed = true;
+    this.pendingConnectionRecycleReason = null;
     this.cancelRequested = true;
     this.cycleId++;
     if (this.maintenanceTimer) {
@@ -764,6 +772,9 @@ export class DictationOrchestrator {
     this.deltaTargets = [];
     this.updateStatus('idle');
     if (this.pendingDictionaryRefresh) this.refreshDictionaryHints();
+    const recycleReason = this.pendingConnectionRecycleReason;
+    this.pendingConnectionRecycleReason = null;
+    if (recycleReason) this.recycleConnection(recycleReason);
   }
 
   private updateStatus(status: DictationStatus): void {
@@ -841,6 +852,9 @@ export class DictationOrchestrator {
     // the next genuinely-silent take starts the escalation from level 1 ("no
     // audio detected") instead of jumping to the mic-unavailable guidance.
     this.consecutiveSilentTakes = 0;
+    // A transport reset already fulfills any recycle requested during this
+    // take; do not carry it into a later healthy connection.
+    this.pendingConnectionRecycleReason = null;
     const old = this.client;
     if (!old) return;
     this.detachClientListeners(old);

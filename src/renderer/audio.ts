@@ -270,6 +270,15 @@ function playBeep(kind: 'start' | 'stop'): void {
 
 // ─── wiring ────────────────────────────────────────────────────────────────
 
+const reportNetworkChange = (): void => window.audio.reportNetworkChange();
+// Chromium fires online/offline for reachability transitions. Its optional
+// Network Information signal can also report connection-type changes that
+// stay online; main-process debouncing coalesces duplicate events from one switch.
+window.addEventListener('online', reportNetworkChange);
+window.addEventListener('offline', reportNetworkChange);
+const networkInformation = (navigator as Navigator & { connection?: EventTarget }).connection;
+networkInformation?.addEventListener('change', reportNetworkChange);
+
 window.audio.onStart((deviceId: string | undefined, requestedIdleMode: AudioIdleMode) => {
   idleMode = requestedIdleMode;
   void startCapture(deviceId);

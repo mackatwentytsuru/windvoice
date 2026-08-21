@@ -55,6 +55,7 @@ import { UserDictionaryStore } from '@main/dictionary/userDictionary';
 import { parseAddCorrectionArgs, CorrectionCliError } from '@main/dictionary/cli';
 import { TranscriptLearningLog } from '@main/dictionary/transcriptLog';
 import type { DictionaryCorrection } from '@main/dictionary/schema';
+import { NetworkChangeDebouncer } from '@main/network/changeDebouncer';
 
 const PRELOAD_PATH = path.join(__dirname, '../preload/index.js');
 
@@ -71,6 +72,7 @@ let shutdownComplete = false;
 let userDictionary: UserDictionaryStore | null = null;
 let userDictionaryInit: Promise<UserDictionaryStore> | null = null;
 let offDictionaryChange: (() => void) | null = null;
+let networkChangeDebouncer: NetworkChangeDebouncer | null = null;
 
 async function startDictation(): Promise<void> {
   if (isWaylandSession()) portalSidecar.retryForDictation();
@@ -533,6 +535,14 @@ app.whenReady().then(async () => {
   audio.setLevelListener((level) => overlay?.setLevel(level));
 
   orchestrator = new DictationOrchestrator(audio, overlay, dictionary, transcriptLog);
+  networkChangeDebouncer = new NetworkChangeDebouncer(() => {
+    debug('REALTIME', 'network change settled — recycling realtime connection');
+    orchestrator?.recycleConnection('network change');
+  });
+  audio.setNetworkChangeListener(() => {
+    debug('REALTIME', 'network change detected — debouncing realtime recycle');
+    networkChangeDebouncer?.notify();
+  });
 
   hotkeys = new HotkeyManager();
   setActiveHotkeyManager(hotkeys);
@@ -742,6 +752,8 @@ app.on('before-quit', (event) => {
 
     // Dispose the orchestrator while AudioBridge is still alive, then stop
     // the sidecar → audio renderer → visible window in that order.
+    networkChangeDebouncer?.dispose();
+    networkChangeDebouncer = null;
     orchestrator?.dispose();
     portalSidecar.stop();
     audio?.destroy();

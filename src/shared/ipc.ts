@@ -32,6 +32,7 @@ export const IPC = {
   AUDIO_CHUNK: 'audio:chunk',
   AUDIO_READY: 'audio:ready',
   AUDIO_ERROR: 'audio:error',
+  NETWORK_CHANGE: 'network:change',
   // audio worker IPC (main → renderer commands)
   AUDIO_START_CMD: 'audio:start',
   AUDIO_STOP_CMD: 'audio:stop',
