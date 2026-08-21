@@ -79,7 +79,7 @@ export function setFormatterFailureListener(
  * (which would be NEITHER an o-series nor a reasoning model) does not.
  * Exported so unit tests can pin the classification table.
  */
-const REASONING_MODEL_RE = /^(?:gpt-5|o[134])(?:-|$)/;
+const REASONING_MODEL_RE = /^(?:gpt-5(?:\.\d+)?|o[134])(?:-|$)/;
 
 export function isReasoningModel(model: string): boolean {
   return REASONING_MODEL_RE.test(model.toLowerCase());

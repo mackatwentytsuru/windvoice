@@ -297,6 +297,8 @@ describe('isReasoningModel', () => {
     expect(isReasoningModel('gpt-5')).toBe(true);
     expect(isReasoningModel('gpt-5-mini')).toBe(true);
     expect(isReasoningModel('GPT-5')).toBe(true);
+    expect(isReasoningModel('gpt-5.6')).toBe(true);
+    expect(isReasoningModel('gpt-5.6-luna')).toBe(true);
   });
 
   it('matches the o-series reasoning families', () => {
