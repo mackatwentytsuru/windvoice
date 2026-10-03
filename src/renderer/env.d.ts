@@ -63,6 +63,7 @@ declare global {
       ready(): void;
       sendChunk(base64: string, samples: number, level?: number): void;
       reportError(message: string): void;
+      reportNetworkChange(): void;
       onStart(
         cb: (deviceId: string | undefined, idleMode: AudioIdleMode) => void
       ): () => void;

@@ -53,6 +53,7 @@ export class AudioBridge {
   private chunkListener: ((chunk: ChunkPayload | AudioChunk) => void) | null = null;
   private levelListener: ((level: number) => void) | null = null;
   private errorListener: ((message: string) => void) | null = null;
+  private networkChangeListener: (() => void) | null = null;
   private lastAudioErrorAt = 0;
   private lastAudioErrorMsg = '';
 
@@ -62,6 +63,7 @@ export class AudioBridge {
   private onErrorHandler: ((event: IpcMainEvent, message: unknown) => void) | null = null;
   private onFlushedHandler: ((event: IpcMainEvent) => void) | null = null;
   private flushWaiters: Array<() => void> = [];
+  private onNetworkChangeHandler: ((event: IpcMainEvent) => void) | null = null;
 
   async init(preloadPath: string): Promise<void> {
     if (this.win) return;
@@ -117,10 +119,19 @@ export class AudioBridge {
       this.resolveFlushWaiters();
     };
 
+    this.onNetworkChangeHandler = (event): void => {
+      if (!this.isFromOwnedWindow(event)) {
+        debug('AUDIO', 'SECURITY: rejected NETWORK_CHANGE from foreign sender');
+        return;
+      }
+      this.networkChangeListener?.();
+    };
+
     ipcMain.on(IPC.AUDIO_READY, this.onReadyHandler);
     ipcMain.on(IPC.AUDIO_CHUNK, this.onChunkHandler);
     ipcMain.on(IPC.AUDIO_ERROR, this.onErrorHandler);
     ipcMain.on(IPC.AUDIO_FLUSHED, this.onFlushedHandler);
+    ipcMain.on(IPC.NETWORK_CHANGE, this.onNetworkChangeHandler);
 
     const win = new BrowserWindow({
       show: false,
@@ -171,6 +182,11 @@ export class AudioBridge {
    */
   setErrorListener(cb: ((message: string) => void) | null): void {
     this.errorListener = cb;
+  }
+
+  /** Register a listener for network-state changes from the trusted audio renderer. */
+  setNetworkChangeListener(cb: (() => void) | null): void {
+    this.networkChangeListener = cb;
   }
 
   /** Used by main to scope `setPermissionRequestHandler` to this window only. */
@@ -336,10 +352,14 @@ export class AudioBridge {
     if (this.onChunkHandler) ipcMain.removeListener(IPC.AUDIO_CHUNK, this.onChunkHandler);
     if (this.onErrorHandler) ipcMain.removeListener(IPC.AUDIO_ERROR, this.onErrorHandler);
     if (this.onFlushedHandler) ipcMain.removeListener(IPC.AUDIO_FLUSHED, this.onFlushedHandler);
+    if (this.onNetworkChangeHandler) {
+      ipcMain.removeListener(IPC.NETWORK_CHANGE, this.onNetworkChangeHandler);
+    }
     this.onReadyHandler = null;
     this.onChunkHandler = null;
     this.onErrorHandler = null;
     this.onFlushedHandler = null;
+    this.onNetworkChangeHandler = null;
     this.resolveFlushWaiters();
     try {
       this.win?.close();

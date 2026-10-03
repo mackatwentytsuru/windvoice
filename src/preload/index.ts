@@ -265,6 +265,10 @@ const audioBridge = {
   reportError: (message: string): void => {
     ipcRenderer.send(IPC.AUDIO_ERROR, message);
   },
+  /** From hidden audio renderer → main: report a Chromium network-state change. */
+  reportNetworkChange: (): void => {
+    ipcRenderer.send(IPC.NETWORK_CHANGE);
+  },
   /** Main → hidden audio renderer: start capture with its platform idle policy. */
   onStart: (
     cb: (deviceId: string | undefined, idleMode: AudioIdleMode) => void
