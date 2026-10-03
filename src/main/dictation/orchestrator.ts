@@ -16,6 +16,7 @@ import { getActiveWindow } from '@main/context/activeWindow';
 import { debug } from '@main/debug';
 import { preconnectOpenAI } from '@main/net/openaiHttp';
 import { armCancelKey, disarmCancelKey } from '@main/hotkey/cancelKey';
+import { isSilenceHallucination } from '@main/postprocess/hallucination';
 import { sleep } from '@main/util/sleep';
 import { broadcastToUiWindows } from '@main/broadcast';
 import { IPC, type DictationStatus } from '@shared/types';
@@ -632,6 +633,11 @@ export class DictationOrchestrator {
     // onError already tore down this cycle and set 'error' status during the
     // commit-wait; do not clobber it back to 'idle' or re-run teardown.
     if (this.cycleErrored) return;
+
+    if (isSilenceHallucination(final)) {
+      debug('DICTATION', 'dropped a stock silence hallucination');
+      final = '';
+    }
 
     const rawFinal = final;
     final = this.dictionary.apply(final);
