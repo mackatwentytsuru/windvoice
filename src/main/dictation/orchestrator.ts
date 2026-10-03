@@ -14,6 +14,7 @@ import { historyStore } from '@main/store/history';
 import { postProcessorPipeline } from '@main/postprocess/pipeline';
 import { getActiveWindow } from '@main/context/activeWindow';
 import { debug } from '@main/debug';
+import { preconnectOpenAI } from '@main/net/openaiHttp';
 import { sleep } from '@main/util/sleep';
 import { broadcastToUiWindows } from '@main/broadcast';
 import { IPC, type DictationStatus } from '@shared/types';
@@ -175,22 +176,55 @@ export class DictationOrchestrator {
    * resume / screen unlock: system sleep kills the TCP connection under the
    * socket without a FIN/RST, so the client keeps reporting isOpen() while
    * every appended chunk piles up in the send buffer and the take is lost
-   * (issue #54). No-op mid-dictation and when there is no client to
-   * recycle — the stale-socket gate in ensureConnected() covers those.
+   * (issue #54). No-op mid-dictation. When suspend/lock already dropped the
+   * client, still prewarm: otherwise the first take after every Win+L or
+   * sleep pays a cold WS + TLS + session.update handshake (300-1000 ms)
+   * while the user is already speaking.
    */
   recycleConnection(reason: string): void {
     if (this.disposed || this.inFlight) return;
     const client = this.client;
-    if (!client) return;
     debug('DICTATION', `recycle realtime connection (${reason})`);
-    this.detachClientListeners(client);
-    this.client = null;
-    try {
-      client.dispose();
-    } catch {
-      /* ignore */
+    if (client) {
+      this.detachClientListeners(client);
+      this.client = null;
+      try {
+        client.dispose();
+      } catch {
+        /* ignore */
+      }
     }
-    void this.prewarmConnection();
+    this.quietPrewarm(0);
+  }
+
+  // Right after resume/unlock the network is often not up yet. Retry a few
+  // times without flashing an error; a real failure still surfaces on the
+  // next take through ensureConnected().
+  private static readonly QUIET_PREWARM_RETRY_MS = [1_500, 4_000, 10_000];
+  private quietPrewarmTimer: ReturnType<typeof setTimeout> | null = null;
+
+  private quietPrewarm(attempt: number): void {
+    if (this.quietPrewarmTimer) {
+      clearTimeout(this.quietPrewarmTimer);
+      this.quietPrewarmTimer = null;
+    }
+    if (this.disposed || this.inFlight || this.client?.isOpen()) return;
+    this.ensureConnected().then(
+      () => {
+        if (!this.inFlight) this.updateStatus('idle');
+      },
+      (err: unknown) => {
+        debug('DICTATION', `quiet prewarm #${attempt} failed: ${errMsg(err)}`);
+        if (isMissingApiKeyError(err)) {
+          if (!this.inFlight) this.updateStatus('unavailable');
+          return;
+        }
+        const delay = DictationOrchestrator.QUIET_PREWARM_RETRY_MS[attempt];
+        if (delay === undefined || this.disposed) return;
+        this.quietPrewarmTimer = setTimeout(() => this.quietPrewarm(attempt + 1), delay);
+        this.quietPrewarmTimer.unref?.();
+      }
+    );
   }
 
   async prewarmConnection(): Promise<void> {
@@ -274,6 +308,10 @@ export class DictationOrchestrator {
       return;
     }
 
+    // Open the formatter's HTTPS connection while the user is speaking so the
+    // post-transcript request does not pay for TCP + TLS.
+    if (settingsStore.get().formatter.enabled) preconnectOpenAI();
+
     let client: RealtimeClient;
     try {
       // Emit 'connecting' from the dictation cycle itself, not inside
@@ -306,14 +344,6 @@ export class DictationOrchestrator {
       client.updateVocabularyHints(this.dictionary.getVocabularyHints());
     }
 
-    if (settings.ui.duckOtherAudio) {
-      this.duckedThisCycle = true;
-      // Kick off non-blocking; await in stop() so we still restore cleanly.
-      this.duckPromise = audioDuck.duck(settings.ui.duckLevel).catch((err) => {
-        debug('DICTATION', `duck failed: ${errMsg(err)}`);
-        this.duckedThisCycle = false;
-      });
-    }
     if (settings.ui.soundCuesEnabled) {
       this.audio.playBeep('start');
     }
@@ -342,6 +372,17 @@ export class DictationOrchestrator {
     const { startCount } = this.audio.beginForwarding();
     this.startCount = startCount;
     this.forwardingStarted = true;
+
+    // Duck only after capture is open: the duck helper's process spawn has a
+    // synchronous part that would otherwise delay the first syllable.
+    if (settings.ui.duckOtherAudio) {
+      this.duckedThisCycle = true;
+      // Kick off non-blocking; stop() restores without awaiting.
+      this.duckPromise = audioDuck.duck(settings.ui.duckLevel).catch((err) => {
+        debug('DICTATION', `duck failed: ${errMsg(err)}`);
+        this.duckedThisCycle = false;
+      });
+    }
     // Snapshot UI windows for delta broadcasts now, so the per-delta hot
     // path does not enumerate BrowserWindow.getAllWindows() 20+ times per
     // second (issue #37). The audio renderer is excluded explicitly via
@@ -418,6 +459,26 @@ export class DictationOrchestrator {
       this.audio.playBeep('stop');
     }
 
+    // Recording is over, so bring the volume back now, in the background,
+    // instead of awaiting a process spawn between transcript and paste.
+    if (this.duckedThisCycle) {
+      this.duckedThisCycle = false;
+      const ducking = this.duckPromise;
+      this.duckPromise = null;
+      void (async () => {
+        try {
+          if (ducking) await ducking;
+        } catch {
+          /* ignore */
+        }
+        try {
+          await audioDuck.restore();
+        } catch (err) {
+          debug('DICTATION', `duck restore failed: ${errMsg(err)}`);
+        }
+      })();
+    }
+
     // Brief flush window before commit. 80ms was conservative; one
     // extra 50ms chunk is enough to drain the in-flight buffer at the
     // WS layer, so 20ms suffices and shaves ~60ms off the perceived
@@ -469,6 +530,12 @@ export class DictationOrchestrator {
     if (enoughChunks && client.isOpen() && !silentTake) {
       committed = client.commit();
     }
+    // Look up the foreground app while the server transcribes, rather than
+    // after the transcript arrives (it is also the window the user dictated
+    // into, which is the one that matters).
+    const activePromise = committed
+      ? getActiveWindow().catch(() => null)
+      : null;
 
     // One-line diagnostic per take — the single most useful record for
     // explaining a "became unusable" stall after the fact (see debug log file).
@@ -523,21 +590,6 @@ export class DictationOrchestrator {
       });
     }
 
-    if (this.duckedThisCycle) {
-      this.duckedThisCycle = false;
-      try {
-        if (this.duckPromise) await this.duckPromise;
-      } catch {
-        /* ignore */
-      }
-      this.duckPromise = null;
-      try {
-        await audioDuck.restore();
-      } catch (err) {
-        process.stderr.write(`[dictation] duck restore failed: ${errMsg(err)}\n`);
-      }
-    }
-
     // Streaming mode: the tail of `final` may not have been pasted yet
     // (the last delta could arrive after we drain). Push the remaining
     // suffix and end the streaming session. NO post-processing in this
@@ -583,7 +635,7 @@ export class DictationOrchestrator {
       // `sanitizePromptValue()` from `@main/postprocess/formatter` —
       // otherwise a window title containing newlines or quotes could inject
       // arbitrary directives into the formatter prompt.
-      const active = await getActiveWindow();
+      const active = await (activePromise ?? getActiveWindow());
 
       // Post-processing pipeline: formatter (if enabled) → replacements →
       // file tags. Each step is best-effort; failures fall through.
@@ -636,6 +688,10 @@ export class DictationOrchestrator {
     if (this.maintenanceTimer) {
       clearInterval(this.maintenanceTimer);
       this.maintenanceTimer = null;
+    }
+    if (this.quietPrewarmTimer) {
+      clearTimeout(this.quietPrewarmTimer);
+      this.quietPrewarmTimer = null;
     }
     this.clearPendingFinalTimer();
     this.detachClientListeners();

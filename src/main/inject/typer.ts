@@ -220,7 +220,9 @@ export function recoverClipboardIfPending(): void {
  *   1. saving current clipboard text (also persists to disk for crash safety)
  *   2. writing the new text into clipboard
  *   3. simulating Ctrl+V (Cmd+V on macOS)
- *   4. restoring the original clipboard
+ *   4. restoring the original clipboard — scheduled in the background, so
+ *      the promise resolves as soon as Ctrl+V is sent and the dictation
+ *      cycle can return to idle while the target app consumes the paste.
  *
  * Compared to per-character typing, this is faster and IME-safe.
  */
@@ -231,6 +233,9 @@ export async function pasteText(
   excludeFromClipboardHistory = false
 ): Promise<void> {
   if (!text) return;
+  // A previous paste's delayed restore must land first, or this paste would
+  // save the previous transcript as "the user's clipboard".
+  if (pendingRestore) await pendingRestore;
 
   const timing = pasteTiming(compatibility);
 
@@ -358,21 +363,35 @@ export async function pasteText(
     // we put the old clipboard back. Too short here and a slow target
     // (terminal, RDP/VM, busy app) reads the restored old clipboard —
     // the user sees their previously-copied content pasted instead.
-    await sleep(timing.restoreDelayMs);
-    try {
-      if (previous !== null) {
-        writeClipboardText(previous, excludeFromClipboardHistory);
-      } else {
-        clipboard.clear();
+    // The wait runs detached: the text is already visible, so holding the
+    // dictation cycle in 'processing' for it only delayed the next take.
+    const tracked: Promise<void> = (async () => {
+      await sleep(timing.restoreDelayMs);
+      try {
+        if (previous !== null) {
+          writeClipboardText(previous, excludeFromClipboardHistory);
+        } else {
+          clipboard.clear();
+        }
+      } catch (err) {
+        const m = err instanceof Error ? err.message : String(err);
+        // M11: clipboard restore failure was previously completely
+        // silent — the user's pre-dictation clipboard would just be
+        // gone, replaced by the dictated text. Surface to debug + UI.
+        debug('DICTATION', `clipboard restore failed: ${m}`);
+        notifyPasteFailed(`clipboard restore failed: ${m}`);
       }
-    } catch (err) {
-      const m = err instanceof Error ? err.message : String(err);
-      // M11: clipboard restore failure was previously completely
-      // silent — the user's pre-dictation clipboard would just be
-      // gone, replaced by the dictated text. Surface to debug + UI.
-      debug('DICTATION', `clipboard restore failed: ${m}`);
-      notifyPasteFailed(`clipboard restore failed: ${m}`);
-    }
-    clearPersistedClipboard();
+      clearPersistedClipboard();
+    })().finally(() => {
+      if (pendingRestore === tracked) pendingRestore = null;
+    });
+    pendingRestore = tracked;
   }
+}
+
+let pendingRestore: Promise<void> | null = null;
+
+/** Resolves once any clipboard restore scheduled by pasteText has landed. */
+export function awaitPendingClipboardRestore(): Promise<void> {
+  return pendingRestore ?? Promise.resolve();
 }

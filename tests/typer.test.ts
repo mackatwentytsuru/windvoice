@@ -100,7 +100,11 @@ vi.mock('node:fs', () => {
   return { default: fns, ...fns };
 });
 
-import { pasteText, recoverClipboardIfPending } from '../src/main/inject/typer';
+import {
+  awaitPendingClipboardRestore,
+  pasteText,
+  recoverClipboardIfPending
+} from '../src/main/inject/typer';
 
 // path.join so this matches the platform-normalized output of
 // `path.join(app.getPath('userData'), '.clipboard-restore.json')` in typer.ts
@@ -162,6 +166,31 @@ describe('pasteText', () => {
 
     expect(hoisted.unlinkSync).toHaveBeenCalledWith(RESTORE_PATH);
     expect(hoisted.fsState.files.has(RESTORE_PATH)).toBe(false);
+  });
+
+  it('resolves right after Ctrl+V and restores the clipboard in the background', async () => {
+    const p = pasteText('hello', true);
+    await vi.advanceTimersByTimeAsync(50);
+    await p;
+    // Pasted, but the restore has not landed yet.
+    expect(hoisted.keyTap).toHaveBeenCalled();
+    expect(hoisted.clipboardText).toBe('hello');
+
+    await vi.advanceTimersByTimeAsync(200);
+    await awaitPendingClipboardRestore();
+    expect(hoisted.clipboardText).toBe('PREVIOUS');
+  });
+
+  it('a second paste waits for the first restore so it saves the real clipboard', async () => {
+    const first = pasteText('one', true);
+    await vi.advanceTimersByTimeAsync(50);
+    await first;
+    const second = pasteText('two', true);
+    await vi.advanceTimersByTimeAsync(500);
+    await second;
+    await vi.advanceTimersByTimeAsync(500);
+    await awaitPendingClipboardRestore();
+    expect(hoisted.clipboardText).toBe('PREVIOUS');
   });
 
   it('does NOT crash if uIOhook.keyTap throws; original clipboard is still restored', async () => {

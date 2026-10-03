@@ -8,6 +8,7 @@
 import crypto from 'node:crypto';
 import OpenAI from 'openai';
 import { debug } from '@main/debug';
+import { openaiFetch } from '@main/net/openaiHttp';
 import type { PostProcessContext, PostProcessor } from '@main/postprocess/pipeline';
 import {
   APP_PROFILE_INSTRUCTIONS_MAX,
@@ -127,7 +128,10 @@ function getClient(apiKey: string): OpenAI {
       const oldest = clientCache.keys().next().value;
       if (typeof oldest === 'string') clientCache.delete(oldest);
     }
-    client = new OpenAI({ apiKey });
+    // maxRetries 0: the SDK's backoff retries (0.5-8 s) would run silently
+    // inside the formatter deadline while the user waits; falling back to the
+    // raw transcript right away is the faster outcome.
+    client = new OpenAI({ apiKey, fetch: openaiFetch, maxRetries: 0 });
     clientCache.set(k, client);
   }
   return client;
