@@ -49,5 +49,15 @@ export const SPEECH_RMS_THRESHOLD = 0.01;
 /** Hard timeout (ms) on awaiting a final transcript after `commit`. */
 export const FINAL_TIMEOUT_MS = 8_000;
 
+/**
+ * Final-transcript deadline scaled to the take length. gpt-live-transcribe
+ * acks a commit only after every appended byte is transcribed; OpenWhispr
+ * measured 5-45 s for 12-25 s clips. A flat 8 s cut long dictations off and
+ * pasted only the streamed partial. Short takes keep the 8 s floor.
+ */
+export function finalTimeoutMs(audioMs: number): number {
+  return Math.min(45_000, Math.max(FINAL_TIMEOUT_MS, 5_000 + audioMs * 1.5));
+}
+
 /** Maximum stored history entries. */
 export const MAX_HISTORY = 200;

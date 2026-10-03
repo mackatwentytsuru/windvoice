@@ -70,6 +70,9 @@ const ja: Dict = {
   'general.formatter': '整形',
   'general.formatterEnable': 'GPT 後処理を有効化 (Phase 2)',
   'general.formatterHelper': '句読点補正・辞書適用・自然言語フォーマット指示を解釈します。',
+  'general.formatterFastPath': '短い・整った発話は AI を省略して即入力 (高速)',
+  'general.formatterFastPathHelper':
+    '20 文字以内、または句点で終わる 60 文字以内の発話で、指示語・言いよどみ・繰り返しがない場合は整形 AI を呼ばずに入力します (約 1 秒短縮)。',
   'general.feedback': 'フィードバック',
   'general.showOverlay': 'オーバーレイを表示',
   'general.showOverlayHelper': '録音中、画面下部に小さなインジケーターを表示します。',
@@ -282,6 +285,9 @@ const en: Dict = {
   'general.formatterEnable': 'Enable GPT post-processing (Phase 2)',
   'general.formatterHelper':
     'Adds punctuation, applies dictionary, and interprets natural-language formatting commands.',
+  'general.formatterFastPath': 'Skip the AI for short, clean takes (faster)',
+  'general.formatterFastPathHelper':
+    'Takes of up to 20 characters, or up to 60 that already end a sentence, with no commands, fillers, or repeats are inserted without calling the formatter (about 1 s faster).',
   'general.feedback': 'Feedback',
   'general.showOverlay': 'Show overlay',
   'general.showOverlayHelper': 'Display a small floating indicator while recording.',

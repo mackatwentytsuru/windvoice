@@ -314,6 +314,20 @@ export function GeneralPage({ settings, update }: Props): JSX.Element {
           <span>{t('general.formatterEnable')}</span>
         </label>
         <div className="helper">{t('general.formatterHelper')}</div>
+        <label className="row" style={{ cursor: 'pointer', marginTop: 6 }}>
+          <input
+            type="checkbox"
+            checked={settings.formatter.fastPath}
+            disabled={!settings.formatter.enabled}
+            onChange={(e) =>
+              void update({
+                formatter: { ...settings.formatter, fastPath: e.target.checked }
+              })
+            }
+          />
+          <span>{t('general.formatterFastPath')}</span>
+        </label>
+        <div className="helper">{t('general.formatterFastPathHelper')}</div>
       </div>
 
       <div className="field" style={{ paddingTop: 12, borderTop: '1px solid var(--border)' }}>

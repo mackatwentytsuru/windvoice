@@ -40,8 +40,13 @@ describe('migrateSettings (#43)', () => {
     }
   });
 
-  it('does not re-migrate a version-2 file', () => {
-    const v2 = { schemaVersion: 2, formatter: { model: 'gpt-5-mini' } };
+  it('moves the short-lived v2 default gpt-5.6-luna forward (2 → 3)', () => {
+    const { value } = migrateSettings({ schemaVersion: 2, formatter: { model: 'gpt-5.6-luna' } });
+    expect(value).toMatchObject({ formatter: { model: DEFAULT_FORMATTER_MODEL } });
+  });
+
+  it('does not re-migrate a current-version file', () => {
+    const v2 = { schemaVersion: SETTINGS_SCHEMA_VERSION, formatter: { model: 'gpt-5-mini' } };
     expect(migrateSettings(v2)).toEqual({ value: v2, changed: false });
   });
 

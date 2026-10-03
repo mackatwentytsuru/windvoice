@@ -24,6 +24,18 @@ export const TranscriptionCompletedEvent = z.object({
 });
 export type TranscriptionCompletedEvent = z.infer<typeof TranscriptionCompletedEvent>;
 
+export const TranscriptionFailedEvent = z.object({
+  type: z.literal('conversation.item.input_audio_transcription.failed'),
+  item_id: z.string().optional(),
+  error: z
+    .object({
+      type: z.string().optional(),
+      code: z.string().optional(),
+      message: z.string().optional()
+    })
+    .optional()
+});
+
 export const ErrorEvent = z.object({
   type: z.literal('error'),
   error: z.object({

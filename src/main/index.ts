@@ -537,6 +537,7 @@ app.whenReady().then(async () => {
   hotkeys = new HotkeyManager();
   setActiveHotkeyManager(hotkeys);
   hotkeys.setBindings(settingsStore.get().hotkeys);
+  orchestrator.setCancelListener(() => hotkeys?.clearToggles());
   hotkeys.on('start', (bindingId) => {
     if (!orchestrator || orchestrator.isActive()) {
       hotkeys?.rejectToggleStart(bindingId);

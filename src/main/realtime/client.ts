@@ -4,6 +4,7 @@ import { debug } from '@main/debug';
 import {
   TranscriptionDeltaEvent,
   TranscriptionCompletedEvent,
+  TranscriptionFailedEvent,
   ErrorEvent
 } from './events';
 import {
@@ -406,8 +407,14 @@ export class RealtimeClient extends EventEmitter {
     }
     this.send({ type: 'input_audio_buffer.commit' });
     this.resetAppendCounters();
+    this.partialSinceCommit = '';
     return true;
   }
+
+  // Delta text of the item being transcribed, so a server-side
+  // `transcription.failed` can still hand back what was streamed instead of
+  // stalling until the final-transcript deadline.
+  private partialSinceCommit = '';
 
   private resetAppendCounters(): void {
     this.appendedBytesSinceCommit = 0;
@@ -609,13 +616,30 @@ export class RealtimeClient extends EventEmitter {
     switch (obj.type) {
       case 'conversation.item.input_audio_transcription.delta': {
         const ev = TranscriptionDeltaEvent.safeParse(parsed);
-        if (ev.success) this.emit('delta', ev.data.delta);
+        if (ev.success) {
+          this.partialSinceCommit += ev.data.delta;
+          this.emit('delta', ev.data.delta);
+        }
         break;
       }
       case 'conversation.item.input_audio_transcription.completed':
       case 'conversation.item.input_audio_transcription.done': {
         const ev = TranscriptionCompletedEvent.safeParse(parsed);
-        if (ev.success) this.emit('final', ev.data.transcript);
+        if (ev.success) {
+          this.partialSinceCommit = '';
+          this.emit('final', ev.data.transcript);
+        }
+        break;
+      }
+      case 'conversation.item.input_audio_transcription.failed': {
+        const ev = TranscriptionFailedEvent.safeParse(parsed);
+        debug(
+          'REALTIME',
+          `transcription failed: ${ev.success ? (ev.data.error?.message ?? 'unknown') : 'unparsed'}`
+        );
+        const partial = this.partialSinceCommit;
+        this.partialSinceCommit = '';
+        this.emit('final', partial);
         break;
       }
       // Setup ack: the server accepted our session.update — only now is the

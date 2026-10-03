@@ -1,4 +1,4 @@
-import { StrictMode, useEffect, useState, type CSSProperties } from 'react';
+import { StrictMode, useEffect, useRef, useState, type CSSProperties } from 'react';
 import { createRoot } from 'react-dom/client';
 import type { DictationStatus, OverlayState, Settings } from '../shared/types';
 import { t, type UiLang } from '../shared/i18n';
@@ -10,12 +10,28 @@ function Overlay(): JSX.Element | null {
   const [lang, setLang] = useState<UiLang>('ja');
   const [overlayEnabled, setOverlayEnabled] = useState(true);
 
+  // Live transcript: the streamed deltas of the current take, shown in place
+  // of the static label so the user sees words land while still speaking.
+  const [live, setLive] = useState('');
+  const lastStatus = useRef<DictationStatus>('idle');
+
   useEffect(() => {
     const off = window.windvoice.onOverlayState((s: OverlayState) => {
+      // A new take (or the end of one) starts from an empty line.
+      if (s.status !== lastStatus.current && (s.status === 'listening' || s.status === 'idle')) {
+        setLive('');
+      }
+      lastStatus.current = s.status;
       setStatus(s.status);
       setLevel(s.level);
     });
-    return off;
+    const offDelta = window.windvoice.onTranscriptDelta((delta: string) => {
+      setLive((prev) => (prev + delta).slice(-LIVE_KEEP_CHARS));
+    });
+    return () => {
+      off();
+      offDelta();
+    };
   }, []);
 
   // Pull settings once on mount, then keep up via the dedicated
@@ -36,6 +52,7 @@ function Overlay(): JSX.Element | null {
   if (status === 'idle' || !overlayEnabled) return null;
 
   const label = labelFor(status, lang);
+  const showLive = live.trim().length > 0 && (status === 'listening' || status === 'processing');
   // overlay.css ships rules for .overlay-listening / -processing / -error.
   // 'connecting' and 'unavailable' fall through to the base .overlay
   // styling, so we layer sensible-color inline overrides for them here
@@ -71,15 +88,23 @@ function Overlay(): JSX.Element | null {
           </svg>
         )}
       </div>
-      <div className="label" role="status" aria-live="polite">{label}</div>
+      {showLive ? (
+        <div className="live" title={live}>
+          <span>{live}</span>
+        </div>
+      ) : (
+        <div className="label" role="status" aria-live="polite">{label}</div>
+      )}
       {status === 'listening' && (
-        <div className="meter" aria-hidden="true">
+        <div className={showLive ? 'meter meter-compact' : 'meter'} aria-hidden="true">
           <div className="meter-fill" style={{ width: `${Math.min(100, level * 140)}%` }} />
         </div>
       )}
     </div>
   );
 }
+
+const LIVE_KEEP_CHARS = 120;
 
 // Inline-only color overrides for status branches the stylesheet does
 // not cover. Neutral grey for 'connecting' (don't pretend it's good or

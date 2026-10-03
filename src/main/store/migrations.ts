@@ -25,6 +25,13 @@ const MIGRATIONS: ReadonlyArray<(raw: RawSettings) => RawSettings> = [
     const model = (formatter as Record<string, unknown>)['model'];
     if (typeof model !== 'string' || !RETIRED_FORMATTER_MODEL_RE.test(model)) return raw;
     return { ...raw, formatter: { ...formatter, model: DEFAULT_FORMATTER_MODEL } };
+  },
+  // 2 → 3: the short-lived v2 default gpt-5.6-luna → gpt-6-luna.
+  (raw) => {
+    const formatter = raw['formatter'];
+    if (!formatter || typeof formatter !== 'object' || Array.isArray(formatter)) return raw;
+    if ((formatter as Record<string, unknown>)['model'] !== 'gpt-5.6-luna') return raw;
+    return { ...raw, formatter: { ...formatter, model: DEFAULT_FORMATTER_MODEL } };
   }
 ];
 

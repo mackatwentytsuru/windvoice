@@ -96,7 +96,8 @@ function makeSettings(overrides: Partial<Settings> = {}): Settings {
     // because Zod ignores unknown properties without `.strict()`.
     audio: { device: 'default' },
     language: 'ja',
-    formatter: { model: 'gpt-5-mini', customInstructions: '', enabled: true },
+    // fastPath off: these tests exercise the model call itself.
+    formatter: { model: 'gpt-5-mini', customInstructions: '', enabled: true, fastPath: false },
     dictionary: [],
     insertion: { method: 'paste', restoreClipboard: true, streaming: false },
     ui: {
@@ -274,7 +275,7 @@ describe('gptFormatter', () => {
   it('uses configured model when overridden in settings', async () => {
     setOkResponse('ok');
     const settings = makeSettings({
-      formatter: { model: 'gpt-4o-mini', customInstructions: '', enabled: true }
+      formatter: { model: 'gpt-4o-mini', customInstructions: '', enabled: true, fastPath: false }
     });
     const ctx = makeCtx({ settings });
     await gptFormatter.process('hello', ctx);
@@ -328,6 +329,7 @@ describe('isReasoningModel', () => {
 
   it('matches GPT-5 point releases such as the new default gpt-5.6-luna', () => {
     expect(isReasoningModel('gpt-5.6-luna')).toBe(true);
+    expect(isReasoningModel('gpt-6-luna')).toBe(true);
     expect(isReasoningModel('gpt-5.4-mini')).toBe(true);
     expect(isReasoningModel('gpt-6')).toBe(true);
     expect(isReasoningModel('gpt-5x')).toBe(false);
@@ -343,6 +345,7 @@ describe('minimalReasoningEffort', () => {
 
   it("uses 'none' for point releases that dropped 'minimal'", () => {
     expect(minimalReasoningEffort('gpt-5.6-luna')).toBe('none');
+    expect(minimalReasoningEffort('gpt-6-luna')).toBe('none');
     expect(minimalReasoningEffort('gpt-5.4-mini')).toBe('none');
   });
 });

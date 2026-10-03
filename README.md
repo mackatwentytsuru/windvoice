@@ -3,7 +3,7 @@
 > **Right Ctrl** を押しっぱなし → 喋る → 離す → カーソル位置に転写が貼り付く。
 > OpenAI Realtime API を使った Windows / macOS / Linux 向けの音声入力 Electron アプリ。
 
-Notepad / Chrome / VS Code / Slack / Word / ChatGPT など、任意のテキスト入力欄で動作します。`gpt-live-transcribe` でストリーミング転写し、GPT-5.6 Luna で句読点・整形・辞書適用を行ったうえでクリップボード経由でペーストします。
+Notepad / Chrome / VS Code / Slack / Word / ChatGPT など、任意のテキスト入力欄で動作します。`gpt-live-transcribe` でストリーミング転写し、GPT-6 Luna で句読点・整形・辞書適用を行ったうえでクリップボード経由でペーストします。
 
 ---
 
@@ -104,7 +104,9 @@ X11 セッションでは追加の許可は不要です (uiohook / XTest をそ�
 
 1. テキスト入力欄にカーソルを置く
 2. **Right Ctrl** を押しっぱなしにして喋る
-3. キーを離す → 数秒後にカーソル位置に転写テキストが貼り付く
+3. キーを離す → すぐにカーソル位置に転写テキストが貼り付く
+
+話している間はオーバーレイに認識中の文字がリアルタイムで表示されます。録音中・処理中に **Esc** を押すとその発話を取り消します (何も貼り付けません)。
 
 ### Toggle モード
 
@@ -131,7 +133,9 @@ Settings → Hotkeys → 「キーを記録」をクリック → 任意のキ�
 
 ### 転写・整形
 - **Streaming 転写**: 発話中に逐次転写 (低レイテンシ)
-- **GPT-5.6 Luna フォーマッタ (低遅延)**: 句読点・スペース・大文字化を自動補正、Whisper ハルシネーション(`結結結こんにちは…`等の繰り返し)を除去
+- **GPT-6 Luna フォーマッタ (低遅延)**: 句読点・スペース・大文字化を自動補正、Whisper ハルシネーション(`結結結こんにちは…`等の繰り返し)を除去。口述された質問や指示には答えず、そのまま整形
+- **高速パス**: 短い・すでに整った発話は整形 AI を呼ばずにローカルで仕上げて即入力 (設定でオフ可)
+- **無音ハルシネーション除去**: 発話全体が「ご視聴ありがとうございました」等の定型句だけのときは貼り付けない
 - **辞書 (Dictionary)**: `raw → corrected` ペアでよく出る誤認識を一括置換
 - **Replacements**: テキストマクロ展開 (`@email` → 自分のメアドなど)
 - **自然言語コマンド**: 発話中の「改行」「箇条書き」「コードブロック」を構造化
@@ -139,7 +143,8 @@ Settings → Hotkeys → 「キーを記録」をクリック → 任意のキ�
 - **言語自動検出 / 明示指定**: 日本語・英語・中国語・韓国語など
 
 ### UI / フィードバック
-- **半透明オーバーレイ**: 録音中・処理中の状態 + 音量メーターを画面下部に
+- **半透明オーバーレイ**: 録音中・処理中の状態 + 音量メーター + 認識中のライブ文字を画面下部に
+- **Esc で取り消し**: 録音中・処理中だけ Esc を横取りして発話を破棄 (それ以外の時間は Esc は通常どおり)
 - **トレイアイコン 6状態**: idle / connecting / listening / processing / error / unavailable
 - **音声フィードバック**: 録音開始・終了で短いトーン
 - **エラーバナー**: 設定ウィンドウに paste 失敗 / formatter 401 / clipboard 復元失敗を表示
@@ -268,7 +273,7 @@ npm run release        # GitHub Releases に publish
                                  ▼
                     PostProcessor pipeline
                     (formatter → replacements → fileTags)
-                    GPT-5.6 Luna, reasoning_effort: 'none'
+                    高速パス or GPT-6 Luna, reasoning_effort: 'none'
                                  ▼
                           TextInjector
                           clipboard 退避 → safeStorage 暗号化保存
@@ -340,7 +345,7 @@ src/
 | 項目 | 単価 |
 |---|---|
 | `gpt-live-transcribe` | OpenAI 価格ページ参照 |
-| `gpt-5.6-luna` 整形 (`reasoning_effort: 'none'`) | OpenAI 価格ページ参照 (1 回あたりごく少額) |
+| `gpt-6-luna` 整形 (`reasoning_effort: 'none'`) | $0.10 / $0.50 per 1M tokens (入力 / 出力) |
 
 30 分/日 使用で **月 $15-20** 程度 (旧モデル構成での実績値。現行モデルの単価は OpenAI の価格ページで確認してください)。
 

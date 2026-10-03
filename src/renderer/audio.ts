@@ -112,8 +112,12 @@ async function startCapture(deviceId?: string): Promise<void> {
     });
     setWorkletForwarding(forwardingRequested);
     workletNode.port.onmessage = (
-      e: MessageEvent<{ pcm: ArrayBuffer; samples: number; level: number }>
+      e: MessageEvent<{ type?: 'flushed'; pcm: ArrayBuffer; samples: number; level: number }>
     ) => {
+      if (e.data.type === 'flushed') {
+        window.audio.flushed?.();
+        return;
+      }
       const bytes = new Uint8Array(e.data.pcm);
       // Pass the Uint8Array directly; preload signature is typed as `string`,
       // but Electron's structured-clone serializer copies binary data without
@@ -293,6 +297,15 @@ window.audio.onSuspend?.(() => {
         `audioCtx.suspend failed: ${e instanceof Error ? e.message : String(e)}`
       );
     });
+  }
+});
+// Key-up drain: ask the worklet to emit its partial chunk and acknowledge.
+// Without a live worklet there is nothing buffered; acknowledge directly.
+window.audio.onFlush?.(() => {
+  if (workletNode && forwardingRequested) {
+    workletNode.port.postMessage({ type: 'flush' });
+  } else {
+    window.audio.flushed?.();
   }
 });
 window.audio.onResume?.(() => {
