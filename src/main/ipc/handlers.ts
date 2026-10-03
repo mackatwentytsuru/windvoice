@@ -1,6 +1,7 @@
 import { ipcMain, clipboard, type IpcMainInvokeEvent } from 'electron';
 import { z } from 'zod';
 import { IPC, SettingsSchema, type Settings, type HistoryEntry } from '@shared/types';
+import { IPC_PROTOCOL_VERSION } from '@shared/ipc';
 import { API_KEY_MIN_LENGTH, API_KEY_MAX_LENGTH } from '@shared/apiKey';
 import { settingsStore } from '@main/store/settings';
 import { secureStore, SecureStoreUnavailableError, InvalidApiKeyError } from '@main/store/secure';
@@ -65,6 +66,7 @@ export function refuseUntrusted(event: IpcMainInvokeEvent): IpcResult<never> | n
 }
 
 export function registerIpc(triggers: ManualTriggers): void {
+  ipcMain.handle(IPC.APP_PROTOCOL_VERSION, (): number => IPC_PROTOCOL_VERSION);
   ipcMain.handle(IPC.SETTINGS_GET, (): Settings => settingsStore.get());
 
   ipcMain.handle(

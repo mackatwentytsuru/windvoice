@@ -213,14 +213,19 @@ describe('RealtimeClient', () => {
     expect(msg.audio).toBe('AAA=');
   });
 
-  it('appendAudio is dropped silently when bufferedAmount > 256_000', async () => {
+  it('appendAudio is dropped silently when bufferedAmount > 2 MiB', async () => {
     const client = new RealtimeClient({ apiKey: 'sk-x', vadEnabled: false });
     const p = client.connect();
     const inst = await openAndReady(p);
     inst.sent.length = 0;
 
-    // Threshold is 256 * 1024 = 262_144 bytes.
+    // Threshold is 2 * 1024 * 1024 = 2_097_152 bytes; 300 KB must still send (#52).
     inst.bufferedAmount = 300_000;
+    client.appendAudio(Buffer.from([1, 2, 3]));
+    expect(inst.sent.length).toBe(1);
+    inst.sent.length = 0;
+
+    inst.bufferedAmount = 2_200_000;
     client.appendAudio(Buffer.from([1, 2, 3]));
     expect(inst.sent.length).toBe(0);
   });

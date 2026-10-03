@@ -113,7 +113,7 @@ export function parseKeyboardEventNodes(procText: string): string[] {
     if (!/\bkbd\b/.test(handlers)) continue;
     const event = /\bevent(\d+)\b/.exec(handlers)?.[1];
     if (event === undefined) continue;
-    nodes.push(path.join(DEV_INPUT, `event${event}`));
+    nodes.push(path.posix.join(DEV_INPUT, `event${event}`));
   }
   return nodes;
 }

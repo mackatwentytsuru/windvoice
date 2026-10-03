@@ -58,6 +58,11 @@ export function App(): JSX.Element {
         }, BANNER_AUTO_DISMISS_MS);
       }
     };
+    // A renderer left over from before an update can talk to a main process
+    // with renamed channels (#43); ask for a restart instead of hanging.
+    void window.windvoice.checkProtocol().then((ok) => {
+      if (!cancelled && !ok) showBanner({ message: t('banner.restartRequired'), permanent: true });
+    });
     const offStatus = window.windvoice.onStatus((s) => {
       setStatus(s);
       // Permanent formatter errors clear on the next status transition,

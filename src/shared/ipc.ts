@@ -7,7 +7,13 @@
 
 import type { DictationStatus, HistoryEntry, Settings } from './types';
 
+// Bump whenever an IPC channel is renamed/removed or its payload reshaped.
+// The Settings renderer compares this with main on load (#43) so a stale
+// renderer after an update asks for a restart instead of hanging.
+export const IPC_PROTOCOL_VERSION = 1;
+
 export const IPC = {
+  APP_PROTOCOL_VERSION: 'app:protocol-version',
   // settings
   SETTINGS_GET: 'settings:get',
   SETTINGS_SET: 'settings:set',

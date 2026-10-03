@@ -1,5 +1,6 @@
 import Store from 'electron-store';
 import { SettingsSchema, type Settings } from '@shared/types';
+import { migrateSettings } from '@main/store/migrations';
 import { enforcePrivateFileMode } from '@main/store/privateMode';
 
 class SettingsStore {
@@ -24,9 +25,13 @@ class SettingsStore {
 
   get(): Settings {
     if (this.cached) return this.cached;
-    const raw = this.store.store;
-    const parsed = SettingsSchema.safeParse(raw);
+    const migrated = migrateSettings(this.store.store);
+    const parsed = SettingsSchema.safeParse(migrated.value);
     if (parsed.success) {
+      if (migrated.changed) {
+        this.store.store = parsed.data;
+        enforcePrivateFileMode(this.store.path);
+      }
       this.cached = parsed.data;
       return parsed.data;
     }

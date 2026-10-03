@@ -5,6 +5,7 @@ import { contextBridge, ipcRenderer } from 'electron';
 // types.ts causes "Unable to load preload script: module not found: zod".
 import {
   IPC,
+  IPC_PROTOCOL_VERSION,
   type Settings,
   type DictationStatus,
   type HistoryEntry,
@@ -93,6 +94,12 @@ function isHistoryEntry(v: unknown): v is HistoryEntry {
 
 const api = {
   // settings
+  /** True when main speaks the same IPC protocol as this preload (#43). */
+  checkProtocol: (): Promise<boolean> =>
+    ipcRenderer
+      .invoke(IPC.APP_PROTOCOL_VERSION)
+      .then((v: unknown) => v === IPC_PROTOCOL_VERSION)
+      .catch(() => false),
   getSettings: (): Promise<Settings> => ipcRenderer.invoke(IPC.SETTINGS_GET),
   setSettings: (s: Partial<Settings>): Promise<Settings> =>
     unwrap<Settings>(ipcRenderer.invoke(IPC.SETTINGS_SET, s)),
@@ -181,7 +188,7 @@ const api = {
   },
   copyText: (text: string): Promise<void> =>
     unwrap<true>(ipcRenderer.invoke(IPC.CLIPBOARD_WRITE, text)).then(() => undefined),
-  platform: process.platform as 'darwin' | 'win32' | 'linux' | string,
+  platform: process.platform as NodeJS.Platform,
   sessionType:
     process.platform === 'linux'
       ? process.env['WINDVOICE_FORCE_X11'] === '1'

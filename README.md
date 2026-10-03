@@ -11,7 +11,7 @@ Notepad / Chrome / VS Code / Slack / Word / ChatGPT など、任意のテキス�
 
 | 項目 | 内容 |
 |---|---|
-| 最新リリース | **v0.1.7** ([releases/tag/v0.1.7](https://github.com/mackatwentytsuru/windvoice/releases/tag/v0.1.7)) |
+| 最新リリース | **v0.1.15** ([releases/latest](https://github.com/mackatwentytsuru/windvoice/releases/latest)) — macOS 版 DMG の最新は v0.1.7 |
 | 対応プラットフォーム | macOS (Apple Silicon arm64) / Windows x64 / Linux x64 (AppImage・deb, experimental) |
 | ビルド署名 | 未署名 (Gatekeeper / SmartScreen 回避手順あり) |
 | 自動更新 | macOS は opt-in / Windows は既定で有効 |

@@ -35,6 +35,7 @@ let targetVersion: string | null = null;
 let targetReleaseName: string | undefined;
 let targetDelivery: UpdateDelivery = 'self-update';
 let downloadInFlight = false;
+let manualCheckInFlight = false;
 
 /**
  * The AppImage runtime sets APPIMAGE to the absolute path of the original
@@ -60,6 +61,23 @@ export function detectUpdateDelivery(
 
 export function isMissingPlatformFeed(message: string): boolean {
   return /cannot find latest[\w.-]*\.yml/i.test(message) && /404/.test(message);
+}
+
+/**
+ * Failures that say nothing about WindVoice itself: offline/DNS errors,
+ * GitHub rate limits or 5xx, and electron-updater's "No published versions on
+ * GitHub", which it raises whenever the releases feed comes back empty or
+ * unparsable (captive portal, throttled atom feed). Background checks swallow
+ * these and retry on the next interval.
+ */
+export function isTransientUpdateFailure(message: string): boolean {
+  return (
+    /net::ERR_/i.test(message) ||
+    /\b(ENOTFOUND|ENOENT|EAI_AGAIN|ETIMEDOUT|ECONNRESET|ECONNREFUSED|ENETUNREACH)\b/.test(message) ||
+    /No published versions on GitHub/i.test(message) ||
+    /\b(403|429|50[0-4])\b/.test(message) ||
+    /timed? ?out/i.test(message)
+  );
 }
 
 function releasePageUrl(version: string | null): string {
@@ -264,6 +282,13 @@ function handleCheckFailure(err: unknown): void {
     broadcast({ phase: 'not-available' });
     return;
   }
+  if (!manualCheckInFlight && !downloadInFlight && isTransientUpdateFailure(message)) {
+    // An unattended check failing because the machine is offline or GitHub
+    // hiccupped is not worth an error state; the next interval retries.
+    debug('DICTATION', `updater: background check failed transiently: ${message}`);
+    broadcast({ phase: 'idle' });
+    return;
+  }
   // Updater/network/feed failures are environmental or transient. They stay
   // visible and retryable but never create an automatic bug report.
   broadcast({ phase: 'error', message, version: targetVersion ?? undefined, retry: 'check' });
@@ -350,10 +375,13 @@ export function initAutoUpdater(): void {
   ipcMain.handle(IPC.UPDATER_CHECK, async (event) => {
     const refusal = refuseUntrusted(event);
     if (refusal) return refusal;
+    manualCheckInFlight = true;
     try {
       await checkForUpdatesForInstall();
     } catch (err) {
       handleCheckFailure(err);
+    } finally {
+      manualCheckInFlight = false;
     }
     return lastState;
   });

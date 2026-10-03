@@ -290,4 +290,24 @@ describe('auto updater resident-app flow', () => {
     hoisted.updaterListeners.get('error')?.(err);
     expect(hoisted.trayStates.at(-1)).toMatchObject({ phase: 'not-available' });
   });
+
+  it('swallows transient background check failures (#83)', async () => {
+    const { initAutoUpdater, isTransientUpdateFailure } = await import('../src/main/updater');
+    initAutoUpdater();
+    for (const msg of [
+      'No published versions on GitHub',
+      'net::ERR_NAME_NOT_RESOLVED',
+      'getaddrinfo ENOTFOUND api.github.com',
+      'HttpError: 503'
+    ]) {
+      expect(isTransientUpdateFailure(msg)).toBe(true);
+    }
+    expect(isTransientUpdateFailure('sha512 checksum mismatch')).toBe(false);
+
+    hoisted.updaterListeners.get('error')?.(new Error('No published versions on GitHub'));
+    expect(hoisted.trayStates.at(-1)).toMatchObject({ phase: 'idle' });
+
+    hoisted.updaterListeners.get('error')?.(new Error('sha512 checksum mismatch'));
+    expect(hoisted.trayStates.at(-1)).toMatchObject({ phase: 'error' });
+  });
 });

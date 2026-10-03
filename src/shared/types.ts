@@ -73,6 +73,8 @@ export const AppProfileSchema = z.object({
 });
 export type AppProfile = z.infer<typeof AppProfileSchema>;
 
+export const SETTINGS_SCHEMA_VERSION = 1;
+
 export const SettingsSchema = z.object({
   // `.min(1)` makes "no hotkeys configured" an invalid state at the
   // schema boundary (L2). An empty array would leave the orchestrator
@@ -171,7 +173,11 @@ export const SettingsSchema = z.object({
         .default('undecided'),
       errorReportingPrompted: z.boolean().catch(false).default(false)
     })
-    .default({})
+    .default({}),
+  // Stamped by store/migrations.ts. Bump SETTINGS_SCHEMA_VERSION and add a
+  // migration step whenever a field is renamed or reshaped (#43); additive
+  // fields keep relying on per-field `.catch(default)`.
+  schemaVersion: z.number().int().catch(SETTINGS_SCHEMA_VERSION).default(SETTINGS_SCHEMA_VERSION)
 });
 export type Settings = z.infer<typeof SettingsSchema>;
 
