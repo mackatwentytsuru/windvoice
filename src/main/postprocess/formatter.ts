@@ -9,7 +9,12 @@ import crypto from 'node:crypto';
 import OpenAI from 'openai';
 import { debug } from '@main/debug';
 import type { PostProcessContext, PostProcessor } from '@main/postprocess/pipeline';
-import { APP_PROFILE_INSTRUCTIONS_MAX, type DictionaryEntry, type Settings } from '@shared/types';
+import {
+  APP_PROFILE_INSTRUCTIONS_MAX,
+  DEFAULT_FORMATTER_MODEL,
+  type DictionaryEntry,
+  type Settings
+} from '@shared/types';
 
 // gpt-5-mini formatting a short transcript routinely takes 2-4s; the old 2000ms
 // ceiling timed out on essentially every call (15 consecutive E_TIMEOUTs in the
@@ -27,7 +32,7 @@ const MAX_TIMEOUT_MS = 12_000;
 export function formatterTimeoutMs(textLength: number): number {
   return Math.min(BASE_TIMEOUT_MS + textLength * PER_CHAR_TIMEOUT_MS, MAX_TIMEOUT_MS);
 }
-const DEFAULT_MODEL = 'gpt-5-mini';
+const DEFAULT_MODEL = DEFAULT_FORMATTER_MODEL;
 const TEMPERATURE = 0.1;
 const MIN_OUTPUT_TOKENS = 256;
 
@@ -79,10 +84,20 @@ export function setFormatterFailureListener(
  * (which would be NEITHER an o-series nor a reasoning model) does not.
  * Exported so unit tests can pin the classification table.
  */
-const REASONING_MODEL_RE = /^(?:gpt-5|o[134])(?:-|$)/;
+const REASONING_MODEL_RE = /^(?:gpt-(?:[5-9]|\d{2,})(?:\.\d+)?|o[134])(?:-|$)/;
 
 export function isReasoningModel(model: string): boolean {
   return REASONING_MODEL_RE.test(model.toLowerCase());
+}
+
+/**
+ * The original GPT-5 family (gpt-5, gpt-5-mini, gpt-5-nano) and the o-series
+ * accept `reasoning_effort: 'minimal'`. Point releases (gpt-5.1 onward,
+ * including gpt-5.6-terra) and later generations dropped 'minimal' and use
+ * 'none' to skip the reasoning pass; sending 'minimal' there is a 400.
+ */
+export function minimalReasoningEffort(model: string): 'minimal' | 'none' {
+  return /^(?:gpt-5|o[134])(?:-|$)/.test(model.toLowerCase()) ? 'minimal' : 'none';
 }
 
 // Cache OpenAI clients by a hash of the API key, never the raw key.
@@ -313,7 +328,9 @@ async function callOpenAI(params: FormatterCallParams): Promise<string> {
           // .create`); the nested `reasoning: { effort }` shape belongs to
           // the Responses API only. Do not "fix" this.
           max_completion_tokens: Math.max(maxTokens, 1024) + 512,
-          reasoning_effort: 'minimal'
+          // openai@5's ReasoningEffort type predates 'none'; the SDK forwards
+          // the value verbatim, so widen the type rather than bump two majors.
+          reasoning_effort: minimalReasoningEffort(params.model) as OpenAI.ReasoningEffort
         }
       : { temperature: TEMPERATURE, max_tokens: maxTokens })
   };

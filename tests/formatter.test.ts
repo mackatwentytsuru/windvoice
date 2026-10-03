@@ -83,7 +83,8 @@ import {
   gptFormatter,
   buildSystemPrompt,
   resetFormatterFailure,
-  isReasoningModel
+  isReasoningModel,
+  minimalReasoningEffort
 } from '@main/postprocess/formatter';
 
 function makeSettings(overrides: Partial<Settings> = {}): Settings {
@@ -323,5 +324,25 @@ describe('isReasoningModel', () => {
     // member — `o123` is not o1.
     expect(isReasoningModel('o123')).toBe(false);
     expect(isReasoningModel('o4code')).toBe(false);
+  });
+
+  it('matches GPT-5 point releases such as the new default gpt-5.6-luna', () => {
+    expect(isReasoningModel('gpt-5.6-luna')).toBe(true);
+    expect(isReasoningModel('gpt-5.4-mini')).toBe(true);
+    expect(isReasoningModel('gpt-6')).toBe(true);
+    expect(isReasoningModel('gpt-5x')).toBe(false);
+  });
+});
+
+describe('minimalReasoningEffort', () => {
+  it("uses 'minimal' for the original gpt-5 family and o-series", () => {
+    expect(minimalReasoningEffort('gpt-5-mini')).toBe('minimal');
+    expect(minimalReasoningEffort('gpt-5')).toBe('minimal');
+    expect(minimalReasoningEffort('o4-mini')).toBe('minimal');
+  });
+
+  it("uses 'none' for point releases that dropped 'minimal'", () => {
+    expect(minimalReasoningEffort('gpt-5.6-luna')).toBe('none');
+    expect(minimalReasoningEffort('gpt-5.4-mini')).toBe('none');
   });
 });

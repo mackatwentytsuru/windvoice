@@ -23,6 +23,7 @@ declare module '*?raw' {
 declare global {
   interface Window {
     windvoice: {
+      checkProtocol(): Promise<boolean>;
       getSettings(): Promise<Settings>;
       setSettings(s: Partial<Settings>): Promise<Settings>;
       hasApiKey(): Promise<boolean>;

@@ -73,6 +73,14 @@ export const AppProfileSchema = z.object({
 });
 export type AppProfile = z.infer<typeof AppProfileSchema>;
 
+export const SETTINGS_SCHEMA_VERSION = 2;
+
+/** gpt-5-mini is removed from the API on 2026-12-11. Dictation formatting is
+ * a latency-critical, low-complexity task (punctuation, dictionary fixes), so
+ * the default is the low-latency gpt-5.6-luna tier rather than the heavier
+ * terra replacement. Migration 1 → 2 moves persisted settings. */
+export const DEFAULT_FORMATTER_MODEL = 'gpt-5.6-luna';
+
 export const SettingsSchema = z.object({
   // `.min(1)` makes "no hotkeys configured" an invalid state at the
   // schema boundary (L2). An empty array would leave the orchestrator
@@ -104,7 +112,7 @@ export const SettingsSchema = z.object({
   language: z.string().catch('ja').default('ja'),
   formatter: z
     .object({
-      model: z.string().catch('gpt-5-mini').default('gpt-5-mini'),
+      model: z.string().catch(DEFAULT_FORMATTER_MODEL).default(DEFAULT_FORMATTER_MODEL),
       customInstructions: z.string().catch('').default(''),
       enabled: z.boolean().catch(true).default(true),
       /** Per-app formatter profiles, matched against the foreground app name. */
@@ -171,7 +179,11 @@ export const SettingsSchema = z.object({
         .default('undecided'),
       errorReportingPrompted: z.boolean().catch(false).default(false)
     })
-    .default({})
+    .default({}),
+  // Stamped by store/migrations.ts. Bump SETTINGS_SCHEMA_VERSION and add a
+  // migration step whenever a field is renamed or reshaped (#43); additive
+  // fields keep relying on per-field `.catch(default)`.
+  schemaVersion: z.number().int().catch(SETTINGS_SCHEMA_VERSION).default(SETTINGS_SCHEMA_VERSION)
 });
 export type Settings = z.infer<typeof SettingsSchema>;
 

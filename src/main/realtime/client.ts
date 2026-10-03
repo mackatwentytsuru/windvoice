@@ -32,7 +32,11 @@ const RECONNECT_MAX_ATTEMPTS = 5;
 // only on the `session.updated` ack, raced against this watchdog.
 const READY_TIMEOUT_MS = 5_000;
 const IDLE_PING_MS = 20_000;
-const AUDIO_BACKPRESSURE_BYTES = 256 * 1024;
+// Drop audio only once ~30 s of base64 PCM (24 kHz mono PCM16 ≈ 64 KB/s on
+// the wire) is queued on the socket. The previous 256 KB (~4 s) ceiling
+// discarded words on merely slow uplinks (#52); a late transcript beats a
+// gappy one, and ws holds the queue in memory until it drains.
+const AUDIO_BACKPRESSURE_BYTES = 2 * 1024 * 1024;
 // MEDIUM-4: sustained backpressure surfacing threshold. With ~50 ms PCM
 // chunks, 10 drops within a 5-second window ≈ 500 ms of lost audio —
 // the floor for "the transcript is going to have noticeable gaps".

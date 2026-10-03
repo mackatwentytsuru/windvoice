@@ -16,6 +16,7 @@ const ja: Dict = {
   'tab.hotkeys': 'ホットキー',
   'tab.dictionary': '辞書',
   'tab.history': '履歴',
+  'banner.restartRequired': 'WindVoice が更新されました。反映するにはアプリを再起動してください。',
 
   // status pill
   'status.idle': '待機中',
@@ -225,6 +226,7 @@ const en: Dict = {
   'tab.hotkeys': 'Hotkeys',
   'tab.dictionary': 'Dictionary',
   'tab.history': 'History',
+  'banner.restartRequired': 'WindVoice was updated. Restart the app to finish applying the update.',
   'tab.replacements': 'Replacements',
 
   // status pill
