@@ -23,6 +23,14 @@ class PcmDownsampler extends AudioWorkletProcessor {
     this.forwarding = false;
     this.port.onmessage = (event) => {
       const message = event && event.data;
+      if (message && message.type === 'flush') {
+        // Key-up: emit the partial chunk (up to 50 ms — often the end of the
+        // last syllable) instead of discarding it, then acknowledge so main
+        // can commit knowing every captured sample has been sent.
+        if (this.forwarding && this.accumLen > 0) this.flush();
+        this.port.postMessage({ type: 'flushed' });
+        return;
+      }
       if (!message || message.type !== 'set-forwarding') return;
       this.forwarding = message.enabled === true;
       if (!this.forwarding) {

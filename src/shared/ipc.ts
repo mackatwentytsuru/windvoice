@@ -51,6 +51,10 @@ export const IPC = {
   // track dies — the existing MediaStreamTrack goes silent/ended and must
   // be replaced or the spectrogram + dictation receive only silence.
   AUDIO_RECOVER_CMD: 'audio:recover',
+  // Key-up drain handshake: main asks the worklet to emit its partial chunk;
+  // the renderer acknowledges once it has been sent.
+  AUDIO_FLUSH_CMD: 'audio:flush',
+  AUDIO_FLUSHED: 'audio:flushed',
   // overlay / level / beep
   AUDIO_LEVEL: 'audio:level',
   BEEP_PLAY: 'beep:play',

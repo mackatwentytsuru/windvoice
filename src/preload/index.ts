@@ -251,6 +251,16 @@ const audioBridge = {
       ipcRenderer.send(IPC.AUDIO_CHUNK, { data, samples, level });
     }
   },
+  /** From hidden audio renderer → main: the worklet emitted its last partial chunk. */
+  flushed: (): void => {
+    ipcRenderer.send(IPC.AUDIO_FLUSHED);
+  },
+  /** Main → hidden audio renderer: drain the worklet's partial chunk at key-up. */
+  onFlush: (cb: () => void): (() => void) => {
+    const handler = (): void => cb();
+    ipcRenderer.on(IPC.AUDIO_FLUSH_CMD, handler);
+    return () => ipcRenderer.removeListener(IPC.AUDIO_FLUSH_CMD, handler);
+  },
   /** From hidden audio renderer → main: report a capture error. */
   reportError: (message: string): void => {
     ipcRenderer.send(IPC.AUDIO_ERROR, message);

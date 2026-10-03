@@ -280,6 +280,27 @@ describe('DictationOrchestrator', () => {
     expect(pasteText).not.toHaveBeenCalled();
   });
 
+  it('drains the worklet tail chunk before closing the gate at key-up', async () => {
+    class DrainingAudio extends FakeAudioBridge {
+      drains = 0;
+      async drainForwarding(): Promise<void> {
+        this.drains++;
+        this.feed(1); // the partial tail chunk arrives before the ack
+      }
+    }
+    const draining = new DrainingAudio();
+    const o = new DictationOrchestrator(draining as never, undefined, dictionary);
+    await o.start();
+    draining.feed(10);
+    const stopP = o.stop();
+    await new Promise((r) => setTimeout(r, 50));
+    hoisted.instances.at(-1)!.emit('final', 'tail kept');
+    await stopP;
+    expect(draining.drains).toBe(1);
+    expect(historyStore.add).toHaveBeenCalledWith({ transcript: 'tail kept', durationMs: 550 });
+    o.dispose();
+  });
+
   it('happy path: receives final, pastes, adds to history, plays beeps', async () => {
     await orch.start();
     audio.feed(10);

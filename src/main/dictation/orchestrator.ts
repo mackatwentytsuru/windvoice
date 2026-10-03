@@ -451,6 +451,14 @@ export class DictationOrchestrator {
     const myCycle = this.cycleId;
     this.updateStatus('processing');
     const settings = settingsStore.get();
+    // Drain the worklet's partial chunk (the end of the last syllable) before
+    // closing the gate; previously it was discarded and sentence endings
+    // like 「です」 were clipped. The ack also replaces a blind flush sleep.
+    const canDrain = typeof this.audio.drainForwarding === 'function';
+    if (canDrain) {
+      await this.audio.drainForwarding(80);
+      if (myCycle !== this.cycleId || !this.inFlight) return;
+    }
     const { delivered, maxLevel } = this.audio.endForwarding(this.startCount);
     this.forwardingStarted = false;
     debug('DICTATION', `delivered=${delivered} chunks maxLevel=${maxLevel.toFixed(4)}`);
@@ -479,15 +487,13 @@ export class DictationOrchestrator {
       })();
     }
 
-    // Brief flush window before commit. 80ms was conservative; one
-    // extra 50ms chunk is enough to drain the in-flight buffer at the
-    // WS layer, so 20ms suffices and shaves ~60ms off the perceived
-    // latency between key-up and visible text (issue #8).
-    await sleep(20);
+    // Without the drain handshake (test doubles), keep the old brief flush
+    // window so in-flight chunk IPC lands before commit (issue #8).
+    if (!canDrain) await sleep(20);
 
-    // The flush window above yields the event loop. A WS close (onClose) or a
-    // before-quit dispose() can null `this.client` or drop it to CLOSING during
-    // those 20ms. If so, that path already reset state and surfaced any error —
+    // The drain/flush above yields the event loop. A WS close (onClose) or a
+    // before-quit dispose() can null `this.client` or drop it to CLOSING
+    // meanwhile. If so, that path already reset state and surfaced any error —
     // bail cleanly here instead of dereferencing a null client (crash) or
     // emitting a second, contradictory banner. Restore the duck/streaming we
     // grabbed for this cycle in case onClose ran after we'd flipped inFlight.

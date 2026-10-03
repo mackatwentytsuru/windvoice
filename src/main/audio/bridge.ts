@@ -60,6 +60,8 @@ export class AudioBridge {
   private onReadyHandler: ((event: IpcMainEvent) => void) | null = null;
   private onChunkHandler: ((event: IpcMainEvent, payload: unknown) => void) | null = null;
   private onErrorHandler: ((event: IpcMainEvent, message: unknown) => void) | null = null;
+  private onFlushedHandler: ((event: IpcMainEvent) => void) | null = null;
+  private flushWaiters: Array<() => void> = [];
 
   async init(preloadPath: string): Promise<void> {
     if (this.win) return;
@@ -110,9 +112,15 @@ export class AudioBridge {
       this.errorListener?.(msg);
     };
 
+    this.onFlushedHandler = (event): void => {
+      if (!this.isFromOwnedWindow(event)) return;
+      this.resolveFlushWaiters();
+    };
+
     ipcMain.on(IPC.AUDIO_READY, this.onReadyHandler);
     ipcMain.on(IPC.AUDIO_CHUNK, this.onChunkHandler);
     ipcMain.on(IPC.AUDIO_ERROR, this.onErrorHandler);
+    ipcMain.on(IPC.AUDIO_FLUSHED, this.onFlushedHandler);
 
     const win = new BrowserWindow({
       show: false,
@@ -227,6 +235,31 @@ export class AudioBridge {
     return { startCount: this.chunkCount };
   }
 
+  /**
+   * Key-up drain: have the worklet emit its partial chunk (the tail of the
+   * last syllable, up to 50 ms) and wait for the acknowledgement, which
+   * arrives after that chunk on the same IPC pipe. Bounded by `timeoutMs` so
+   * a stalled renderer can never hold up the commit.
+   */
+  drainForwarding(timeoutMs = 80): Promise<void> {
+    if (!this.forwarding || !this.win || this.win.isDestroyed()) return Promise.resolve();
+    return new Promise<void>((resolve) => {
+      const timer = setTimeout(done, timeoutMs);
+      function done(): void {
+        clearTimeout(timer);
+        resolve();
+      }
+      this.flushWaiters.push(done);
+      this.win?.webContents.send(IPC.AUDIO_FLUSH_CMD);
+    });
+  }
+
+  private resolveFlushWaiters(): void {
+    const waiters = this.flushWaiters;
+    this.flushWaiters = [];
+    for (const w of waiters) w();
+  }
+
   endForwarding(startCount: number): { delivered: number; maxLevel: number } {
     this.forwarding = false;
     this.clearSilenceWatchdog();
@@ -302,9 +335,12 @@ export class AudioBridge {
     if (this.onReadyHandler) ipcMain.removeListener(IPC.AUDIO_READY, this.onReadyHandler);
     if (this.onChunkHandler) ipcMain.removeListener(IPC.AUDIO_CHUNK, this.onChunkHandler);
     if (this.onErrorHandler) ipcMain.removeListener(IPC.AUDIO_ERROR, this.onErrorHandler);
+    if (this.onFlushedHandler) ipcMain.removeListener(IPC.AUDIO_FLUSHED, this.onFlushedHandler);
     this.onReadyHandler = null;
     this.onChunkHandler = null;
     this.onErrorHandler = null;
+    this.onFlushedHandler = null;
+    this.resolveFlushWaiters();
     try {
       this.win?.close();
     } catch {
