@@ -8,7 +8,7 @@ describe('SettingsSchema', () => {
     expect(s.hotkeys[0]?.mode).toBe('push-to-talk');
     expect(s.hotkeys[0]?.keys).toEqual(['RightCtrl']);
     expect(s.language).toBe('ja');
-    expect(s.formatter.model).toBe('gpt-5-mini');
+    expect(s.formatter.model).toBe('gpt-5.6-luna');
     expect(s.insertion.method).toBe('paste');
     expect(s.dictionary).toEqual([]);
     expect(s.ui.errorReporting).toBe(false);

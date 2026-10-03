@@ -3,7 +3,7 @@
 > **Right Ctrl** を押しっぱなし → 喋る → 離す → カーソル位置に転写が貼り付く。
 > OpenAI Realtime API を使った Windows / macOS / Linux 向けの音声入力 Electron アプリ。
 
-Notepad / Chrome / VS Code / Slack / Word / ChatGPT など、任意のテキスト入力欄で動作します。Whisper 系列の `gpt-realtime-whisper` でストリーミング転写し、GPT-5-mini で句読点・整形・辞書適用を行ったうえでクリップボード経由でペーストします。
+Notepad / Chrome / VS Code / Slack / Word / ChatGPT など、任意のテキスト入力欄で動作します。`gpt-live-transcribe` でストリーミング転写し、GPT-5.6 Luna で句読点・整形・辞書適用を行ったうえでクリップボード経由でペーストします。
 
 ---
 
@@ -131,7 +131,7 @@ Settings → Hotkeys → 「キーを記録」をクリック → 任意のキ�
 
 ### 転写・整形
 - **Streaming 転写**: 発話中に逐次転写 (低レイテンシ)
-- **GPT-5-mini フォーマッタ**: 句読点・スペース・大文字化を自動補正、Whisper ハルシネーション(`結結結こんにちは…`等の繰り返し)を除去
+- **GPT-5.6 Luna フォーマッタ (低遅延)**: 句読点・スペース・大文字化を自動補正、Whisper ハルシネーション(`結結結こんにちは…`等の繰り返し)を除去
 - **辞書 (Dictionary)**: `raw → corrected` ペアでよく出る誤認識を一括置換
 - **Replacements**: テキストマクロ展開 (`@email` → 自分のメアドなど)
 - **自然言語コマンド**: 発話中の「改行」「箇条書き」「コードブロック」を構造化
@@ -268,7 +268,7 @@ npm run release        # GitHub Releases に publish
                                  ▼
                     PostProcessor pipeline
                     (formatter → replacements → fileTags)
-                    GPT-5-mini, reasoning_effort: 'minimal'
+                    GPT-5.6 Luna, reasoning_effort: 'none'
                                  ▼
                           TextInjector
                           clipboard 退避 → safeStorage 暗号化保存
@@ -323,7 +323,7 @@ src/
 - **Electron 42** + **TypeScript 5.6**
 - electron-vite 5 / electron-builder 26
 - **React 18** + Vite 6 (renderer)
-- **OpenAI Realtime WebSocket**: `wss://api.openai.com/v1/realtime?intent=transcription` (`gpt-realtime-whisper`)
+- **OpenAI Realtime WebSocket**: `wss://api.openai.com/v1/realtime?intent=transcription` (`gpt-live-transcribe`)
 - **`uiohook-napi`**: グローバルホットキー + `Ctrl+V`/`Cmd+V` 送出
 - **`keytar`**: OS 資格情報ストアへの API キー保存
 - **`electron-store` + Zod**: 設定の永続化 + schema validation
@@ -339,10 +339,10 @@ src/
 
 | 項目 | 単価 |
 |---|---|
-| `gpt-realtime-whisper` | $0.017 / 分 |
-| `gpt-5-mini` 整形 (`reasoning_effort: 'minimal'`) | < $0.001 / 回 |
+| `gpt-live-transcribe` | OpenAI 価格ページ参照 |
+| `gpt-5.6-luna` 整形 (`reasoning_effort: 'none'`) | OpenAI 価格ページ参照 (1 回あたりごく少額) |
 
-30 分/日 使用想定で **月 $15-20**。
+30 分/日 使用で **月 $15-20** 程度 (旧モデル構成での実績値。現行モデルの単価は OpenAI の価格ページで確認してください)。
 
 ---
 
