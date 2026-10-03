@@ -27,7 +27,7 @@ import {
 import type { TranscriptLogSink } from '@main/dictionary/transcriptLog';
 import {
   CHUNK_MS,
-  FINAL_TIMEOUT_MS,
+  finalTimeoutMs,
   MIN_AUDIO_MS,
   SPEECH_RMS_THRESHOLD
 } from '@shared/constants';
@@ -553,7 +553,7 @@ export class DictationOrchestrator {
           this.pendingFinal = null;
           this.pendingFinalTimer = null;
           resolve(this.partial);
-        }, FINAL_TIMEOUT_MS);
+        }, finalTimeoutMs(delivered * CHUNK_MS));
         this.pendingFinal = (text: string) => {
           this.clearPendingFinalTimer();
           this.pendingFinal = null;

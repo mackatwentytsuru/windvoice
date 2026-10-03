@@ -464,3 +464,24 @@ describe('RealtimeClient', () => {
     client.dispose();
   });
 });
+
+describe('transcription.failed', () => {
+  it('emits the streamed partial as the final instead of stalling', async () => {
+    const client = new RealtimeClient({ apiKey: 'sk-x', vadEnabled: false });
+    const p = client.connect();
+    const inst = await openAndReady(p);
+    const finals: string[] = [];
+    client.on('final', (t: string) => finals.push(t));
+    const send = (o: unknown): void => {
+      inst.emit('message', Buffer.from(JSON.stringify(o)));
+    };
+    send({ type: 'conversation.item.input_audio_transcription.delta', delta: 'こんにち' });
+    send({ type: 'conversation.item.input_audio_transcription.delta', delta: 'は' });
+    send({
+      type: 'conversation.item.input_audio_transcription.failed',
+      error: { message: 'boom' }
+    });
+    expect(finals).toEqual(['こんにちは']);
+    client.dispose();
+  });
+});

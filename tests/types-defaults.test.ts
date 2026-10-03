@@ -69,3 +69,12 @@ describe('types defaults / platform-aware factories', () => {
     expect(winSettings.hotkeys[0]?.keys).toContain('RightCtrl');
   });
 });
+
+describe('finalTimeoutMs', () => {
+  it('keeps the 8 s floor for short takes and scales long ones up to 45 s', async () => {
+    const { finalTimeoutMs } = await import('../src/shared/constants');
+    expect(finalTimeoutMs(1_000)).toBe(8_000);
+    expect(finalTimeoutMs(20_000)).toBe(35_000);
+    expect(finalTimeoutMs(120_000)).toBe(45_000);
+  });
+});
