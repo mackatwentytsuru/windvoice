@@ -301,6 +301,33 @@ describe('DictationOrchestrator', () => {
     o.dispose();
   });
 
+  it('cancel (Esc) while waiting for the transcript never pastes and keeps the socket', async () => {
+    const cancelled = vi.fn();
+    orch.setCancelListener(cancelled);
+    await orch.start();
+    audio.feed(10);
+    const stopP = orch.stop();
+    await new Promise((r) => setTimeout(r, 50));
+    expect(orch.cancel()).toBe(true);
+    hoisted.instances[0]!.emit('final', 'should not paste');
+    await stopP;
+    expect(pasteText).not.toHaveBeenCalled();
+    expect(historyStore.add).not.toHaveBeenCalled();
+    expect(orch.isActive()).toBe(false);
+    expect(hoisted.instances[0]?.disposed).toBe(false);
+    expect(cancelled).toHaveBeenCalledTimes(1);
+    expect(orch.cancel()).toBe(false);
+  });
+
+  it('cancel while recording discards the take', async () => {
+    await orch.start();
+    audio.feed(10);
+    expect(orch.cancel()).toBe(true);
+    await orch.stop();
+    expect(hoisted.instances[0]?.committed).toBe(false);
+    expect(pasteText).not.toHaveBeenCalled();
+  });
+
   it('happy path: receives final, pastes, adds to history, plays beeps', async () => {
     await orch.start();
     audio.feed(10);

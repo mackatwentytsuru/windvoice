@@ -156,6 +156,11 @@ export class HotkeyManager extends EventEmitter {
     }
   }
 
+  /** A cancelled take ends every toggle session, so the next press starts anew. */
+  clearToggles(): void {
+    this.toggleActive.clear();
+  }
+
   /** Roll back toggle bookkeeping when the orchestrator rejects a busy start. */
   rejectToggleStart(bindingId: string): void {
     this.toggleActive.delete(bindingId);

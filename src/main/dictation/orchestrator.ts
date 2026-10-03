@@ -15,6 +15,7 @@ import { postProcessorPipeline } from '@main/postprocess/pipeline';
 import { getActiveWindow } from '@main/context/activeWindow';
 import { debug } from '@main/debug';
 import { preconnectOpenAI } from '@main/net/openaiHttp';
+import { armCancelKey, disarmCancelKey } from '@main/hotkey/cancelKey';
 import { sleep } from '@main/util/sleep';
 import { broadcastToUiWindows } from '@main/broadcast';
 import { IPC, type DictationStatus } from '@shared/types';
@@ -409,6 +410,50 @@ export class DictationOrchestrator {
     this.deltaTargets = targets;
   }
 
+  /**
+   * User cancel (Esc): drop the take without pasting, keep the warm socket.
+   * Supersedes any stop() in progress via cycleId, which bails at its next
+   * cycle check — including the one right before pasting.
+   */
+  cancel(): boolean {
+    if (!this.inFlight) return false;
+    debug('DICTATION', 'take cancelled by user');
+    this.cycleId++;
+    this.cancelRequested = true;
+    if (this.pendingFinal) this.pendingFinal('');
+    this.clearPendingFinalTimer();
+    if (this.forwardingStarted) {
+      this.audio.endForwarding(this.startCount);
+      if (this.client?.isOpen()) this.client.clearInput();
+    }
+    this.inFlight = false;
+    this.forwardingStarted = false;
+    this.deltaTargets = [];
+    if (this.duckedThisCycle) {
+      this.duckedThisCycle = false;
+      void audioDuck.restore().catch(() => {
+        /* best-effort */
+      });
+    }
+    if (this.streamingActive) {
+      this.streamingActive = false;
+      void streamingTyper.end().catch(() => {
+        /* best-effort */
+      });
+    }
+    if (settingsStore.get().ui.soundCuesEnabled) this.audio.playBeep('stop');
+    this.updateStatus('idle');
+    this.onCancelled?.();
+    return true;
+  }
+
+  private onCancelled: (() => void) | null = null;
+
+  /** Notified after a user cancel (main/index.ts resets toggle hotkeys). */
+  setCancelListener(cb: (() => void) | null): void {
+    this.onCancelled = cb;
+  }
+
   stop(): Promise<void> {
     if (this.stopPromise) return this.stopPromise;
     if (!this.inFlight) return Promise.resolve();
@@ -651,6 +696,8 @@ export class DictationOrchestrator {
         activeWindowTitle: active?.title,
         activeWindowApp: active?.app
       });
+      // Cancelled (Esc) while formatting: never paste.
+      if (myCycle !== this.cycleId) return;
 
       broadcastToUiWindows(IPC.TRANSCRIPT_FINAL, processed);
       try {
@@ -831,6 +878,13 @@ export class DictationOrchestrator {
   private updateStatus(status: DictationStatus): void {
     setStatus(status);
     this.overlay?.setStatus(status);
+    if (status === 'connecting' || status === 'listening' || status === 'processing') {
+      armCancelKey(() => {
+        this.cancel();
+      });
+    } else {
+      disarmCancelKey();
+    }
   }
 
   /**
