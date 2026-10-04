@@ -1,6 +1,6 @@
 import Store from 'electron-store';
 import { SettingsSchema, type Settings } from '@shared/types';
-import { migrateSettings } from '@main/store/migrations';
+import { migrateSettings, storeDefaults } from '@main/store/migrations';
 import { enforcePrivateFileMode } from '@main/store/privateMode';
 
 class SettingsStore {
@@ -14,10 +14,10 @@ class SettingsStore {
   private cached: Settings | null = null;
 
   constructor() {
-    const defaults = SettingsSchema.parse({});
     this.store = new Store<Settings>({
       name: 'windvoice-settings',
-      defaults,
+      // Without schemaVersion — see storeDefaults() in migrations.ts.
+      defaults: storeDefaults() as Settings,
       clearInvalidConfig: true
     });
     enforcePrivateFileMode(this.store.path);

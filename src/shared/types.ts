@@ -73,13 +73,13 @@ export const AppProfileSchema = z.object({
 });
 export type AppProfile = z.infer<typeof AppProfileSchema>;
 
-export const SETTINGS_SCHEMA_VERSION = 3;
+export const SETTINGS_SCHEMA_VERSION = 4;
 
 /** gpt-5-mini is removed from the API on 2026-12-11. Dictation formatting is
  * a latency-critical, low-complexity task (punctuation, dictionary fixes), so
  * the default is the Luna tier — OpenAI's "most efficient model for focused,
- * high-volume tasks" — rather than the heavier terra replacement. Migrations
- * 1 → 2 → 3 move persisted settings. */
+ * high-volume tasks" — rather than the heavier terra replacement. Settings migrations
+ * (store/migrations.ts) move persisted settings onto it. */
 export const DEFAULT_FORMATTER_MODEL = 'gpt-6-luna';
 
 export const SettingsSchema = z.object({
