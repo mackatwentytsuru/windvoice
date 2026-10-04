@@ -54,3 +54,29 @@ describe('migrateSettings (#43)', () => {
     expect(SettingsSchema.parse({}).schemaVersion).toBe(SETTINGS_SCHEMA_VERSION);
   });
 });
+
+describe('electron-store defaults merge (0.1.15/0.1.16 regression)', () => {
+  it('store defaults carry no schemaVersion, so an old file is still migrated', async () => {
+    const { storeDefaults } = await import('../src/main/store/migrations');
+    // What electron-store does on construction: Object.assign(defaults, file).
+    const merged = Object.assign({}, storeDefaults(), {
+      formatter: { model: 'gpt-5-mini', customInstructions: '', enabled: true }
+    });
+    expect(merged).not.toHaveProperty('schemaVersion');
+    const { value, changed } = migrateSettings(merged);
+    expect(changed).toBe(true);
+    expect(value).toMatchObject({
+      schemaVersion: SETTINGS_SCHEMA_VERSION,
+      formatter: { model: DEFAULT_FORMATTER_MODEL }
+    });
+  });
+
+  it('repairs files already mis-stamped as v3 with a superseded model (3 → 4)', () => {
+    for (const model of ['gpt-5-mini', 'gpt-5.6-luna']) {
+      const { value } = migrateSettings({ schemaVersion: 3, formatter: { model } });
+      expect(value).toMatchObject({ formatter: { model: DEFAULT_FORMATTER_MODEL } });
+    }
+    const { value } = migrateSettings({ schemaVersion: 3, formatter: { model: 'gpt-4o-mini' } });
+    expect(value).toMatchObject({ formatter: { model: 'gpt-4o-mini' } });
+  });
+});

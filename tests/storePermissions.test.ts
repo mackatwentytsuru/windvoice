@@ -60,11 +60,12 @@ describe('private store file permissions', () => {
     const { settingsStore } = await import('@main/store/settings');
     settingsStore.set({ language: 'en' });
 
-    expect(hoisted.chmodSync).toHaveBeenCalledWith(
-      '/tmp/windvoice-settings.json',
-      0o600
-    );
-    expect(hoisted.chmodSync).toHaveBeenCalledTimes(2);
+    // Load, the first read stamping schemaVersion onto the fresh file, and
+    // the write itself — every one leaves the file at 0600.
+    expect(hoisted.chmodSync).toHaveBeenCalledTimes(3);
+    for (const call of hoisted.chmodSync.mock.calls) {
+      expect(call).toEqual(['/tmp/windvoice-settings.json', 0o600]);
+    }
   });
 
   it('chmods history to 0600 at load and after a write', async () => {
