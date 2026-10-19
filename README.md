@@ -1,9 +1,121 @@
 # WindVoice
 
+[English](#english) | [日本語](#日本語)
+
+---
+
+## English
+
+**Hold Right Ctrl, speak, release: the transcript is pasted at the cursor.** WindVoice is a push-to-talk voice dictation app for Windows, macOS and Linux, built with Electron and the OpenAI Realtime API. It works in any text field (Notepad, Chrome, VS Code, Slack, Word, ChatGPT and so on).
+
+Speech is transcribed while you talk (model `gpt-live-transcribe`). A short clean-up pass with an OpenAI model (default `gpt-6-luna`) then fixes punctuation and spacing, removes recognition glitches, and applies your personal dictionary, before the text is pasted through the clipboard. It was built with [Claude Code](https://claude.com/claude-code).
+
+This is a personal project. Builds are unsigned, and it has been tested mostly on the author's own machines.
+
+### Features
+
+- Streaming transcription with a live preview in a small overlay while you speak
+- Push-to-talk (default) or toggle mode; rebind the hotkey in Settings; `Esc` cancels the current dictation
+- Clean-up pass: punctuation, spacing, and removal of repeated-word or silence "hallucinations". Short, already clean sentences skip the AI call and are finished locally (can be turned off)
+- Personal dictionary (`wrong → right` pairs), text-expansion macros, spoken commands such as new line or bullet list
+- Context: the active app name is passed to the formatter (and file tags for editors such as Cursor)
+- Paste mode (clipboard is saved and restored) or streaming insertion for apps that do not accept paste
+- Tray icon with six states, tone feedback, error banner, auto-launch at login, optional volume ducking while you speak
+- History of your last 200 dictations, stored encrypted with the OS keychain (`safeStorage`)
+- Auto-update from GitHub Releases (on by default on Windows, opt-in on macOS)
+- UI in Japanese and English
+
+### Requirements
+
+- Windows 10/11 x64, macOS (Apple Silicon or Intel), or Linux x64 (experimental)
+- An **OpenAI API key** of your own. You pay OpenAI for what you use. Check the OpenAI pricing page for the current prices of the models above
+- An internet connection: your audio is sent to OpenAI for transcription, and the text is sent to OpenAI for the clean-up pass
+
+### Install
+
+Download the installer from the [latest release](https://github.com/mackatwentytsuru/windvoice/releases/latest). The builds are not code-signed, so your OS will warn you once.
+
+- **Windows:** run `WindVoice-Setup-<version>-x64.exe`. If SmartScreen blocks it, choose "More info", then "Run anyway".
+- **macOS:** open the `.dmg` and drag the app to `/Applications`. Then right-click the app, choose "Open" and confirm once, or run `xattr -cr /Applications/WindVoice.app`.
+- **Linux (experimental):** no prebuilt Linux package is published yet. Build the AppImage or deb from source with `npm run package:linux` (see [Build from source](#build-from-source)), then read the notes below.
+
+### First-time setup
+
+1. Click the tray / menu-bar icon, then "Settings".
+2. Open the General tab, paste your OpenAI API key (`sk-...`) and press Save. The key is kept in the OS credential store (macOS Keychain, Windows Credential Manager, or libsecret on Linux). It is not written to disk in plain text.
+3. macOS: allow WindVoice under System Settings, Privacy & Security, Accessibility (needed for the global hotkey and for sending Cmd+V).
+4. Allow microphone access when asked on the first recording.
+
+### Use
+
+1. Put the cursor in a text field.
+2. Hold **Right Ctrl** and speak.
+3. Release the key. The text is pasted at the cursor.
+
+Right Ctrl, F13, Caps Lock (remapped) and Cmd on macOS work well as hotkeys. Right Alt, Right Shift, Space and Enter are poor choices because they clash with menus, IMEs or normal typing.
+
+### Linux notes (experimental)
+
+- The global hotkey is read from evdev (`/dev/input`), so your user must be in the `input` group (`sudo usermod -aG input $USER`, then log out and in). Anything running as that user can then read all your key presses, including passwords. Do not do this on a machine that runs untrusted programs.
+- On Wayland, pasting uses the XDG RemoteDesktop portal through a small Python helper. You need `python3` and PyGObject (`python3-gi` on Debian/Ubuntu, `python3-gobject` on Fedora, `python-gobject` on Arch). A `.deb` you build lists them as dependencies; with the AppImage, install them yourself. Approve the remote-desktop prompt on first use.
+- On GNOME you need the AppIndicator extension to see the tray icon.
+
+### Privacy
+
+- Your audio and the transcript go to the OpenAI API with your own key. Nothing is sent to a server run by the author. The app only contacts GitHub to check for updates.
+- Error reports are optional. When an error happens, the app shows you what would be sent (home folders and secrets are masked) and sends nothing until you press Send. A report is then posted as a **public** GitHub issue in this repository, using your own GitHub CLI (`gh`) login; if `gh` is not installed, the text is copied to your clipboard and the "new issue" page is opened. You can turn reporting off.
+- The API key is stored in the OS credential store. The clipboard-recovery file and the history are encrypted with the OS keychain.
+
+### Build from source
+
+Requirements: Node.js 22 or newer. On Linux, also `build-essential libx11-dev libxtst-dev libxkbcommon-dev libsecret-1-dev`. On macOS, Xcode Command Line Tools.
+
+```bash
+git clone https://github.com/mackatwentytsuru/windvoice.git
+cd windvoice
+npm install        # builds uiohook-napi and keytar for Electron
+npm run dev        # development mode
+npm test           # vitest
+npm run typecheck  # strict TypeScript checks
+```
+
+Packaging:
+
+```bash
+npm run package:win     # NSIS installer (x64)
+npm run package:mac     # DMG (arm64 and x64), macOS only
+npm run package:linux   # AppImage and deb
+```
+
+Note for forks: `electron-builder.yml` contains the author's macOS signing identity and a `publish` section that points at the author's GitHub repository. To build on your own, set `CSC_IDENTITY_AUTO_DISCOVERY=false` (or set `identity: null`) and change `publish`. Do not run `npm run release` unless you want to publish to that repository.
+
+### Limitations
+
+- Unsigned builds, so the OS warnings above. No notarization.
+- Linux support is experimental, and Wayland pasting depends on the portal.
+- It needs the internet and an OpenAI API key; there is no offline mode.
+- Model names and prices belong to OpenAI and may change.
+- The clean-up pass can change wording slightly. Turn it off in Settings, General, if you want the raw transcript.
+- Not affiliated with or endorsed by OpenAI.
+
+### Tech stack
+
+Electron 42, TypeScript, electron-vite, React 18 (settings UI), OpenAI Realtime WebSocket, `uiohook-napi` (global hotkey, key synthesis), `keytar` (credential store), `electron-store` and Zod (settings), `safeStorage`, `get-windows` (active window), `electron-updater`, `loudness` (volume ducking), WebAudio and AudioWorklet (24 kHz mono PCM16).
+
+### License
+
+MIT. See [LICENSE](LICENSE). Copyright (c) 2026 Yuki Tsuruoka.
+
+---
+
+## 日本語
+
 > **Right Ctrl** を押しっぱなし → 喋る → 離す → カーソル位置に転写が貼り付く。
 > OpenAI Realtime API を使った Windows / macOS / Linux 向けの音声入力 Electron アプリ。
 
 Notepad / Chrome / VS Code / Slack / Word / ChatGPT など、任意のテキスト入力欄で動作します。`gpt-live-transcribe` でストリーミング転写し、GPT-6 Luna で句読点・整形・辞書適用を行ったうえでクリップボード経由でペーストします。
+
+[Claude Code](https://claude.com/claude-code) で作りました。個人のプロジェクトで、動作を確かめたのは主に作者自身の機械です。ビルドは未署名です。
 
 ---
 
@@ -15,10 +127,7 @@ Notepad / Chrome / VS Code / Slack / Word / ChatGPT など、任意のテキス�
 | 対応プラットフォーム | macOS (Apple Silicon arm64) / Windows x64 / Linux x64 (AppImage・deb, experimental) |
 | ビルド署名 | 未署名 (Gatekeeper / SmartScreen 回避手順あり) |
 | 自動更新 | macOS は opt-in / Windows は既定で有効 |
-| Unit test | 203 passed / 2 skipped (23 files, 205 cases) |
 | ライセンス | MIT |
-
-セッションで解決した GitHub Issue 累計: **35件** (Closed: #2–#12, #16–#35, #37, #39, #45, #46)
 
 ---
 
@@ -51,7 +160,7 @@ open /Applications/WindVoice.app
 
 ### Linux x64 (experimental)
 
-[Releases ページ](https://github.com/mackatwentytsuru/windvoice/releases/latest) から `WindVoice-<ver>-x86_64.AppImage` (どのディストロでも可) または `.deb` (Debian/Ubuntu) をダウンロード。
+リリースにはまだ Linux 用のパッケージがありません。ソースから `npm run package:linux` で AppImage(どのディストロでも可)または `.deb`(Debian/Ubuntu)を作ってください(後の「ビルド」を参照)。
 
 ```bash
 chmod +x WindVoice-*.AppImage
@@ -232,7 +341,7 @@ npm run dev        # electron-vite dev mode
 ### テスト・型チェック
 
 ```bash
-npm test           # vitest run (205 cases — 203 passed, 2 skipped on Windows)
+npm test           # vitest run
 npm run typecheck  # tsconfig.node + tsconfig.web の strict TS チェック
 ```
 
@@ -242,10 +351,10 @@ npm run typecheck  # tsconfig.node + tsconfig.web の strict TS チェック
 npm run package:mac    # release/<ver>/WindVoice-<ver>-{arm64,x64}.dmg (Mac でのみ可)
 npm run package:win    # release/<ver>/WindVoice-Setup-<ver>-x64.exe (NSIS)
 npm run package:linux  # release/<ver>/WindVoice-<ver>-x86_64.AppImage + .deb
-npm run release        # GitHub Releases に publish
+npm run release        # 作者の GitHub リポジトリの Releases へ publish する設定です(自分のフォークでは publish を書き換えてから)
 ```
 
-未署名ビルドのため `electron-builder.yml` の `identity: null` / `signtoolOptions: null` を外し、`CSC_LINK` / `APPLE_ID` / `APPLE_APP_SPECIFIC_PASSWORD` / `APPLE_TEAM_ID` を設定すれば署名 / 公証が可能。
+`electron-builder.yml` には作者自身の macOS 署名 ID と、作者の GitHub リポジトリへの `publish` 設定が入っています。自分でビルドするときは、`CSC_IDENTITY_AUTO_DISCOVERY=false`(または `identity: null`)にして、`publish` を書き換えてください。署名・公証をしたいときは、`CSC_LINK` / `APPLE_ID` / `APPLE_APP_SPECIFIC_PASSWORD` / `APPLE_TEAM_ID` を設定します。
 
 ---
 
@@ -318,7 +427,7 @@ src/
 │   │                                # + system/formatter error banner
 │   └── env.d.ts
 ├── shared/{types,ipc,i18n,constants}.ts
-└── tests/                          # vitest (23 files, 205 cases)
+└── tests/                          # vitest
 ```
 
 ---
@@ -340,17 +449,20 @@ src/
 
 ---
 
-## コスト目安
+## プライバシー
 
-| 項目 | 単価 |
-|---|---|
-| `gpt-live-transcribe` | OpenAI 価格ページ参照 |
-| `gpt-6-luna` 整形 (`reasoning_effort: 'none'`) | $0.10 / $0.50 per 1M tokens (入力 / 出力) |
+- 音声と転写テキストは、自分の API キーで OpenAI に送られます。作者のサーバーには何も送られません(更新の確認のために GitHub に接続するだけです)。
+- エラー報告は任意です。エラーが起きると、送る内容(ホームフォルダと秘密の文字列は伏せ字)が画面に出て、「送信」を押すまで何も送られません。送ると、自分の GitHub CLI(`gh`)のログインで、このリポジトリに**公開の** Issue として投稿されます。`gh` が無いときは、本文をクリップボードに写して「新しい Issue」のページを開きます。報告はオフにできます。
+- API キーは OS の資格情報ストアに、クリップボード復元ファイルと履歴は OS のキーチェーンで暗号化して保存されます。
 
-30 分/日 使用で **月 $15-20** 程度 (旧モデル構成での実績値。現行モデルの単価は OpenAI の価格ページで確認してください)。
+---
+
+## コスト
+
+OpenAI の API 利用料がかかります(転写と整形)。モデルの単価は OpenAI の価格ページで確認してください。
 
 ---
 
 ## ライセンス
 
-Copyright (c) 2026 mackatwentytsuru. MIT License (see [LICENSE](./LICENSE)).
+Copyright (c) 2026 Yuki Tsuruoka. MIT License (see [LICENSE](./LICENSE)).

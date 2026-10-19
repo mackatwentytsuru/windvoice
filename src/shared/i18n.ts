@@ -166,7 +166,7 @@ const ja: Dict = {
   // replacements page
   'tab.replacements': '置換',
   'replacements.title': 'テキストマクロ',
-  'replacements.helper': '転写の中で完全一致したフレーズを定型文に展開します。例: 「メアド」→「macka@example.com」。',
+  'replacements.helper': '転写の中で完全一致したフレーズを定型文に展開します。例: 「メアド」→「you@example.com」。',
   'replacements.trigger': 'トリガー',
   'replacements.expansion': '展開後',
   'replacements.add': '追加',
@@ -384,7 +384,7 @@ const en: Dict = {
   // replacements page
   'replacements.title': 'Text macros',
   'replacements.helper':
-    'Expand exact-match phrases in the transcript into longer text. E.g. "my email" → "macka@example.com".',
+    'Expand exact-match phrases in the transcript into longer text. E.g. "my email" → "you@example.com".',
   'replacements.trigger': 'Trigger',
   'replacements.expansion': 'Expansion',
   'replacements.add': 'Add',

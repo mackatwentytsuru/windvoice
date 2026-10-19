@@ -18,14 +18,14 @@ describe('applyReplacements', () => {
 
   it('replaces a trigger at word boundaries (ASCII)', () => {
     const result = applyReplacements('send to email please', [
-      { trigger: 'email', expansion: 'macka@example.com', wordBoundary: true }
+      { trigger: 'email', expansion: 'you@example.com', wordBoundary: true }
     ]);
-    expect(result).toBe('send to macka@example.com please');
+    expect(result).toBe('send to you@example.com please');
   });
 
   it('does NOT replace when surrounded by word characters and wordBoundary is true', () => {
     const result = applyReplacements('emails are nice', [
-      { trigger: 'email', expansion: 'macka@example.com', wordBoundary: true }
+      { trigger: 'email', expansion: 'you@example.com', wordBoundary: true }
     ]);
     expect(result).toBe('emails are nice');
   });
@@ -69,9 +69,9 @@ describe('applyReplacements', () => {
   it('respects custom word boundary for Japanese triggers', () => {
     // メアド is surrounded by Japanese punctuation/whitespace -> matches.
     const result = applyReplacements('「メアド」を教えて', [
-      { trigger: 'メアド', expansion: 'macka@example.com', wordBoundary: true }
+      { trigger: 'メアド', expansion: 'you@example.com', wordBoundary: true }
     ]);
-    expect(result).toBe('「macka@example.com」を教えて');
+    expect(result).toBe('「you@example.com」を教えて');
   });
 
   it('does NOT match a Japanese trigger when fused with adjacent kana/kanji', () => {
@@ -85,9 +85,9 @@ describe('applyReplacements', () => {
 
   it('matches Japanese trigger at start and end of string', () => {
     const result = applyReplacements('メアド', [
-      { trigger: 'メアド', expansion: 'macka@example.com', wordBoundary: true }
+      { trigger: 'メアド', expansion: 'you@example.com', wordBoundary: true }
     ]);
-    expect(result).toBe('macka@example.com');
+    expect(result).toBe('you@example.com');
   });
 
   it('falls through gracefully on empty input', () => {
@@ -111,10 +111,10 @@ describe('replacementsProcessor', () => {
 
   it('applies entries from the post-process context', async () => {
     const ctx = makeCtx([
-      { trigger: 'メアド', expansion: 'macka@example.com', wordBoundary: true }
+      { trigger: 'メアド', expansion: 'you@example.com', wordBoundary: true }
     ]);
     const out = await replacementsProcessor.process('「メアド」を教えて', ctx);
-    expect(out).toBe('「macka@example.com」を教えて');
+    expect(out).toBe('「you@example.com」を教えて');
   });
 
   it('skips replacement when context settings has no replacements property values', async () => {

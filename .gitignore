@@ -14,3 +14,12 @@ coverage/
 # Python bytecode from the portal sidecar
 __pycache__/
 *.pyc
+
+# Accidentally committed once; never commit a nested git dir
+.codex-git/
+*.bundle
+
+# Local agent / editor state
+.claude/
+.env.*
+!.env.example

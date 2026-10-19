@@ -1,7 +1,6 @@
 # Windows 動作テスト手順
 
-このブランチ (`claude/windows-test-VHFdI`) には、音声入力レビューで実装した
-**3つの変更** が入っています。Windows 実機での確認用です。
+このガイドは、Windows 実機で次の機能を確認するための手順です。
 
 | # | 変更内容 | テストできるモード |
 |---|----------|--------------------|
@@ -26,12 +25,12 @@
 
 **方法A: git clone(推奨)**
 ```powershell
-git clone -b claude/windows-test-VHFdI https://github.com/mackatwentytsuru/windvoice.git
+git clone https://github.com/mackatwentytsuru/windvoice.git
 cd windvoice
 ```
 
 **方法B: Chrome で ZIP ダウンロード**
-1. Chrome で <https://github.com/mackatwentytsuru/windvoice/tree/claude/windows-test-VHFdI> を開く
+1. Chrome で <https://github.com/mackatwentytsuru/windvoice> を開く
 2. 緑の「Code」ボタン → 「Download ZIP」
 3. 展開して、そのフォルダで PowerShell を開く
 
@@ -252,9 +251,9 @@ $env:WINDVOICE_DEBUG_DICTATION = "1"
 
 ## 5. 結果の報告
 
-各項目について **OK / NG** と、NG の場合は以下を PR #48 にコメントしてください:
+各項目について **OK / NG** と、NG の場合は以下を GitHub の Issue に書いてください:
 - 機能 A: NG だった貼り付け先アプリ名、試した「貼り付けの確実性」プロファイル
 - 機能 B: 履歴に残ったか、貼り付けは成功したか、debug ログの該当行
 - 機能 C: バナーの表示内容、エラーメッセージ
 
-関連 PR: <https://github.com/mackatwentytsuru/windvoice/pull/48>
+報告先: <https://github.com/mackatwentytsuru/windvoice/issues>
