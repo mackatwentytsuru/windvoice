@@ -16,7 +16,7 @@ vi.mock('@main/linux/wayland', () => ({
 
 vi.mock('electron', () => {
   class FakeBrowserWindow {
-    webContents = { send: vi.fn() };
+    webContents = { send: vi.fn(), on: vi.fn() };
     constructor(options: Record<string, unknown>) {
       hoisted.options = options;
     }

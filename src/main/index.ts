@@ -498,11 +498,15 @@ app.whenReady().then(async () => {
     hotkeys?.resetState();
     audio?.recapture();
     orchestrator?.recycleConnection('power resume');
+    // The overlay's transparent surface can go stale across sleep — it then
+    // "shows" without ever reaching the screen. Rebuild it alongside.
+    overlay?.recreate('power resume');
   });
   powerMonitor.on('unlock-screen', () => {
     hotkeys?.resetState();
     audio?.recapture();
     orchestrator?.recycleConnection('unlock-screen');
+    overlay?.recreate('unlock-screen');
     // Wayland: mutter refuses RemoteDesktop session creation while the
     // session is locked ("Session creation inhibited"), so a sidecar that
     // launched behind a lock screen never got a session. Retry now.
@@ -533,6 +537,13 @@ app.whenReady().then(async () => {
   await overlay.init(PRELOAD_PATH);
   // Audio level updates flow: audio renderer → main → overlay window
   audio.setLevelListener((level) => overlay?.setLevel(level));
+  // A GPU process restart leaves transparent windows composited from a dead
+  // surface; only a fresh window picks up the new one.
+  app.on('child-process-gone', (_event, details) => {
+    if (details.type !== 'GPU') return;
+    debug('OVERLAY', `GPU process gone (${details.reason})`);
+    overlay?.recreate('gpu process gone');
+  });
 
   orchestrator = new DictationOrchestrator(audio, overlay, dictionary, transcriptLog);
   networkChangeDebouncer = new NetworkChangeDebouncer(() => {
