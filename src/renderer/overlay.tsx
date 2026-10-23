@@ -10,7 +10,7 @@ function Overlay(): JSX.Element | null {
   const [lang, setLang] = useState<UiLang>('ja');
   const [overlayEnabled, setOverlayEnabled] = useState(true);
 
-  // Live transcript: the streamed deltas of the current take, shown in place
+  // Live transcript: the streamed partial text of the current take, shown in place
   // of the static label so the user sees words land while still speaking.
   const [live, setLive] = useState('');
   const lastStatus = useRef<DictationStatus>('idle');
@@ -25,8 +25,10 @@ function Overlay(): JSX.Element | null {
       setStatus(s.status);
       setLevel(s.level);
     });
-    const offDelta = window.windvoice.onTranscriptDelta((delta: string) => {
-      setLive((prev) => (prev + delta).slice(-LIVE_KEEP_CHARS));
+    // Main sends the take's whole partial transcript so far, not just the new
+    // piece — replace, don't append, or every update repeats the sentence.
+    const offDelta = window.windvoice.onTranscriptDelta((partial: string) => {
+      setLive(partial.slice(-LIVE_KEEP_CHARS));
     });
     return () => {
       off();

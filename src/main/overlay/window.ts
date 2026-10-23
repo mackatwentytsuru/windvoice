@@ -1,12 +1,19 @@
 import { BrowserWindow, screen } from 'electron';
 import path from 'node:path';
 import { is } from '@main/audio/env';
+import { debug } from '@main/debug';
 import { IPC, type DictationStatus, type OverlayState } from '@shared/types';
 import { isWaylandSession } from '@main/linux/wayland';
 
 const WIDTH = 280;
-const HEIGHT = 56;
-const BOTTOM_OFFSET = 80;
+// Must fit the pill drawn by overlay.css: 40px content + 16px padding + 2px
+// border + 8px margin = 66px. At 56px the bottom edge was clipped.
+const HEIGHT = 72;
+// Reduced by the same 16px HEIGHT grew, so the pill stays where it was.
+const BOTTOM_OFFSET = 64;
+// A renderer that dies again right after being rebuilt is not going to be
+// saved by another rebuild; stop instead of spinning.
+const CRASH_RECREATE_MIN_INTERVAL_MS = 5_000;
 
 /**
  * Frameless, transparent, click-through, always-on-top window that floats at
@@ -14,13 +21,47 @@ const BOTTOM_OFFSET = 80;
  */
 export class OverlayWindow {
   private win: BrowserWindow | null = null;
+  private preloadPath: string | null = null;
   private status: DictationStatus = 'idle';
   private level = 0;
   private hideTimer: NodeJS.Timeout | null = null;
   private displayListener: (() => void) | null = null;
+  private lastCrashRecreateAt = 0;
 
   async init(preloadPath: string): Promise<void> {
     if (this.win) return;
+    this.preloadPath = preloadPath;
+    if (!isWaylandSession()) {
+      const onDisplayChange = (): void => this.repositionToActiveDisplay();
+      screen.on('display-removed', onDisplayChange);
+      screen.on('display-metrics-changed', onDisplayChange);
+      this.displayListener = onDisplayChange;
+    }
+    await this.createWindow();
+  }
+
+  /**
+   * Throw the BrowserWindow away and build a fresh one.
+   *
+   * The overlay lives for the whole app session and is only ever hidden and
+   * re-shown. After days of sleep/lock cycles (or a GPU process restart) its
+   * transparent compositor surface can go stale on Windows: the window
+   * reports visible and topmost and its renderer still paints, but nothing
+   * reaches the screen until the app restarts. A rebuilt window is cheap
+   * (it is hidden) and always comes back with a live surface.
+   */
+  recreate(reason: string): void {
+    if (!this.preloadPath) return;
+    debug('OVERLAY', `recreating overlay window (${reason})`);
+    const old = this.win;
+    this.win = null;
+    if (old && !old.isDestroyed()) old.destroy();
+    void this.createWindow().catch((err: unknown) => {
+      debug('OVERLAY', `overlay recreate failed: ${String(err)}`);
+    });
+  }
+
+  private async createWindow(): Promise<void> {
     const wayland = isWaylandSession();
     let requestedPosition: { x: number; y: number } | undefined;
     if (!wayland) {
@@ -48,7 +89,7 @@ export class OverlayWindow {
       hasShadow: false,
       alwaysOnTop: true,
       webPreferences: {
-        preload: preloadPath,
+        preload: this.preloadPath ?? undefined,
         contextIsolation: true,
         nodeIntegration: false,
         sandbox: true
@@ -62,20 +103,30 @@ export class OverlayWindow {
     win.setIgnoreMouseEvents(true, { forward: false });
     win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
 
-    this.win = win;
+    win.webContents.on('render-process-gone', (_event, details) => {
+      if (this.win !== win) return;
+      const now = Date.now();
+      if (now - this.lastCrashRecreateAt < CRASH_RECREATE_MIN_INTERVAL_MS) {
+        debug('OVERLAY', `overlay renderer gone again (${details.reason}) — not recreating`);
+        return;
+      }
+      this.lastCrashRecreateAt = now;
+      this.recreate(`renderer gone: ${details.reason}`);
+    });
 
-    if (!wayland) {
-      const onDisplayChange = (): void => this.repositionToActiveDisplay();
-      screen.on('display-removed', onDisplayChange);
-      screen.on('display-metrics-changed', onDisplayChange);
-      this.displayListener = onDisplayChange;
-    }
+    this.win = win;
 
     if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
       await win.loadURL(`${process.env['ELECTRON_RENDERER_URL']}/overlay.html`);
     } else {
       await win.loadFile(path.join(__dirname, '../renderer/overlay.html'));
     }
+
+    // A take may have started while this window was loading (recreate on
+    // unlock races the first hotkey press); the state sent then was lost.
+    if (this.win !== win) return;
+    this.broadcast();
+    if (this.status === 'listening' || this.status === 'processing') this.show();
   }
 
   setStatus(status: DictationStatus): void {
@@ -152,6 +203,7 @@ export class OverlayWindow {
       screen.removeListener('display-metrics-changed', this.displayListener);
       this.displayListener = null;
     }
+    this.preloadPath = null;
     this.win?.close();
     this.win = null;
   }
