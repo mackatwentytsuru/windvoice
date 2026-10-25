@@ -7,7 +7,7 @@ import { join } from 'node:path';
 
 const ALL = process.env['WINDVOICE_DEBUG'] === '1';
 
-const DOMAINS = ['HOTKEY', 'AUDIO', 'REALTIME', 'DICTATION', 'DUCK', 'OVERLAY', 'MAIN'] as const;
+const DOMAINS = ['HOTKEY', 'AUDIO', 'REALTIME', 'DICTATION', 'DUCK', 'OVERLAY', 'MAIN', 'STT'] as const;
 type Domain = (typeof DOMAINS)[number];
 
 // ─── persistent log file ────────────────────────────────────────────────────
@@ -95,12 +95,23 @@ const SECRET_PATTERNS: ReadonlyArray<RegExp> = [
   /(?:[?&]?\b(?:api[-_]?key|access[-_]?token|auth[-_]?token|key)\b)\s*[:=]\s*[^\s&;,]+/gi
 ];
 
+// Personal data that must not reach a public issue: the account name inside
+// home-folder paths (Windows / macOS / Linux) and credentials in URLs.
+const PERSONAL_PATTERNS: ReadonlyArray<[RegExp, string]> = [
+  [/([A-Za-z]:[\\/]+Users[\\/]+)[^\\/\s"']+/gi, '$1<user>'],
+  [/(\/(?:Users|home)\/)[^/\s"']+/g, '$1<user>'],
+  [/(\/\/)[^/\s@"']+@/g, '$1<credentials>@']
+];
+
 /** Redact API keys / bearer tokens. Exported for the GitHub error reporter,
  * which must apply the same policy before any text leaves the machine. */
 export function scrubSecrets(message: string): string {
   let out = message;
   for (const re of SECRET_PATTERNS) {
     out = out.replace(re, '***REDACTED***');
+  }
+  for (const [re, replacement] of PERSONAL_PATTERNS) {
+    out = out.replace(re, replacement);
   }
   return out;
 }

@@ -22,6 +22,10 @@ asarUnpack:
   - "**/*.{node,dll,dylib,so}"
   # Spawnable child process — must live on disk, not inside the asar archive.
   - "resources/native/**"
+  # Local STT server script — spawned as `python sherpa_server.py`, so it must
+  # be a real file on disk (main/stt/server.ts redirects app.asar to
+  # app.asar.unpacked when resolving it).
+  - "resources/stt/**"
 
 # ─── Windows ────────────────────────────────────────────────────────────────
 win:

@@ -58,6 +58,29 @@ const ja: Dict = {
   'general.languageEn': 'English (en)',
   'general.languageZh': '中文 (zh)',
   'general.languageKo': '한국어 (ko)',
+  'general.sttEngine': '音声認識',
+  'general.sttOpenai': 'OpenAI(クラウド)',
+  'general.sttLocal': 'ローカル(Parakeet・CPU)',
+  'general.sttOpenaiHelper': 'OpenAI Realtime API で文字起こしします。API キーが必要です。',
+  'general.sttLocalHelper':
+    'この PC 上のローカルサーバー (127.0.0.1) で文字起こしします。音声が外部に送られることはありません。GPT 整形がオンで API キーがあるときは、整形のために文字だけを OpenAI に送ります(文字も送りたくない場合は GPT 整形をオフにしてください)。API キー未設定でも貼り付けまで動作し、GPT 整形だけがスキップされます。',
+  'general.sttCheck': '接続を確認',
+  'general.sttChecking': '確認中…',
+  'general.sttOk': '接続OK',
+  'general.sttFailed': '接続できません',
+  'general.sttAdvanced': '詳細設定(ローカル)',
+  'general.sttUrl': 'サーバー URL',
+  'general.sttUrlHelper': '127.0.0.1 の http URL のみ指定できます。',
+  'general.sttPython': 'Python のパス',
+  'general.sttModel': 'モデルフォルダ',
+  'general.sttScript': 'サーバースクリプト',
+  'general.sttScriptHelper': '空欄の場合は同梱の resources/stt/sherpa_server.py を使います。',
+  'general.sttAutoStart': 'サーバーを自動起動',
+  'general.sttAutoStartHelper':
+    '未起動のとき、録音開始時に自動で起動します(初回はモデル読み込みに時間がかかります)。',
+  'general.sttThreads': 'スレッド数',
+  'general.sttCheckHelper':
+    'サーバーが未起動の場合、この確認では起動しません(録音を始めると自動起動します)。',
   'general.uiLanguage': '表示言語',
   'general.insertion': '挿入方式',
   'general.insertionPaste': 'クリップボード貼り付け',
@@ -215,6 +238,13 @@ const ja: Dict = {
     '転写テキストをクリップボードにコピーしました。手動で貼り付けてください。',
   'error.statusNotifierUnavailable':
     '常駐アイコンを表示する仕組みが見つかりません。GNOME では gnome-shell-extension-appindicator パッケージ、または extensions.gnome.org の「AppIndicator and KStatusNotifierItem Support」をインストールして有効にすると、常駐アイコンが表示されます。拡張機能が無くても、WindVoice をもう一度起動すれば設定ウィンドウが開きます。',
+  'error.localSttUnavailable':
+    'ローカル音声認識サーバーに接続できません。「音声認識」の設定(URL・Python のパス・モデルフォルダ)を確認してください。',
+  'error.localSttTimeout':
+    'ローカル音声認識サーバーの応答がありません。しばらく待ってからもう一度お試しください。',
+  'error.localSttNotConfigured':
+    'ローカル音声認識の設定が未完了です。Python のパスとモデルフォルダを指定してください。',
+  'error.localSttFailed': 'ローカル音声認識に失敗しました。',
 
   // aria / accessibility
   'aria.delete': '削除',
@@ -272,6 +302,30 @@ const en: Dict = {
   'general.languageEn': 'English (en)',
   'general.languageZh': 'Chinese (zh)',
   'general.languageKo': 'Korean (ko)',
+  'general.sttEngine': 'Speech recognition',
+  'general.sttOpenai': 'OpenAI (cloud)',
+  'general.sttLocal': 'Local (Parakeet, CPU)',
+  'general.sttOpenaiHelper': 'Transcribe with the OpenAI Realtime API. Requires an API key.',
+  'general.sttLocalHelper':
+    'Transcribe on a local server on this PC (127.0.0.1). Audio never leaves the machine. When GPT formatting is on and an API key is set, only the text is sent to OpenAI for formatting (turn GPT formatting off to keep the text local too). Works without an API key — only the GPT formatting step is skipped.',
+  'general.sttCheck': 'Check connection',
+  'general.sttChecking': 'Checking…',
+  'general.sttOk': 'Connected',
+  'general.sttFailed': 'Not reachable',
+  'general.sttAdvanced': 'Advanced (local)',
+  'general.sttUrl': 'Server URL',
+  'general.sttUrlHelper': 'Only http URLs on 127.0.0.1 are accepted.',
+  'general.sttPython': 'Python path',
+  'general.sttModel': 'Model folder',
+  'general.sttScript': 'Server script',
+  'general.sttScriptHelper':
+    'Leave empty to use the bundled resources/stt/sherpa_server.py.',
+  'general.sttAutoStart': 'Start server automatically',
+  'general.sttAutoStartHelper':
+    'Starts the server on the next dictation when it is not running (the first start loads the model and takes a while).',
+  'general.sttThreads': 'Threads',
+  'general.sttCheckHelper':
+    'If the server is not running, this check does not start it (starting a dictation does).',
   'general.uiLanguage': 'UI Language',
   'general.insertion': 'Insertion method',
   'general.insertionPaste': 'Clipboard paste',
@@ -434,6 +488,13 @@ const en: Dict = {
     'The transcript was copied to the clipboard. Please paste it manually.',
   'error.statusNotifierUnavailable':
     'No system tray host was found. On GNOME, install and enable the gnome-shell-extension-appindicator package or “AppIndicator and KStatusNotifierItem Support” from extensions.gnome.org to show the resident icon. Even without the extension, launch WindVoice again to open the Settings window.',
+  'error.localSttUnavailable':
+    "Can't reach the local speech-to-text server. Check the Speech recognition settings (URL, Python path, model folder).",
+  'error.localSttTimeout':
+    'The local speech-to-text server did not respond. Wait a moment and try again.',
+  'error.localSttNotConfigured':
+    'Local speech recognition is not configured yet. Set the Python path and the model folder.',
+  'error.localSttFailed': 'Local speech recognition failed.',
 
   // aria / accessibility
   'aria.delete': 'Delete',

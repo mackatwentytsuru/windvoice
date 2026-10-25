@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import type { AudioInputDevice, Settings } from '../../shared/types';
-import type { ErrorReportPreview, UpdaterState } from '../../shared/ipc';
+import type { ErrorReportPreview, LocalSttHealth, UpdaterState } from '../../shared/ipc';
 import { UI_LANGS, type UiLang } from '../../shared/i18n';
 import { useI18n } from '../useI18n';
 import { generalSettingsVisibility } from '../platformCapabilities';
@@ -30,6 +30,24 @@ export function GeneralPage({ settings, update }: Props): JSX.Element {
   const [reportResult, setReportResult] = useState<string | null>(null);
   const [reportBusy, setReportBusy] = useState(false);
   const settingVisibility = generalSettingsVisibility(window.windvoice.platform);
+  const [checkingStt, setCheckingStt] = useState(false);
+  const [sttCheck, setSttCheck] = useState<LocalSttHealth | null>(null);
+
+  async function checkSttConnection(): Promise<void> {
+    setCheckingStt(true);
+    setSttCheck(null);
+    try {
+      setSttCheck(await window.windvoice.checkLocalStt());
+    } catch (err) {
+      setSttCheck({
+        ok: false,
+        url: settings.stt.localUrl,
+        error: err instanceof Error ? err.message : String(err)
+      });
+    } finally {
+      setCheckingStt(false);
+    }
+  }
 
   async function checkForUpdate(): Promise<void> {
     setCheckingUpdate(true);
@@ -298,6 +316,135 @@ export function GeneralPage({ settings, update }: Props): JSX.Element {
           <option value="ko">{t('general.languageKo')}</option>
         </select>
       </label>
+
+      <div className="field">
+        <span className="field-label">{t('general.sttEngine')}</span>
+        <select
+          value={settings.stt.engine}
+          onChange={(e) =>
+            void update({
+              stt: { ...settings.stt, engine: e.target.value as 'openai' | 'local' }
+            })
+          }
+        >
+          <option value="openai">{t('general.sttOpenai')}</option>
+          <option value="local">{t('general.sttLocal')}</option>
+        </select>
+        <div className="helper">
+          {settings.stt.engine === 'local'
+            ? t('general.sttLocalHelper')
+            : t('general.sttOpenaiHelper')}
+        </div>
+
+        {settings.stt.engine === 'local' && (
+          <>
+            <div className="row" style={{ marginTop: 8 }}>
+              <button
+                className="button-secondary"
+                onClick={() => void checkSttConnection()}
+                disabled={checkingStt}
+              >
+                {checkingStt ? t('general.sttChecking') : t('general.sttCheck')}
+              </button>
+              {sttCheck && (
+                <span
+                  className="helper"
+                  style={{ marginTop: 0, color: sttCheck.ok ? 'var(--accent)' : 'var(--error)' }}
+                  role={sttCheck.ok ? undefined : 'alert'}
+                >
+                  {sttCheck.ok
+                    ? `${t('general.sttOk')}${sttCheck.model ? ` (${sttCheck.model})` : ''}`
+                    : `${t('general.sttFailed')}${sttCheck.error ? `: ${sttCheck.error}` : ''}`}
+                </span>
+              )}
+            </div>
+            <div className="helper">{t('general.sttCheckHelper')}</div>
+
+            <details style={{ marginTop: 8 }}>
+              <summary className="helper" style={{ cursor: 'pointer' }}>
+                {t('general.sttAdvanced')}
+              </summary>
+
+              <label className="field" style={{ marginTop: 8 }}>
+                <span className="field-label">{t('general.sttUrl')}</span>
+                <input
+                  type="text"
+                  defaultValue={settings.stt.localUrl}
+                  onBlur={(e) =>
+                    void update({ stt: { ...settings.stt, localUrl: e.target.value.trim() } })
+                  }
+                />
+                <div className="helper">{t('general.sttUrlHelper')}</div>
+              </label>
+
+              <label className="field">
+                <span className="field-label">{t('general.sttPython')}</span>
+                <input
+                  type="text"
+                  defaultValue={settings.stt.pythonPath}
+                  placeholder="python"
+                  onBlur={(e) =>
+                    void update({ stt: { ...settings.stt, pythonPath: e.target.value.trim() } })
+                  }
+                />
+              </label>
+
+              <label className="field">
+                <span className="field-label">{t('general.sttModel')}</span>
+                <input
+                  type="text"
+                  defaultValue={settings.stt.modelDir}
+                  placeholder="C:\path\to\sherpa-onnx-nemo-parakeet-tdt_ctc-0.6b-ja-35000-int8"
+                  onBlur={(e) =>
+                    void update({ stt: { ...settings.stt, modelDir: e.target.value.trim() } })
+                  }
+                />
+              </label>
+
+              <label className="field">
+                <span className="field-label">{t('general.sttScript')}</span>
+                <input
+                  type="text"
+                  defaultValue={settings.stt.serverScript}
+                  onBlur={(e) =>
+                    void update({
+                      stt: { ...settings.stt, serverScript: e.target.value.trim() }
+                    })
+                  }
+                />
+                <div className="helper">{t('general.sttScriptHelper')}</div>
+              </label>
+
+              <label className="field">
+                <span className="field-label">{t('general.sttThreads')}</span>
+                <input
+                  type="number"
+                  min={1}
+                  max={64}
+                  defaultValue={settings.stt.threads}
+                  onBlur={(e) => {
+                    const n = Number.parseInt(e.target.value, 10);
+                    const threads = Number.isFinite(n) ? Math.min(64, Math.max(1, n)) : 4;
+                    void update({ stt: { ...settings.stt, threads } });
+                  }}
+                />
+              </label>
+
+              <label className="row" style={{ cursor: 'pointer' }}>
+                <input
+                  type="checkbox"
+                  checked={settings.stt.autoStart}
+                  onChange={(e) =>
+                    void update({ stt: { ...settings.stt, autoStart: e.target.checked } })
+                  }
+                />
+                <span>{t('general.sttAutoStart')}</span>
+              </label>
+              <div className="helper">{t('general.sttAutoStartHelper')}</div>
+            </details>
+          </>
+        )}
+      </div>
 
       <div className="field">
         <span className="field-label">{t('general.formatter')}</span>

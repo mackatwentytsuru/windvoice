@@ -98,6 +98,15 @@ vi.mock('@main/store/settings', () => ({
       hotkeys: [],
       audio: { device: 'default', inputGain: 1 },
       language: 'ja',
+      stt: {
+        engine: 'openai',
+        localUrl: 'http://127.0.0.1:5312',
+        autoStart: true,
+        pythonPath: 'python',
+        serverScript: 'resources/stt/sherpa_server.py',
+        modelDir: '',
+        threads: 4
+      },
       formatter: { model: 'gpt-5-mini', customInstructions: '', enabled: true },
       dictionary: [],
       insertion: {

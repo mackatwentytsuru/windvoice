@@ -82,6 +82,36 @@ export const SETTINGS_SCHEMA_VERSION = 4;
  * (store/migrations.ts) move persisted settings onto it. */
 export const DEFAULT_FORMATTER_MODEL = 'gpt-6-luna';
 
+/**
+ * Speech-to-text engine selection.
+ *
+ * 'openai' (default) = the existing OpenAI Realtime API path; existing
+ * settings files keep working unchanged because every field has a default
+ * and the outer object is `.default({})`.
+ *
+ * 'local' = an on-device sherpa-onnx / NVIDIA Parakeet Japanese server that
+ * listens on 127.0.0.1 only (see resources/stt/sherpa_server.py). Audio is
+ * POSTed as a 16 kHz mono PCM16 WAV and only the transcript comes back.
+ *
+ * `serverScript` defaults to the bundled script path relative to the app
+ * root; main/stt/server.ts resolves it (asar → asar.unpacked aware).
+ * `pythonPath` defaults to `python` on PATH and `modelDir` to empty; on
+ * Windows main/stt/server.ts fills both from %LOCALAPPDATA%\WindVoice\stt
+ * when that folder holds the venv and the model, otherwise the user points
+ * them at their own folders (a wrong default would spawn a server that
+ * fails to load the model).
+ */
+export const LocalSttSettingsSchema = z.object({
+  engine: z.enum(['openai', 'local']).catch('openai').default('openai'),
+  localUrl: z.string().default('http://127.0.0.1:5312'),
+  autoStart: z.boolean().default(true),
+  pythonPath: z.string().default('python'),
+  serverScript: z.string().default('resources/stt/sherpa_server.py'),
+  modelDir: z.string().default(''),
+  threads: z.number().int().min(1).max(64).catch(4).default(4)
+});
+export type LocalSttSettings = z.infer<typeof LocalSttSettingsSchema>;
+
 export const SettingsSchema = z.object({
   // `.min(1)` makes "no hotkeys configured" an invalid state at the
   // schema boundary (L2). An empty array would leave the orchestrator
@@ -111,6 +141,8 @@ export const SettingsSchema = z.object({
     })
     .default({}),
   language: z.string().catch('ja').default('ja'),
+  /** Local (on-device) STT engine selection + server configuration. */
+  stt: LocalSttSettingsSchema.default({}),
   formatter: z
     .object({
       model: z.string().catch(DEFAULT_FORMATTER_MODEL).default(DEFAULT_FORMATTER_MODEL),

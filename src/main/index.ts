@@ -8,6 +8,7 @@ import { FnWatcher, FN_KEYCODE } from '@main/hotkey/fnwatcher';
 import { AudioBridge } from '@main/audio/bridge';
 import { OverlayWindow } from '@main/overlay/window';
 import { DictationOrchestrator } from '@main/dictation/orchestrator';
+import { localSttServer, setSttAppRoot } from '@main/stt/server';
 import {
   createTray,
   setStatus,
@@ -312,6 +313,10 @@ app.whenReady().then(async () => {
     app.dock.hide();
   }
 
+  // Local STT (resources/stt/sherpa_server.py) resolves its bundled script
+  // relative to the app root so packaged builds find the unpacked copy.
+  setSttAppRoot(app.getAppPath());
+
   // macOS: trigger the OS Accessibility prompt the first time so global hotkeys
   // and synthesized paste actually work. `prompt: true` displays the system
   // dialog if not yet trusted; subsequent launches return immediately.
@@ -423,6 +428,15 @@ app.whenReady().then(async () => {
       }
       if (next.ui.autoLaunch !== prev.ui.autoLaunch) {
         applyAutoLaunch(next.ui.autoLaunch);
+      }
+      // Leaving the local engine, or changing how its server runs: stop the
+      // Python server we spawned (it is respawned on demand with the new
+      // settings; a still-healthy old server would otherwise keep being used).
+      const serverChanged = (['localUrl', 'pythonPath', 'modelDir', 'serverScript', 'threads'] as const).some(
+        (k) => prev.stt[k] !== next.stt[k]
+      );
+      if (prev.stt.engine === 'local' && (next.stt.engine !== 'local' || serverChanged)) {
+        localSttServer.stop();
       }
     }
   });
@@ -661,7 +675,9 @@ app.whenReady().then(async () => {
     await audio.prewarm(settingsStore.get().audio.device);
   }
 
-  if (await secureStore.hasApiKey()) {
+  // Local engine needs no OpenAI key: prewarm the on-device server instead
+  // (the OpenAI branch below still runs only when a key exists, unchanged).
+  if (settingsStore.get().stt.engine === 'local' || (await secureStore.hasApiKey())) {
     void orchestrator.prewarmConnection();
   }
 
@@ -691,7 +707,11 @@ app.whenReady().then(async () => {
       broadcastToUiWindows(IPC.ERROR_REPORT_PENDING, preview)
   });
 
-  await ensureApiKey();
+  // The OpenAI API key is not required by the local engine, so the first-run
+  // key prompt must not block (or nag) local-only users.
+  if (settingsStore.get().stt.engine !== 'local') {
+    await ensureApiKey();
+  }
 
   // Headless paste self-test (debug hook): WINDVOICE_PASTE_SELFTEST=1
   // pastes a marker string into the focused window ~6s after startup;
@@ -767,6 +787,8 @@ app.on('before-quit', (event) => {
     networkChangeDebouncer?.dispose();
     networkChangeDebouncer = null;
     orchestrator?.dispose();
+    // Kill the local STT server (whole process tree) if we spawned one.
+    localSttServer.stop();
     portalSidecar.stop();
     audio?.destroy();
     setAudioWebContentsId(null);

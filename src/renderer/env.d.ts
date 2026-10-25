@@ -11,6 +11,7 @@ import type {
   ErrorKind,
   ErrorReportPreview,
   ErrorReportSendResult,
+  LocalSttHealth,
   UpdaterState
 } from '../shared/ipc';
 import type { AudioIdleMode } from '../shared/audioCapturePolicy';
@@ -28,6 +29,7 @@ declare global {
       setSettings(s: Partial<Settings>): Promise<Settings>;
       hasApiKey(): Promise<boolean>;
       setApiKey(key: string): Promise<void>;
+      checkLocalStt(): Promise<LocalSttHealth>;
       start(): Promise<void>;
       stop(): Promise<void>;
       quit(): Promise<void>;

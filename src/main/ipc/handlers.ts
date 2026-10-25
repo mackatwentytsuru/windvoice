@@ -2,11 +2,13 @@ import { ipcMain, clipboard, type IpcMainInvokeEvent } from 'electron';
 import { z } from 'zod';
 import { IPC, SettingsSchema, type Settings, type HistoryEntry } from '@shared/types';
 import { IPC_PROTOCOL_VERSION } from '@shared/ipc';
+import type { LocalSttHealth } from '@shared/ipc';
 import { API_KEY_MIN_LENGTH, API_KEY_MAX_LENGTH } from '@shared/apiKey';
 import { settingsStore } from '@main/store/settings';
 import { secureStore, SecureStoreUnavailableError, InvalidApiKeyError } from '@main/store/secure';
 import { historyStore } from '@main/store/history';
 import { broadcastToUiWindows } from '@main/broadcast';
+import { DEFAULT_LOCAL_STT_URL, LocalSttClient } from '@main/stt/client';
 
 interface ManualTriggers {
   start: () => Promise<void> | void;
@@ -103,6 +105,26 @@ export function registerIpc(triggers: ManualTriggers): void {
       } catch (err) {
         process.stderr.write(`[apikey] has failed: ${errMsg(err)}\n`);
         return false;
+      }
+    }
+  );
+
+  ipcMain.handle(
+    IPC.STT_CHECK,
+    async (): Promise<LocalSttHealth> => {
+      // Read-only probe of the configured local server. It never starts the
+      // server (that is the dictation path's job) and never leaves loopback.
+      const url = settingsStore.get().stt.localUrl.trim() || DEFAULT_LOCAL_STT_URL;
+      try {
+        const info = await new LocalSttClient(url).health();
+        return {
+          ok: info.ok,
+          url,
+          ...(info.model !== undefined ? { model: info.model } : {}),
+          ...(info.threads !== undefined ? { threads: info.threads } : {})
+        };
+      } catch (err) {
+        return { ok: false, url, error: errMsg(err) };
       }
     }
   );

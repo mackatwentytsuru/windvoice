@@ -14,7 +14,8 @@ import {
   type UpdaterState,
   type ErrorKind,
   type ErrorReportPreview,
-  type ErrorReportSendResult
+  type ErrorReportSendResult,
+  type LocalSttHealth
 } from '../shared/ipc';
 import type { AudioIdleMode } from '../shared/audioCapturePolicy';
 
@@ -108,6 +109,9 @@ const api = {
   hasApiKey: (): Promise<boolean> => ipcRenderer.invoke(IPC.APIKEY_HAS),
   setApiKey: (key: string): Promise<void> =>
     unwrap<true>(ipcRenderer.invoke(IPC.APIKEY_SET, key)).then(() => undefined),
+
+  /** Probe the local STT server's /health (settings UI "接続を確認"). */
+  checkLocalStt: (): Promise<LocalSttHealth> => ipcRenderer.invoke(IPC.STT_CHECK),
 
   // dictation control (manual trigger from UI)
   start: (): Promise<void> =>

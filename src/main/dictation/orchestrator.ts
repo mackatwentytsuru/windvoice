@@ -4,6 +4,8 @@ import type { AudioChunk } from '@shared/types';
 import type { OverlayWindow } from '@main/overlay/window';
 import { audioDuck } from '@main/audio/duck';
 import { RealtimeClient } from '@main/realtime/client';
+import { localSttServer } from '@main/stt/server';
+import { transcribeWithLocalStt } from '@main/stt/client';
 import { pasteText } from '@main/inject/typer';
 import { typeTextDirect, isAsciiTypeable } from '@main/inject/typeText';
 import { streamingTyper } from '@main/inject/streamingTyper';
@@ -35,6 +37,10 @@ import {
 } from '@shared/constants';
 
 const MIN_CHUNKS = Math.ceil(MIN_AUDIO_MS / CHUNK_MS);
+// Local mode buffers the whole take in memory before POSTing it. The Python
+// server rejects bodies over 32 MB (~16 min at 24 kHz PCM16); cap the buffer
+// well below that so a stuck hotkey can never grow it without bound.
+const LOCAL_MAX_PCM_BYTES = 24_000 * 2 * 300; // 5 minutes of 24 kHz PCM16
 const RECENT_AUDIO_ERROR_WINDOW_MS = 3_000;
 // The OpenAI Realtime server hard-kills sessions at 60 minutes ("Your
 // session hit the maximum duration of 60 minutes." — 22 occurrences in the
@@ -103,6 +109,15 @@ export class DictationOrchestrator {
    * webContents id at capture time so deltas never leak to it.
    */
   private deltaTargets: WebContents[] = [];
+
+  /**
+   * Local STT mode (stt.engine === 'local'). When true, the OpenAI realtime
+   * session is never opened: the recorded PCM chunks are buffered instead
+   * and handed to the on-device server on key release.
+   */
+  private localMode = false;
+  private localChunks: Buffer[] = [];
+  private localBytes = 0;
 
   private maintenanceTimer: NodeJS.Timeout | null = null;
   private pendingConnectionRecycleReason: string | null = null;
@@ -238,6 +253,20 @@ export class DictationOrchestrator {
   }
 
   async prewarmConnection(): Promise<void> {
+    const engineSettings = settingsStore.get();
+    if (engineSettings.stt.engine === 'local') {
+      // Local engine: "prewarm" means making sure the on-device server is up
+      // (it may need to load the model into memory the first time). No API
+      // key is involved, so a failure only means "local engine unavailable".
+      try {
+        await localSttServer.ensureRunning(engineSettings.stt);
+        if (!this.inFlight) this.updateStatus('idle');
+      } catch (err) {
+        debug('STT', `local server prewarm failed: ${errMsg(err)}`);
+        if (!this.inFlight) this.updateStatus('unavailable');
+      }
+      return;
+    }
     try {
       await this.ensureConnected();
       // Reset the tray/overlay back to 'idle' after a successful prewarm.
@@ -280,6 +309,11 @@ export class DictationOrchestrator {
     this.finalReceivedThisCycle = false;
     this.streamingActive = false;
     this.streamedPrefixLen = 0;
+    // A previous cycle may have been abandoned mid-take; never carry local
+    // buffering state (or a stale engine flag) into the new cycle.
+    this.localMode = false;
+    this.localChunks = [];
+    this.localBytes = 0;
     const myCycle = ++this.cycleId;
 
     // Surface a recent renderer-side audio error before we burn a connection.
@@ -299,6 +333,14 @@ export class DictationOrchestrator {
     // than 'error' (transient runtime failure). The onApiKeyChanged hook
     // in main/index.ts will call prewarmConnection() once the user pastes
     // a key, which transitions the tray back to 'idle'.
+    //
+    // Local engine: no OpenAI session and no API key are involved, so the
+    // whole realtime path below is skipped (audio is buffered instead).
+    if (settingsStore.get().stt.engine === 'local') {
+      this.startLocal();
+      return;
+    }
+
     let apiKey: string | null = null;
     try {
       apiKey = await secureStore.getApiKey();
@@ -433,7 +475,8 @@ export class DictationOrchestrator {
     this.clearPendingFinalTimer();
     if (this.forwardingStarted) {
       this.audio.endForwarding(this.startCount);
-      if (this.client?.isOpen()) this.client.clearInput();
+      if (this.localMode) this.endLocalCapture();
+      else if (this.client?.isOpen()) this.client.clearInput();
     }
     this.inFlight = false;
     this.forwardingStarted = false;
@@ -468,6 +511,206 @@ export class DictationOrchestrator {
     this.onCancelled = cb;
   }
 
+  /**
+   * Local engine counterpart of start()'s post-connect half. The mic is
+   * opened exactly like the OpenAI path, but the PCM chunks are buffered
+   * instead of streamed over a WebSocket. Streaming insertion is not
+   * available in local mode (there are no interim transcripts), so the take
+   * is inserted once on release.
+   */
+  private startLocal(): void {
+    const settings = settingsStore.get();
+    this.localMode = true;
+    this.localChunks = [];
+    this.localBytes = 0;
+
+    if (settings.ui.duckOtherAudio) {
+      this.duckedThisCycle = true;
+      this.duckPromise = audioDuck.duck(settings.ui.duckLevel).catch((err) => {
+        debug('DICTATION', `duck failed: ${errMsg(err)}`);
+        this.duckedThisCycle = false;
+      });
+    }
+    // Warm the server in the background: the user can start speaking
+    // immediately, and the (possibly slow) first model load overlaps with
+    // the take instead of blocking the microphone.
+    void localSttServer.ensureRunning(settings.stt).catch((err) => {
+      debug('STT', `local server start failed: ${errMsg(err)}`);
+    });
+    if (settings.ui.soundCuesEnabled) {
+      this.audio.playBeep('start');
+    }
+
+    const { startCount } = this.audio.beginForwarding();
+    this.startCount = startCount;
+    this.forwardingStarted = true;
+    this.audio.setChunkListener((chunk) => this.collectLocalChunk(chunk));
+    this.refreshDeltaTargets();
+    this.updateStatus('listening');
+  }
+
+  /**
+   * Leave local capture: drop the buffered take and hand the audio bridge back
+   * to the warm OpenAI socket's listener (it is attached once per connection),
+   * so switching the engine back to OpenAI keeps delivering audio.
+   */
+  private endLocalCapture(): void {
+    this.audio.setChunkListener(this.clientChunkListener);
+    this.localMode = false;
+    this.localChunks = [];
+    this.localBytes = 0;
+  }
+
+  /** Append one recorded chunk (24 kHz mono PCM16) to the local take buffer. */
+  private collectLocalChunk(chunk: ChunkLike): void {
+    if (!this.localMode) return;
+    let data: Buffer | null = null;
+    if ('data' in chunk && chunk.data) data = Buffer.from(chunk.data);
+    else if ('base64' in chunk && chunk.base64) data = Buffer.from(chunk.base64, 'base64');
+    if (!data || data.length === 0) return;
+    const room = LOCAL_MAX_PCM_BYTES - this.localBytes;
+    if (room <= 0) return;
+    const piece = data.length > room ? data.subarray(0, room) : data;
+    this.localChunks.push(piece);
+    this.localBytes += piece.length;
+  }
+
+  /** Drain the buffered take into one little-endian Int16Array. */
+  private takeLocalPcm(): Int16Array {
+    const all = Buffer.concat(this.localChunks);
+    this.localChunks = [];
+    this.localBytes = 0;
+    const samples = Math.floor(all.length / 2);
+    const pcm = new Int16Array(samples);
+    for (let i = 0; i < samples; i++) pcm[i] = all.readInt16LE(i * 2);
+    return pcm;
+  }
+
+  /**
+   * Local engine counterpart of stop(): close the mic, POST the buffered
+   * take to 127.0.0.1, then run the same post-processing / insertion path
+   * the OpenAI transcript uses (replacements, dictionary, file tags,
+   * formatter). Without an OpenAI API key the formatter step is skipped by
+   * postprocess/formatter.ts and the text is still pasted.
+   */
+  private async stopLocal(): Promise<void> {
+    const myCycle = this.cycleId;
+    this.updateStatus('processing');
+    const settings = settingsStore.get();
+    // Same worklet drain as the OpenAI path so the last syllable is not clipped.
+    if (typeof this.audio.drainForwarding === 'function') {
+      await this.audio.drainForwarding(80);
+      if (myCycle !== this.cycleId || !this.inFlight) return;
+    }
+    const { delivered, maxLevel } = this.audio.endForwarding(this.startCount);
+    this.forwardingStarted = false;
+    const pcm = this.takeLocalPcm();
+    this.endLocalCapture();
+    debug(
+      'DICTATION',
+      `local take: delivered=${delivered} maxLevel=${maxLevel.toFixed(4)} samples=${pcm.length}`
+    );
+
+    if (settings.ui.soundCuesEnabled) {
+      this.audio.playBeep('stop');
+    }
+
+    // Restore the ducked volume as soon as the microphone is closed —
+    // recognition can take a few seconds on CPU and the user should not be
+    // left with a quiet system while they wait.
+    if (this.duckedThisCycle) {
+      this.duckedThisCycle = false;
+      try {
+        if (this.duckPromise) await this.duckPromise;
+      } catch {
+        /* ignore */
+      }
+      this.duckPromise = null;
+      try {
+        await audioDuck.restore();
+      } catch (err) {
+        process.stderr.write(`[dictation] duck restore failed: ${errMsg(err)}\n`);
+      }
+    }
+
+    const silentTake = maxLevel < SPEECH_RMS_THRESHOLD;
+    const enoughChunks = delivered >= MIN_CHUNKS;
+    let final = '';
+
+    if (!enoughChunks) {
+      debug('DICTATION', `skip local transcribe: delivered=${delivered} (<${MIN_CHUNKS})`);
+    } else if (silentTake) {
+      this.handleEmptyTake(true, settings);
+    } else {
+      try {
+        // Await the (possibly still in-flight) server start kicked off by
+        // startLocal(): the first model load can outlast a short take.
+        await localSttServer.ensureRunning(settings.stt);
+        final = await transcribeWithLocalStt(pcm, settings.stt.localUrl);
+      } catch (err) {
+        this.reportLocalSttError(err, settings);
+      }
+    }
+
+    if (myCycle !== this.cycleId) {
+      return;
+    }
+
+    try {
+      if (final.trim().length === 0) return;
+
+      // Identical insertion path to stopCycle() (OpenAI). Kept duplicated so
+      // the cloud path stays untouched; keep the two in sync.
+      const active = await getActiveWindow();
+      const processed = await postProcessorPipeline.run(final, {
+        settings,
+        activeWindowTitle: active?.title,
+        activeWindowApp: active?.app
+      });
+      // Cancelled (Esc) while formatting: never paste.
+      if (myCycle !== this.cycleId) return;
+
+      broadcastToUiWindows(IPC.TRANSCRIPT_FINAL, processed);
+      try {
+        const ins = settings.insertion;
+        const typed =
+          ins.method === 'type' &&
+          isAsciiTypeable(processed) &&
+          (await typeTextDirect(processed));
+        if (!typed) {
+          await pasteText(
+            processed,
+            ins.restoreClipboard,
+            ins.pasteCompatibility,
+            ins.excludeFromClipboardHistory
+          );
+        }
+      } catch (err) {
+        debug('DICTATION', `insert failed: ${errMsg(err)}`);
+      }
+      this.tryAddHistory(processed, delivered, active?.app);
+    } finally {
+      this.finishCycle(myCycle);
+    }
+  }
+
+  /**
+   * Turn a local-engine failure into localized, actionable guidance. Raw
+   * technical detail stays in the debug log (never in the UI banner).
+   */
+  private reportLocalSttError(err: unknown, settings: Settings): void {
+    const lang = settings.ui.uiLanguage;
+    const code = (err as { code?: unknown } | null)?.code;
+    let key = 'error.localSttFailed';
+    if (code === 'unreachable' || code === 'invalid-url') key = 'error.localSttUnavailable';
+    else if (code === 'timeout') key = 'error.localSttTimeout';
+    else if (code === 'not-configured') key = 'error.localSttNotConfigured';
+    debug('STT', `local transcription failed [${String(code ?? 'unknown')}]: ${errMsg(err)}`);
+    const message = t(key, lang);
+    broadcastToUiWindows(IPC.TRANSCRIPT_FINAL, `[error] ${message}`);
+    this.reportNotice(message);
+  }
+
   stop(): Promise<void> {
     if (this.stopPromise) return this.stopPromise;
     if (!this.inFlight) return Promise.resolve();
@@ -480,6 +723,11 @@ export class DictationOrchestrator {
   }
 
   private async stopCycle(): Promise<void> {
+    if (this.localMode) {
+      await this.stopLocal();
+      return;
+    }
+
     if (!this.forwardingStarted) {
       // start() has set inFlight but is still awaiting secure storage or the
       // warm/open-client microtask. Cancel regardless of socket state so its
@@ -777,6 +1025,9 @@ export class DictationOrchestrator {
       this.client = null;
     }
     this.audio.setChunkListener(null);
+    this.localMode = false;
+    this.localChunks = [];
+    this.localBytes = 0;
     // HIGH-2: when dispose() lands mid-cycle (e.g. on `before-quit`),
     // release everything else we may have grabbed for the dictation:
     //   - audio duck (otherwise the user's system volume stays low)

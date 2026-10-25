@@ -126,6 +126,18 @@ describe('scrubSecrets', () => {
     expect(out).not.toContain('eyJ.token-here');
     expect(out).toContain('***REDACTED***');
   });
+
+  test('hides the account name in home-folder paths and URL credentials', () => {
+    const input =
+      'FileNotFoundError: C:\\Users\\alice\\AppData\\Local\\WindVoice\\stt\\models\\m\\tokens.txt ' +
+      '/Users/bob/stt/x /home/carol/stt/y http://user:pw@127.0.0.1:5312/health';
+    const out = scrubSecrets(input);
+    expect(out).not.toMatch(/alice|bob|carol|user:pw/);
+    expect(out).toContain('C:\\Users\\<user>\\AppData\\Local\\WindVoice');
+    expect(out).toContain('/Users/<user>/stt/x');
+    expect(out).toContain('/home/<user>/stt/y');
+    expect(out).toContain('http://<credentials>@127.0.0.1:5312');
+  });
 });
 
 describe('formatterTimeoutMs', () => {

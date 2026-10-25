@@ -21,6 +21,8 @@ export const IPC = {
   // api key
   APIKEY_SET: 'apikey:set',
   APIKEY_HAS: 'apikey:has',
+  // local STT server health probe (settings UI "接続を確認")
+  STT_CHECK: 'stt:check',
   // dictation control
   DICTATION_START: 'dictation:start',
   DICTATION_STOP: 'dictation:stop',
@@ -161,6 +163,20 @@ export interface AudioChunk {
   samples: number;
   /** RMS level in [0..1] for the chunk; renderer-computed */
   level?: number;
+}
+
+/**
+ * Result of the settings-UI "接続を確認" health probe against the local STT
+ * server. Defined here (zod-free) so the preload bridge can type it.
+ * `error` is a short technical message for display; the renderer localizes
+ * the success/failure labels itself.
+ */
+export interface LocalSttHealth {
+  ok: boolean;
+  url: string;
+  model?: string;
+  threads?: number;
+  error?: string;
 }
 
 // Re-export for the rare case a consumer wants both via a single import.
