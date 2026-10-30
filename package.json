@@ -1,6 +1,6 @@
 {
   "name": "windvoice",
-  "version": "0.1.17",
+  "version": "0.1.18",
   "description": "AquaVoice-like voice dictation for Windows, macOS and Linux powered by OpenAI Realtime API",
   "author": "Yuki Tsuruoka <126057302+mackatwentytsuru@users.noreply.github.com>",
   "main": "out/main/index.js",

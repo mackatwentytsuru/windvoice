@@ -116,6 +116,17 @@ export class FnWatcher extends EventEmitter {
     this.start();
   }
 
+  /**
+   * Re-spawn the sidecar if it is gone. A sidecar that exited without the
+   * scheduled restart ever producing FN_READY leaves Fn push-to-talk dead
+   * until the app restarts, so resume / unlock call this as a safety net.
+   */
+  ensureRunning(reason: string): void {
+    if (this.stopped || this.child !== null) return;
+    debug('HOTKEY', `fnwatcher not running — re-spawning (${reason})`);
+    this.restart();
+  }
+
   stop(): void {
     this.stopped = true;
     const child = this.child;
@@ -172,6 +183,7 @@ export class FnWatcher extends EventEmitter {
       return;
     }
     this.restartCount += 1;
+    debug('HOTKEY', `fnwatcher restart scheduled (attempt ${this.restartCount})`);
     setTimeout(() => {
       if (!this.stopped) this.start();
     }, FnWatcher.RESTART_DELAY_MS);

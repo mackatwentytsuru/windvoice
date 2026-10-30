@@ -510,6 +510,7 @@ app.whenReady().then(async () => {
   powerMonitor.on('resume', () => {
     debug('AUDIO', 'power resume — re-acquiring microphone');
     hotkeys?.resetState();
+    fnWatcher?.ensureRunning('power resume');
     audio?.recapture();
     orchestrator?.recycleConnection('power resume');
     // The overlay's transparent surface can go stale across sleep — it then
@@ -518,6 +519,7 @@ app.whenReady().then(async () => {
   });
   powerMonitor.on('unlock-screen', () => {
     hotkeys?.resetState();
+    fnWatcher?.ensureRunning('unlock-screen');
     audio?.recapture();
     orchestrator?.recycleConnection('unlock-screen');
     overlay?.recreate('unlock-screen');
